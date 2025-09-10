@@ -5,7 +5,7 @@
 </div>
 
 <center>
-    <i>Liyh</i> is a modern, gradually typed, general-purpose programming language based on the symbolic rewriting paradigm but extended to support a functional and imperative style, featuring one-shot algebraic effects as well as a flexible syntax thanks to indentation and mixfix operators.
+    <i>Liyh</i> is a modern, statically typed, general-purpose programming language based on the symbolic rewriting paradigm but extended to support a functional and imperative style, featuring one-shot algebraic effects as well as a flexible syntax thanks to indentation and mixfix operators.
 </center>
 
 # Description & features
@@ -32,17 +32,28 @@ Liyh is a quite flexible language. Its core is based on [term rewriting](https:/
    - pattern matching on functions (and their parameters)
  - mixfix operators (called `notation`) with explicit definition, precedence and associativity
  - loops (`for` and `while`)
+ - list and list comprehensions
  - one-shot algebraic effect & handlers
- - algebraic data types
- - row-polymorphic records
+ - Static type-checking and strongly typed, with
+   - compile-time type checking
+   - type inference (and optional type annotations)
+   - ad-hoc and parametric polymorphism
+   - algebraic data types
+   - row-polymorphic records
  - indentation sensitive syntax
  - simple module system (one file = one module, private members by default)
+ - frontend implementation efforts
+   - efforts to ensure that the compiler returns meaningful error messages
+   - incremental and parallel compilation between files (still to be done, but the foundation has been laid)
+   - small, readable code base
 
 as well as other details...
 
 In short, Liyh is designed as a modern general-purpose language built around a lightweight and consistent core. All features, with a few exceptions, flow naturally from the basic paradigm and are simply made more accessible through the language.
 
 The language is inspired by F#, Python, Mathematica, Erlang, Haskell and others. The language is intended to be very accessible to anyone, but no less capable, allowing it to be adapted to the preferred or appropriate style.
+
+To learn more, visit [the website](/TODO)! 🧙
 
 # Basic examples
 
@@ -211,6 +222,21 @@ Note also, once again, that undefined symbols are first-class values, which is w
 It should be noted that notations are _not_ macros.
 
 </details>
+
+## Every contribution is worthwhile 💪
+The project is in the development and reflexion phase, so many things are
+
+- subject to change
+- not yet implemented
+- may be more effectively implemented
+
+Don't hesitate to make your contribution to the project. Even the smallest report of spelling mistakes will be appreciated. If you have any other suggestions for the project, we will be happy to hear from you.
+
+## Credits & acknowledgements
+Persons:
+
+ - [Mesa le bg 🐱](https://github.com/Mesabloo) for his ideas, valuable advice, encouragement and presence.
+ - My cat 🐈 for his purrs and his sweet little face. So cute!
 
 # License 📜
 
