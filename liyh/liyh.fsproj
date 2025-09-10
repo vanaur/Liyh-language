@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Utils/Utils.fs" />
+    <Compile Include="Utils/DamerauLevenshtein.fs" />
+    <Compile Include="Utils/ColorTerm.fs" />
+    <Compile Include="Utils/ErrorReport.fs" />
+
+    <Compile Include="Syntax/Indentation.fs" />
+    <Compile Include="Syntax/SyntaxTree.fs" />
+    <Compile Include="Syntax/Mixfix.fs" />
+    <Compile Include="Syntax/Parser.fs" />
+    <Compile Include="Syntax/PrettyPrint.fs" />
+
+    <Compile Include="ModuleSystem/Module.fs" />
+    <Compile Include="ModuleSystem/Definition.fs" />
+    <Compile Include="ModuleSystem/LiyhPackage.fs" />
+
+    <Compile Include="Typecheck/TypeCheck.fs" />
+
+    <Compile Include="Execution/Disctree.fs" />
+
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchShark" Version="1.0.0" />
+    <PackageReference Include="FParsec" Version="1.1.1" />
+  </ItemGroup>
+
+  <PropertyGroup>
+      <NoWarn>NU1701</NoWarn>
+  </PropertyGroup>
+
+</Project>

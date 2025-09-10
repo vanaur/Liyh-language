@@ -1,0 +1,9 @@
+--|                         |--
+--|  Testing stuff in Liyh  |--
+--|                         |--
+
+-- foo['x, 'y when 'x] -> 0     -- ça lance une exception bizarre
+-- Aussi, vérifier que les invalids ne se contradisent pas
+-- détecter, dans les matches, les patterns qui manquent
+
+
