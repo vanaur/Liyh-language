@@ -77,6 +77,12 @@ module LiyhPackage =
     /// cycles, and detecting independent modules so that they can be sorted topologically.
     type public ProjectGraph = ProjectGraph of Map<ModuleInfo, Set<ModuleInfo>>
 
+    /// Checks if the root of the identifier is "Liyh", the standard library.
+    let private isLiyhRoot (depId: Identifier) =
+        match depId.Qualifier with
+        | [] -> depId.Name.Node = "Liyh"
+        | x :: _ -> x.Node = "Liyh"
+
     module public ProjectGraph =
         open System.Text
 
@@ -216,19 +222,17 @@ module LiyhPackage =
 
                         // handle the standard library as a separate case
 
-                        let isLiyhRoot =
-                            match depId.Qualifier with
-                            | [] -> depId.Name.Node = "Liyh"
-                            | x :: _ -> x.Node = "Liyh"
-
-                        if isLiyhRoot then
-                            let depModId = pathToIdentifier projectRoot depPath
-                            let depModule =
-                                Option.defaultWith
-                                    (fun _ -> { ModuleInfo.empty depModId with Done = true })
-                                    (ProjectGraph.tryGetModule depId pgraph')
-
-                            deps <- Set.add depModule deps
+                        if isLiyhRoot depId then
+                            // let depModId = pathToIdentifier projectRoot depPath
+                            // let depModule =
+                            //     Option.defaultWith
+                            //         (fun _ -> { ModuleInfo.empty depModId with Done = true })
+                            //         (ProjectGraph.tryGetModule depId pgraph')
+                            //
+                            // deps <- Set.add depModule deps
+                            
+                            // Waiting a standard library and all of that
+                            ()
 
                         elif File.Exists depPath then
                             pgraph' <- build depPath visited' pgraph'
