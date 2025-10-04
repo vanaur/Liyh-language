@@ -8,12 +8,6 @@ module SyntaxTree =
     type public MixfixPatternPart = Fixed of string | Hole
     type public MixfixPattern = MixfixPatternPart list
 
-    type public MixfixOperator =
-        { Name: string
-          Pattern: MixfixPattern
-          Precedence: uint
-          Associativity: Associativity }
-
     type public WithPos<'t> =
         { Node: 't
           Pos: Position     // starting position
@@ -23,6 +17,14 @@ module SyntaxTree =
         member public this.Col = this.Pos.Column
         member public this.File = this.Pos.StreamName
         member public this.PosTuple = (this.Pos, this.Pos')
+
+    and public MixfixOperator =
+        { Name: string
+          Pattern: MixfixPattern
+          BindingPatterns: NotationPattern list
+          Precedence: uint
+          Associativity: Associativity
+          RewritesTo: ExpressionWithPos }
 
     and public IdentifierWithPos = Identifier WithPos
     and public ExpressionWithPos = Expression WithPos
@@ -272,9 +274,119 @@ module SyntaxTree =
 
     let inline public removePos { Node = node } = node
 
+    let inline public withPosOverride (b: WithPos<'t>) (a: WithPos<'t>) =
+        withPosOf b (removePos a)
+
     let public notationPatternToMixfixOperator (notation: Notation) =
         { Name = removePos notation.NotationName
           Pattern = removePos notation.NotationPattern |> List.map _.toMixFixPattern
+          BindingPatterns = removePos notation.NotationPattern
           Precedence = removePos notation.NotationPrecedence
-          Associativity = removePos notation.NotationAssociativity }
+          Associativity = removePos notation.NotationAssociativity
+          RewritesTo = notation.NotationIs }
+
+module Replace =
+    open SyntaxTree
+
+    let rec public replaceVariable (map: Map<string, ExpressionWithPos>) (expwp: ExpressionWithPos) : ExpressionWithPos =
+        let replaceExpr = replaceVariable map
+        let replacePattern pat = replacePatternVariable map pat
+        
+        match expwp.Node with
+        | BindingVariable name ->
+            match Map.tryFind name map with
+            | Some replacement -> replacement
+            | None -> expwp
+        | UFCS ufcs ->
+            { expwp with Node = UFCS { LHS = replaceExpr ufcs.LHS; RHS = replaceExpr ufcs.RHS } }
+        | Identifier _ -> expwp
+        | CollectionAccess ca ->
+            { expwp with Node = CollectionAccess { LHS = replaceExpr ca.LHS; Indices = List.map replaceExpr ca.Indices } }
+        | Literal _ -> expwp
+        | ExpressionSequence exprs ->
+            { expwp with Node = ExpressionSequence (List.map replaceExpr exprs) }
+        | Apply apply ->
+            { expwp with Node = Apply { LHS = replaceExpr apply.LHS; Arguments = List.map replaceExpr apply.Arguments } }
+        | MixfixOperator op ->
+            { expwp with Node = MixfixOperator { Name = op.Name; Arguments = List.map replaceExpr op.Arguments } }
+        | Tuple exprs ->
+            { expwp with Node = Tuple (List.map replaceExpr exprs) }
+        | List exprs ->
+            { expwp with Node = List (List.map replaceExpr exprs) }
+        | Record fields ->
+            { expwp with Node = Record (List.map (fun (name, expr) -> (name, replaceExpr expr)) fields) }
+        | RecordUsing (baseExpr, fields) ->
+            { expwp with Node = RecordUsing (replaceExpr baseExpr, List.map (fun (name, expr) -> (name, replaceExpr expr)) fields) }
+        | ListComprehension lc ->
+            { expwp with Node = ListComprehension { ItemValue = replaceExpr lc.ItemValue; Pattern = lc.Pattern; ListExpr = replaceExpr lc.ListExpr; IfPred = Option.map replaceExpr lc.IfPred } }
+        | Range range ->
+            { expwp with Node = Range { RangeStart = replaceExpr range.RangeStart; RangeStep = Option.map replaceExpr range.RangeStep; RangeStop = replaceExpr range.RangeStop } }
+        | While w ->
+            { expwp with Node = While { Predicate = replaceExpr w.Predicate; Body = replaceExpr w.Body } }
+        | ForIn forIn ->
+            { expwp with Node = ForIn { Pattern = replacePattern forIn.Pattern; ListExpr = replaceExpr forIn.ListExpr; Body = replaceExpr forIn.Body } }
+        | ForTo forTo ->
+            { expwp with Node = ForTo { Pattern = replacePattern forTo.Pattern; InitialValue = replaceExpr forTo.InitialValue; EndValue = replaceExpr forTo.EndValue; Body = replaceExpr forTo.Body } }
+        | ForDownTo forTo ->
+            { expwp with Node = ForDownTo { Pattern = replacePattern forTo.Pattern; InitialValue = replaceExpr forTo.InitialValue; EndValue = replaceExpr forTo.EndValue; Body = replaceExpr forTo.Body } }
+        | ReAssign (name, expr) ->
+            { expwp with Node = ReAssign (name, replaceExpr expr) }
+        | Let (pattern, expr) ->
+            { expwp with Node = Let (replacePattern pattern, replaceExpr expr) }
+        | Var (pattern, expr) ->
+            { expwp with Node = Var (replacePattern pattern, replaceExpr expr) }
+        | Match m ->
+            { expwp with Node = Match { ToMatch = replaceExpr m.ToMatch; Cases = List.map (fun (pat, expr) -> (replacePattern pat, replaceExpr expr)) m.Cases } }
+        | Lambda lambda ->
+            { expwp with Node = Lambda { Patterns = List.map replacePattern lambda.Patterns; Body = replaceExpr lambda.Body } }
+        | HandleEffect handle ->
+            { expwp with Node = HandleEffect { Handler = handle.Handler; InitialState = replaceExpr handle.InitialState; Body = replaceExpr handle.Body } }
+        | ResumeWith rw ->
+            { expwp with Node = ResumeWith { rw with Node = { rw.Node with Value = replaceExpr rw.Node.Value; HandlerState = replaceExpr rw.Node.HandlerState } } }
+
+    and public replacePatternVariable (map: Map<string, ExpressionWithPos>) (patwp: PatternWithPos) : PatternWithPos =
+        let replaceExpr = replaceVariable map
+        let replacePattern = replacePatternVariable map
+        let replaceType typ = replaceTypeVariable map typ
+        
+        match patwp.Node with
+        | VariablePattern _ -> patwp
+        | SymbolPattern _ -> patwp
+        | ApplyPattern (pat, pats) ->
+            { patwp with Node = ApplyPattern (replacePattern pat, List.map replacePattern pats) }
+        | LiteralPattern _ -> patwp
+        | TuplePattern pats ->
+            { patwp with Node = TuplePattern (List.map replacePattern pats) }
+        | ListPattern pats ->
+            { patwp with Node = ListPattern (List.map replacePattern pats) }
+        | RecordPattern fields ->
+            { patwp with Node = RecordPattern (List.map (fun (name, pat) -> (name, replacePattern pat)) fields) }
+        | MixfixOperatorPattern (name, pats) ->
+            { patwp with Node = MixfixOperatorPattern (name, List.map replacePattern pats) }
+        | AsPattern (pat1, pat2) ->
+            { patwp with Node = AsPattern (replacePattern pat1, replacePattern pat2) }
+        | WhenPattern (pat, expr) ->
+            { patwp with Node = WhenPattern (replacePattern pat, replaceExpr expr) }
+        | TypedPattern (pat, typ) ->
+            { patwp with Node = TypedPattern (replacePattern pat, replaceType typ) }
+        | AlternativePattern _ -> patwp
+        | Wildcard -> patwp
+
+    and public replaceTypeVariable (map: Map<string, ExpressionWithPos>) (typwp: TypeWithPos) : TypeWithPos =
+        let replaceType = replaceTypeVariable map
+        
+        match typwp.Node with
+        | NamedType _ -> typwp
+        | VariableType _ -> typwp
+        | RuleType (argTypes, retType) ->
+            { typwp with Node = RuleType (List.map replaceType argTypes, replaceType retType) }
+        | TupleType types ->
+            { typwp with Node = TupleType (List.map replaceType types) }
+        | RowRecordType fields ->
+            { typwp with Node = RowRecordType (List.map (fun (name, typ) -> (name, replaceType typ)) fields) }
+        | ParametrizedType (ident, types) ->
+            { typwp with Node = ParametrizedType (ident, List.map replaceType types) }
+        | ModuloEffectType (typ, effects) ->
+            { typwp with Node = ModuloEffectType (replaceType typ, effects) }
+        | WildcardType -> typwp
 
