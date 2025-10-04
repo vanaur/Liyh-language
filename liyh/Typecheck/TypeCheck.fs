@@ -154,17 +154,21 @@ module rec TypeCheck =
           /// The list of top-level accessible rules.
           Symbols: Map<Identifier, SymbolInfo list>
 
+          /// The accessible mixfix operators.
+          MixfixOperators: MixfixOperator list
+
           /// The current stream name
           CurrentFile: string
 
           /// All lines in the text file. It's lazy, so it costs almost nothing even if the file is huge.
           AllLines: string seq }
 
-        static member Empty streamName text =
+        static member Empty mixfixOperators streamName text =
             { Bindings = Map.empty
               MutableVariables = List.empty
               LambdaScope = 0
               Symbols = Map.empty
+              MixfixOperators = mixfixOperators
               CurrentFile = streamName
               AllLines = NodeInfo.getLines text }
 
@@ -177,9 +181,9 @@ module rec TypeCheck =
           CurrentEnv: Env
           NextId: int }
 
-        static member Empty streamName text =
+        static member Empty mixfixOperators streamName text =
             { CurrentSubst = Map.empty
-              CurrentEnv = Env.Empty streamName text
+              CurrentEnv = Env.Empty mixfixOperators streamName text
               NextId = 0 }
 
 
@@ -1452,7 +1456,15 @@ module rec TypeCheck =
               State: InferenceState }
 
         /// Manages type inference of application by combining the very similar cases of `Apply` and `UFCS`.
-        let private inferApplication (prefixArgs: (MonoType * ExpressionWithPos) list) (context: string) (callableExpr: ExpressionWithPos) (arguments: ExpressionWithPos list) (initialState: InferenceState) (errorQueue: ErrorQueue) (pos, pos') =
+        let private inferApplication
+            (prefixArgs: (MonoType * ExpressionWithPos) list)
+            (context: string)
+            (callableExpr: ExpressionWithPos)
+            (arguments: ExpressionWithPos list)
+            (initialState: InferenceState)
+            (errorQueue: ErrorQueue)
+            (pos, pos')
+            =
 
             let rec processArguments state argTypes exprs =
                 match exprs with
@@ -2239,6 +2251,23 @@ module rec TypeCheck =
                                 let elemType = Substitution.applySubstitution finalState.CurrentSubst tv
                                 Some { Type = elemType; State = finalState }
 
+            | MixfixOperator mixfix ->
+                let notation =
+                    state.CurrentEnv.MixfixOperators
+                    |> List.find (_.Name >> ( = ) mixfix.Name)
+
+                let holes =
+                    notation.BindingPatterns
+                    |> List.choose (function HolePart h -> Some h | _ -> None)
+
+                let map =
+                    mixfix.Arguments
+                    |> List.zip holes
+                    |> List.fold (fun acc (v, arg) -> Map.add v arg acc) Map.empty
+
+                let rewritten = withPosOverride exprwp (Liyh.Syntax.Replace.replaceVariable map notation.RewritesTo)
+                inferExpression rewritten state errorQueue
+
             | other -> failwithf "todo: infer expression for %A" other
 
         /// Attempts to infer the type of an expression, returning `None` otherwise with the error queue updated.
@@ -2457,7 +2486,7 @@ module rec TypeCheck =
 
         let public typeCheckModule (modl: Liyh.Module.ModuleInfo) (errorQueue: ErrorQueue) =
             let rules = Liyh.Module.Definitions.tryGetByType Liyh.Module.Definitions.Rule modl |> List.map _.Node
-            let mutable state = InferenceState.Empty (string modl.Identifier + ".liyh") modl.Text
+            let mutable state = InferenceState.Empty modl.MixfixOperators (string modl.Identifier + ".liyh") modl.Text
             let mutable success = true
 
             // 1. Collect all the signatures
