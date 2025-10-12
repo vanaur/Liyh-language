@@ -23,7 +23,6 @@
 
     <Compile Include="Typecheck/TypeCheck.fs" />
 
-    <Compile Include="Execution/Disctree.fs" />
     <Compile Include="Execution/Core/Core.fs" />
     <Compile Include="Execution/Core/PrettyPrinter.fs" />
     <Compile Include="Execution/Core/CoreCompiler.fs" />
