@@ -274,6 +274,8 @@ module SyntaxTree =
 
     let inline public removePos { Node = node } = node
 
+    let inline public removePosList (xs: List<_ WithPos>) = List.map removePos xs
+
     let inline public withPosOverride (b: WithPos<'t>) (a: WithPos<'t>) =
         withPosOf b (removePos a)
 
