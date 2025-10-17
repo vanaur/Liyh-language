@@ -64,6 +64,7 @@ module SyntaxTree =
         | Let of PatternWithPos * ExpressionWithPos
         | Var of PatternWithPos * ExpressionWithPos
         | Match of Match
+        | IfThenElse of IfThenElse
         | Lambda of Lambda
         | HandleEffect of Handle
         | ResumeWith of ResumeWith WithPos
@@ -107,6 +108,11 @@ module SyntaxTree =
     and public Match =
         { ToMatch: ExpressionWithPos
           Cases: (PatternWithPos * ExpressionWithPos) list }
+
+    and public IfThenElse =
+        { Condition: ExpressionWithPos
+          ThenBranch: ExpressionWithPos
+          ElseBranch: ExpressionWithPos option }
 
     and public ForTo =
         { Pattern: PatternWithPos
@@ -339,6 +345,8 @@ module Replace =
             { expwp with Node = Var (replacePattern pattern, replaceExpr expr) }
         | Match m ->
             { expwp with Node = Match { ToMatch = replaceExpr m.ToMatch; Cases = List.map (fun (pat, expr) -> (replacePattern pat, replaceExpr expr)) m.Cases } }
+        | IfThenElse ifte ->
+            { expwp with Node = IfThenElse { Condition = replaceExpr ifte.Condition; ThenBranch = replaceExpr ifte.ThenBranch; ElseBranch = Option.map replaceExpr ifte.ElseBranch } }
         | Lambda lambda ->
             { expwp with Node = Lambda { Patterns = List.map replacePattern lambda.Patterns; Body = replaceExpr lambda.Body } }
         | HandleEffect handle ->

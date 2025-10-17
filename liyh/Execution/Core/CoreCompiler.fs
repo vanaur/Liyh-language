@@ -418,6 +418,7 @@ module CoreCompiler =
         | ForDownTo forto -> compileForTo cstate forto true
         | Lambda lambda -> compileLamda cstate lambda
         | Match match' -> compileMatch cstate match'
+        | IfThenElse ifte -> compileIfThenElse cstate ifte
         | Record fields -> compileRecord cstate fields
         | RecordUsing(baseRecord, fields) -> compileRecordExtend cstate baseRecord fields
         | ReAssign(v, e) -> UpdateVariable(v, compileExpression cstate e)
@@ -651,6 +652,18 @@ module CoreCompiler =
         let cases =
             match'.Cases
             |> List.map (fun (patt, value) -> compilePattern cstate patt, compileExpression cstate value)
+
+        CoreTerm.Match
+            { ToMatch = toMatch
+              Cases = cases }
+
+    and private compileIfThenElse (cstate: State) (ifte: IfThenElse) =
+        let condition = compileExpression cstate ifte.Condition
+        let thenBranch = compileExpression cstate ifte.ThenBranch
+        let elseBranch = Option.map (compileExpression cstate) ifte.ElseBranch
+
+        let toMatch = condition
+        let cases = [ (trueSymbol, thenBranch); (falseSymbol, Option.defaultValue (simpleSymbol "unit") elseBranch) ]
 
         CoreTerm.Match
             { ToMatch = toMatch

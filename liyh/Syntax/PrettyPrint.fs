@@ -107,6 +107,12 @@ module PrettyPrint =
                     |> String.concat "\n"
 
                 sprintf "match %s with\n%s" (prettyPrintExpression m.ToMatch) cases
+            | IfThenElse ifte ->
+                sprintf
+                    "if %s then %s%s"
+                    (prettyPrintExpression ifte.Condition)
+                    (prettyPrintExpression ifte.ThenBranch)
+                    (Option.defaultValue "" (Option.map (sprintf " else %s" << prettyPrintExpression) ifte.ElseBranch))
             | Lambda l ->
                 sprintf
                     "[%s] -> %s"

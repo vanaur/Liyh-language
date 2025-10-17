@@ -66,9 +66,10 @@ module Parser =
 
     /// Reserved names and symbols for the language.
     let private reserved =
-        [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "is"; "as"; "_"; "->"; "["; "match"; "|>"
-          "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "="; "notation"; "using"; "use"
-          "innermost"; "outermost"; "unreachable"; "--"; "to"; "downto"; "type"; "type-alias"; "." ]
+        [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "is"; "as"; "_"; "->"; "["; "match"; "|>";
+          "if"; "then"; "else"; "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "=";
+          "notation"; "using"; "use"; "innermost"; "outermost"; "unreachable"; "--"; "to"; "downto"; "type";
+          "type-alias"; "."; ]
 
     /// Retrieves operator parts defined by user custom notations.
     let private reservedByUser (id: string) (operators: MixfixOperator list) =
@@ -753,6 +754,14 @@ module Parser =
             (spaces >>. parseMatchingCases)
             (fun expr cases -> Expression.Match { ToMatch = expr; Cases = cases })
 
+    let private parseIfThenElse =
+        pipe3
+            (skipString "if" >>. spaces >>. parseExpressionRef)
+            (skipString "then" >>. spaces >>. parseExpressionRef)
+            (opt (skipString "else" >>. spaces >>. parseExpressionRef))
+            (fun condition thenBranch elseBranch ->
+                IfThenElse { Condition = condition; ThenBranch = thenBranch; ElseBranch = elseBranch })
+
     // for <ITEM> in <COLLECTION> do <BODY>
     let private parseForIn =
         pipe3
@@ -785,6 +794,7 @@ module Parser =
               parseTuple
               parseBracedExpression
               parseWithPos parseMatch
+              parseWithPos parseIfThenElse
               parseWithPos parseWhileDo
               attempt (parseWithPos parseForIn)
               parseWithPos parseForTo
