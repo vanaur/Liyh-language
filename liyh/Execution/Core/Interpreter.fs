@@ -356,6 +356,10 @@ module Interpreter =
         let rec loop (state: RunningState) (term: CoreTerm) =
             let inline processNormalize () =
                 match term with
+
+                // Early return from the loop for irreducible terms
+                | (Literal _ | Closure _) -> (state, term)
+
                 | Variable v ->
                     match Environment.lookupVariable v state with
                     | Some value when value = term -> raise (CyclicBindingException v) //(state, term)
@@ -402,10 +406,6 @@ module Interpreter =
                 | RecordExtend { BaseRecord = None; Extension = fields } ->
                     let evaluatedFields = fields |> List.map (fun (a, b) -> a, snd (loop state b))
                     state, RecordExtend { BaseRecord = None; Extension = evaluatedFields }
-
-             // | Closure closure ->
-             //     let normalizedEnv = Map.map (fun _ term -> snd (loop state term)) closure.Env
-             //     (state, Closure { closure with Env = normalizedEnv })
 
                 | FunctionalApplication { Base = func; Arguments = args } ->
                     let state1, normalizedFunc = loop state func
