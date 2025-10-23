@@ -46,6 +46,12 @@ module Interpreter =
     exception private UncompletePatternMatchingException of string
     exception private ArityMismatchException of int * int * string
 
+    #if DEBUG
+    let private maxRecursionDepth = 443
+    #else
+    let private maxRecursionDepth = 1399
+    #endif
+
     /// For debugging purpose, count each call to a specific rule
     let mutable private ruleCallCounts = Dictionary<string * int, int>()
 
@@ -74,10 +80,12 @@ module Interpreter =
 
     [<Struct>]
     type private RunningState =
-        { VariableEnvironments: Substitution list }
+        { VariableEnvironments: Substitution list
+          RecursionDepth: int }
 
         static member Empty =
-            { VariableEnvironments = List.empty }
+            { VariableEnvironments = List.empty
+              RecursionDepth = 0 }
 
     module private Environment =
 
@@ -485,6 +493,14 @@ module Interpreter =
             processNormalize()
 
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
+
+            // Check the recursion depth and throw an error to avoid getting the .NET exception on stack overflow.
+            if state.RecursionDepth >= maxRecursionDepth then
+                let msg = sprintf "Maximum recursion depth exceeded (%d) while handling the symbol `%s`.\nThis is fixed and cannot be changed with this runtime." maxRecursionDepth symbol.Symbol
+                immediateRuntimeError RuntimeInternal msg
+
+            let state = { state with RecursionDepth = state.RecursionDepth + 1 }
+
             if symbol.IsVariable then
                 match Environment.lookupVariable symbol.Symbol state with
                 | None -> raise (FreeVariableException symbol.Symbol)
