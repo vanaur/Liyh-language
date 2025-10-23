@@ -425,7 +425,7 @@ module Interpreter =
                     | Closure closure ->
                         applyClosure closure normalizedArgs state
 
-                    | Symbol s ->
+                    | Symbol s ->   // TODO: handle outermost also here?
                         let newSymbol = Symbol { s with Children = s.Children @ normalizedArgs }
                         let _, result = applyRules finalState newSymbol
                         (finalState, result)
@@ -485,8 +485,6 @@ module Interpreter =
             processNormalize()
 
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
-            let newChildren = List.map (loop state >> snd) symbol.Children
-
             if symbol.IsVariable then
                 match Environment.lookupVariable symbol.Symbol state with
                 | None -> raise (FreeVariableException symbol.Symbol)
@@ -503,7 +501,24 @@ module Interpreter =
                 | false, _ -> ruleCallCounts.Add(key, 1)
                 | true, count -> ruleCallCounts.[key] <- count + 1
 
-                applyRules state (Symbol { symbol with Children = newChildren })
+                //
+                // If outermost rules exist for this symbol, then the children are not evaluated and only those
+                // rules (only the outermost rules) are applied. If the result has changed, then it means the
+                // rule applied, the outermost result is returned. If it has not changed, then the innermost
+                // rules are applied, this time reducing the children and testing only the innermost rules.
+                //
+
+                let term = Symbol symbol
+                let rules = globalEnv.GetRelevantRules term
+                let outRules, inRules = rules |> Array.partition _.Strategy.IsOutermost
+                let outermostResult = applyGivenRules state term outRules
+
+                if snd outermostResult <> term
+                then outermostResult
+                else
+                    let newChildren = List.map (loop state >> snd) symbol.Children
+                    let newTerm = Symbol { symbol with Children = newChildren }
+                    applyGivenRules state newTerm inRules
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
             let clen = closure.Parameters.Length
@@ -519,9 +534,7 @@ module Interpreter =
 
             loop newState (applySubstitution combinedEnv closure.Value)
 
-        and applyRules (state: RunningState) (term: CoreTerm) =
-            let rules = globalEnv.GetRelevantRules term
-
+        and applyGivenRules (state: RunningState) (term: CoreTerm) (rules: CoreRule array) =
             let result =
                 try Array.tryPick
                         (fun r -> try tryRule state globalEnv r term with InvalidRuleException _ as ex -> raise ex)
@@ -535,6 +548,10 @@ module Interpreter =
                 | ex -> raise ex
 
             result
+
+        and applyRules (state: RunningState) (term: CoreTerm) =
+            let rules = globalEnv.GetRelevantRules term
+            applyGivenRules state term rules
 
         and (|Builtin|_|) (state: RunningState) (term: CoreTerm) =
 
