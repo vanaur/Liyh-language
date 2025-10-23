@@ -163,8 +163,14 @@ module Interpreter =
 
     let mutable private whenClauseStack = Set.empty<CoreTerm>
 
-    let rec private matchTerm (globalEnv: GlobalEnvironment) (pattern: CoreTerm) (subject: CoreTerm) (subst: Substitution) =
-        let matchTerm pattern subject = matchTerm globalEnv pattern subject
+    let rec private matchTerm
+        (state: RunningState)
+        (globalEnv: GlobalEnvironment)
+        (pattern: CoreTerm)
+        (subject: CoreTerm)
+        (subst: Substitution)
+        =
+        let matchTerm pattern subject = matchTerm state globalEnv pattern subject
 
         match pattern, subject with
         | p, s when p = s -> Some subst
@@ -192,7 +198,7 @@ module Interpreter =
                 else
                     whenClauseStack <- whenClauseStack.Add wc
                     try
-                        let wcResult = normalize globalEnv wc
+                        let wcResult = normalize state globalEnv wc
                         match wcResult with
                         | Symbol { Symbol = "true" } -> Some subst'
                         | Symbol { Symbol = "false" } -> None
@@ -324,16 +330,16 @@ module Interpreter =
 
         apply term
 
-    and private tryRule (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
+    and private tryRule (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
         let result =
-            match matchTerm globalEnv rule.LHS term Map.empty with
+            match matchTerm state globalEnv rule.LHS term Map.empty with
             | None -> None
             | Some subst ->
                 let rewrite () = applySubstitution subst rule.RHS
                 match rule.WhenClause with
                 | Some wc ->
                     let wc = applySubstitution subst wc
-                    match normalize globalEnv wc with
+                    match normalize state globalEnv wc with
                     | Symbol { Symbol = "true" } -> Some rewrite
                     | Symbol { Symbol = "false" } -> None
                     | _ -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr wc, "tryRule"))
@@ -345,13 +351,13 @@ module Interpreter =
         | Some rewrite ->
             let result = rewrite()
             if rule.Strategy.IsInvalid then
-                match normalize globalEnv result with
+                match normalize state globalEnv result with
                 | Literal (String msg) -> raise (InvalidRuleException msg)
                 | other -> raise (InvalidRuleException (PrettyPrinter.prettyPrintExpr other))
             else
                 Some result
 
-    and private normalize (globalEnv: GlobalEnvironment) (term: CoreTerm) =
+    and private normalize (state: RunningState) (globalEnv: GlobalEnvironment) (term: CoreTerm) =
 
         let rec loop (state: RunningState) (term: CoreTerm) =
             let inline processNormalize () =
@@ -369,7 +375,7 @@ module Interpreter =
                 | CoreLet l ->
                     let state', evaluatedValue = loop state l.Value
 
-                    match matchTerm globalEnv l.Pattern evaluatedValue Map.empty with
+                    match matchTerm state globalEnv l.Pattern evaluatedValue Map.empty with
                     | None ->
                         let got = PrettyPrinter.prettyPrintExpr term
                         let expected = PrettyPrinter.prettyPrintExpr l.Pattern
@@ -454,7 +460,7 @@ module Interpreter =
                     let toMatch = snd (loop state match'.ToMatch) // innermost/strict
 
                     let inline chooser (pattern, value) =
-                        matchTerm globalEnv pattern toMatch Map.empty
+                        matchTerm state globalEnv pattern toMatch Map.empty
                         |> Option.map (fun subst -> subst, value)
 
                     match List.tryPick chooser match'.Cases with
@@ -518,7 +524,7 @@ module Interpreter =
 
             let result =
                 try Array.tryPick
-                        (fun r -> try tryRule globalEnv r term with InvalidRuleException _ as ex -> raise ex)
+                        (fun r -> try tryRule state globalEnv r term with InvalidRuleException _ as ex -> raise ex)
                         rules
                     |> Option.map (loop state)
                     |> Option.defaultValue (state, term)
@@ -747,11 +753,11 @@ module Interpreter =
             | _ -> None
             |> Option.map (fun r -> state, r)
 
-        snd (loop RunningState.Empty term)
+        snd (loop state term)
 
     and private run (globalEnv: GlobalEnvironment) (entry: CoreTerm) =
         try
-            normalize globalEnv entry
+            normalize RunningState.Empty globalEnv entry
         with
         | FreeVariableException s ->
             let msg = sprintf "Free variable detected: '%s." s
