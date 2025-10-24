@@ -15,6 +15,15 @@ module ErrorReporter =
         | RuntimeInternal // bugs that should not occur
         | Runtime // invalid rules during runtime, can be raised by the user
 
+        override this.ToString() =
+            match this with
+            | Syntax -> "Syntax"
+            | Type -> "Type checking"
+            | Semantic -> "Semantic"
+            | Package -> "Package"
+            | RuntimeInternal -> "Runtime internal"
+            | Runtime -> "User triggered runtime"
+
     type public ErrorReport =
         { ErrorType: ErrorType
           ErrorCode: string
