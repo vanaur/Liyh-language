@@ -477,7 +477,6 @@ module Interpreter =
                         let r = applySubstitution bindings rewrite
                         loop state r
 
-                | Builtin state result -> result
                 | Symbol s -> processSymbol state s
 
                 | Handle handle ->
@@ -534,7 +533,14 @@ module Interpreter =
                 else
                     let newChildren = List.map (loop state >> snd) symbol.Children
                     let newTerm = Symbol { symbol with Children = newChildren }
-                    applyGivenRules state newTerm inRules
+                    let innermostResult = applyGivenRules state newTerm inRules
+
+                    if snd innermostResult <> newTerm
+                    then innermostResult
+                    else
+                        match newTerm with
+                        | Builtin state result -> result // in practice, we woul add them in `inRules`.
+                        | _ -> state, newTerm
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
             let clen = closure.Parameters.Length
