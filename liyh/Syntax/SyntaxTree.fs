@@ -275,8 +275,8 @@ module SyntaxTree =
     let inline public withoutPos (p: Parser<_ WithPos, _>) =
         p |>> _.Node
 
-    let inline public withPosOf (b: WithPos<'t>) (a: 't) =
-        { b with Node = a }
+    let inline public withPosOf (b: WithPos<'a>) (a: 'b) =
+        { Node = a; Pos = b.Pos; Pos' = b.Pos' }
 
     let inline public removePos { Node = node } = node
 
