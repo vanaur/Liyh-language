@@ -338,28 +338,31 @@ module Interpreter =
 
         apply term
 
-    and private tryRule (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
+    and private tryRule (loop: RunningState -> CoreTerm -> RunningState * CoreTerm) (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
         let result =
             match matchTerm state globalEnv rule.LHS term Map.empty with
             | None -> None
             | Some subst ->
-                let rewrite () = applySubstitution subst rule.RHS
+                let evaluateWithBindings () =
+                    let newState = Environment.addBindings subst state
+                    loop newState rule.RHS
+
                 match rule.WhenClause with
                 | Some wc ->
                     let wc = applySubstitution subst wc
                     match normalize state globalEnv wc with
-                    | Symbol { Symbol = "true" } -> Some rewrite
+                    | Symbol { Symbol = "true" } -> Some evaluateWithBindings
                     | Symbol { Symbol = "false" } -> None
                     | _ -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr wc, "tryRule"))
                 | _ ->
-                    Some rewrite
+                    Some evaluateWithBindings
 
         match result with
         | None -> None
         | Some rewrite ->
             let result = rewrite()
             if rule.Strategy.IsInvalid then
-                match normalize state globalEnv result with
+                match snd result with
                 | Literal (String msg) -> raise (InvalidRuleException msg)
                 | other -> raise (InvalidRuleException (PrettyPrinter.prettyPrintExpr other))
             else
@@ -474,8 +477,8 @@ module Interpreter =
                     match List.tryPick chooser match'.Cases with
                     | None -> raise (UncompletePatternMatchingException (PrettyPrinter.prettyPrintExpr toMatch))
                     | Some (bindings, rewrite) ->
-                        let r = applySubstitution bindings rewrite
-                        loop state r
+                        let newState = Environment.addBindings bindings state
+                        loop newState rewrite
 
                 | Symbol s -> processSymbol state s
 
@@ -554,14 +557,14 @@ module Interpreter =
             let newEnvStack = combinedEnv :: state.VariableEnvironments
             let newState = { state with VariableEnvironments = newEnvStack }
 
-            loop newState (applySubstitution combinedEnv closure.Value)
+            loop newState closure.Value
 
         and applyGivenRules (state: RunningState) (term: CoreTerm) (rules: CoreRule array) =
             let result =
-                try Array.tryPick
-                        (fun r -> try tryRule state globalEnv r term with InvalidRuleException _ as ex -> raise ex)
+                try
+                    Array.tryPick
+                        (fun r -> try tryRule loop state globalEnv r term with InvalidRuleException _ as ex -> raise ex)
                         rules
-                    |> Option.map (loop state)
                     |> Option.defaultValue (state, term)
                 with
                 | InvalidRuleException msg ->
@@ -796,7 +799,8 @@ module Interpreter =
 
     and private run (globalEnv: GlobalEnvironment) (entry: CoreTerm) =
         try
-            normalize RunningState.Empty globalEnv entry
+            let initialState = Environment.pushVariableScope RunningState.Empty
+            normalize initialState globalEnv entry
         with
         | FreeVariableException s ->
             let msg = sprintf "Free variable detected: '%s." s
