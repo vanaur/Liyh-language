@@ -99,7 +99,7 @@ module PrettyPrinter =
                     let envItems =
                         env
                         |> Map.toList
-                        |> List.map (fun (k, v) -> sprintf "%s = %s" k (prettyPrintExprInternal v depth))
+                        |> List.map (fun (k, v) -> sprintf "'%s = %s" k (prettyPrintExprInternal v depth))
 
                     sprintf "{ %s }" (String.concat "; " envItems)
 

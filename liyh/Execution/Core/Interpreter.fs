@@ -375,7 +375,12 @@ module Interpreter =
                 match term with
 
                 // Early return from the loop for irreducible terms
-                | (Literal _ | Closure _) -> (state, term)
+                | Literal _ -> (state, term)
+
+                | Closure closure ->
+                    let evaluatedEnv = Map.map (fun _ v -> snd (loop state v)) closure.Env
+                    let evaluatedClosure = Closure { closure with Env = evaluatedEnv }
+                    (state, evaluatedClosure)
 
                 | Variable v ->
                     match Environment.lookupVariable v state with
@@ -551,8 +556,7 @@ module Interpreter =
                 raise (ArityMismatchException(clen, args.Length, PrettyPrinter.prettyPrintExpr (Closure closure)))
 
             let paramEnv = Map.ofList (List.zip closure.Parameters args)
-            let evaluatedClosureEnv = Map.map (fun _ term -> snd (loop state term)) closure.Env
-            let combinedEnv = Map.crushingMerge evaluatedClosureEnv paramEnv
+            let combinedEnv = Map.crushingMerge closure.Env paramEnv
 
             let newEnvStack = combinedEnv :: state.VariableEnvironments
             let newState = { state with VariableEnvironments = newEnvStack }
