@@ -777,19 +777,39 @@ module Interpreter =
                 | Closure closure, Literal (Integer n) ->
                     let action () = applyClosure closure [] state
                     let oldCache = Dictionary<_, _>(ruleCallCounts)
+                    
+                    // Warm-up
+                    for _ in 1 .. (min 5 (int n)) do
+                        ruleCallCounts <- Dictionary(oldCache)
+                        action() |> ignore
+
                     let _, result = action()
 
                     let times =
                         [| for _ in 1 .. int n ->
-                               ruleCallCounts <- Dictionary(oldCache)
-                               let sw = System.Diagnostics.Stopwatch.StartNew()
-                               action() |> ignore
-                               sw.Stop()
-                               sw.Elapsed.TotalMilliseconds |]
+                            ruleCallCounts <- Dictionary(oldCache)
+                            let sw = System.Diagnostics.Stopwatch.StartNew()
+                            action() |> ignore
+                            sw.Stop()
+                            sw.Elapsed.TotalMilliseconds |]
 
-                    let avgTime = Array.average times
+                    Array.sortInPlace times
 
-                    Some (RecordExtend { BaseRecord = None; Extension = [ ("time", Literal (Float avgTime)); ("result", result) ] })
+                    let median = times.[times.Length / 2]
+                    let mean = Array.average times
+                    let stdDev = sqrt (Array.averageBy (fun t -> (t - mean) ** 2.0) times)
+
+                    Some (RecordExtend { 
+                        BaseRecord = None
+                        Extension = [ 
+                            ("mean", Literal (Float mean))
+                            ("median", Literal (Float median))
+                            ("stdDev", Literal (Float stdDev))
+                            ("min", Literal (Float times.[0]))
+                            ("max", Literal (Float times.[times.Length - 1]))
+                            ("result", result)
+                        ] 
+                    })
                 | _ -> raise (InvalidRuleException "`bench` expect an anonymous function and an integer literal.")
 
             | _ -> None
