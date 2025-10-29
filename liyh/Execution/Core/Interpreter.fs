@@ -78,13 +78,19 @@ module Interpreter =
 
     type private Substitution = Map<string, CoreTerm>
 
+    type private HandlerEnvironment =
+        { Handler: string
+          State: CoreTerm }
+
     [<Struct>]
     type private RunningState =
         { VariableEnvironments: Substitution list
-          RecursionDepth: int }
+          RecursionDepth: int
+          HandlerEnvironment: HandlerEnvironment list }
 
         static member Empty =
             { VariableEnvironments = List.empty
+              HandlerEnvironment = List.empty
               RecursionDepth = 0 }
 
     module private Environment =
@@ -154,14 +160,17 @@ module Interpreter =
 
         let rulesLists, handlersLists =
             defs
-            |> Seq.fold (fun (rm, hm) -> function
+            |> Seq.fold (fun (rm, hm) ->
+                function
                 | Rule r ->
                     let sym = projectSymbol r.LHS
                     let updated = r :: (Map.tryFind sym rm |> Option.defaultValue [])
                     Map.add sym updated rm, hm
+
                 | Handler h ->
-                    let sym = projectSymbol h.LHS
-                    rm, Map.add sym (h :: (Map.tryFind sym hm |> Option.defaultValue [])) hm
+                    let updated = h :: (Map.tryFind h.HandlerName hm |> Option.defaultValue [])
+                    rm, Map.add h.HandlerName updated hm
+
             ) (rmInit, hmInit)
 
         let rulesMap = rulesLists |> Map.map (fun _ v -> v |> List.rev |> List.toArray)
@@ -487,17 +496,20 @@ module Interpreter =
 
                 | Symbol s -> processSymbol state s
 
-                | Handle handle ->
-                    failwith "TODO: handle"
-
-                | Resume resume ->
-                    failwith "TODO: resume"
+                | Handle handle -> processHandle state handle
+                | Resume resume -> processResume state resume
 
                 | _ ->
                     // Unevaluated value and unchanged state
                     (state, term)
 
             processNormalize()
+
+        and processHandle (state: RunningState) (handle: CoreHandle) =
+            failwith "TODO"
+
+        and processResume (state: RunningState) (resume: CoreResume) =
+            failwith "TODO"
 
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
 

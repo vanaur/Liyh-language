@@ -11,8 +11,7 @@ module Helper =
         Symbol
             { Symbol = name
               Children = args
-              IsVariable = false
-              HasEffect = false }
+              IsVariable = false }
 
     let public simpleSymbol (name: string) =
         symbol name []
@@ -780,6 +779,7 @@ module CoreCompiler =
     and private compileDefinition (cstate: State) (definition: TopLevelWithPos) =
         match removePos definition with
         | TopLevel.Rule rule -> compileRule cstate rule
+        | TopLevel.Handler handler -> compileHandler cstate handler
         | other -> failwithf "Todo: %A" other
 
     and private compileRule (cstate: State) (rule: Rule) =
@@ -794,6 +794,24 @@ module CoreCompiler =
         CoreDefinition.Rule
             { LHS = lhs
               RHS = body
+              WhenClause = whenClause
+              Strategy = strategy }
+
+    and private compileHandler (cstate: State) (handler: Handler) =
+        let body = compileExpression cstate handler.Body
+        let name = handler.Name
+        let hstate = compilePattern cstate handler.State
+        let pattern = compilePattern cstate handler.Pattern
+        let whenClause = Option.map (compileExpression cstate) handler.WhenClause
+        let strategy = Option.defaultValue Innermost handler.Strategy
+
+        let lhs = pattern
+
+        CoreDefinition.Handler
+            { HandlerName = name
+              LHS = lhs
+              RHS = body
+              State = hstate
               WhenClause = whenClause
               Strategy = strategy }
 

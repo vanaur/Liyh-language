@@ -44,8 +44,7 @@ type public CoreTerm =
 and public CoreSymbol =
     { Symbol: string
       Children: CoreTerm list
-      IsVariable: bool
-      HasEffect: bool }
+      IsVariable: bool }
 
 and public CoreLiteral =
     | Integer of bigint
@@ -99,9 +98,10 @@ and public CoreRule =
       Strategy: Liyh.Syntax.SyntaxTree.RewritingStrategy }
 
 and public CoreHandler =
-    { LHS: CoreTerm
+    { HandlerName: string
+      LHS: CoreTerm
       RHS: CoreTerm
-      State: string
+      State: CoreTerm
       WhenClause: CoreTerm option
       Strategy: Liyh.Syntax.SyntaxTree.RewritingStrategy }
 
