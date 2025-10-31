@@ -134,6 +134,20 @@ module Interpreter =
                 let newEnv = Map.crushingMerge currentEnv bindings
                 { state with VariableEnvironments = newEnv :: rest }
 
+        /// Evaluates `action` within a scoped environment where the given bindings have been added.
+        /// After the evaluation, the variable environment is popped, and the result of `action` return.
+        let inline public withinScope
+            (state: RunningState)
+            (subst: Substitution option)
+            (action: RunningState -> CoreTerm -> RunningState * CoreTerm)
+            (term: CoreTerm)
+            =
+            let scopedState = pushVariableScope state
+            let boundState = Option.map (fun a -> addBindings a scopedState) subst |> Option.defaultValue scopedState
+            let newState, result = action boundState term
+            let poppedState = popVariableScope newState
+            poppedState, result
+
     type private GlobalEnvironment =
         { RulesMap: Map<string, CoreRule array>
           HandlersMap: Map<string, CoreHandler array> }
@@ -353,8 +367,7 @@ module Interpreter =
             | None -> None
             | Some subst ->
                 let evaluateWithBindings () =
-                    let newState = Environment.addBindings subst state
-                    loop newState rule.RHS
+                    Environment.withinScope state (Some subst) loop rule.RHS
 
                 match rule.WhenClause with
                 | Some wc ->
@@ -387,6 +400,7 @@ module Interpreter =
                 | Literal _ -> (state, term)
 
                 | Closure closure ->
+                    // idea: add a field `IsEvaluated: bool` to avoid computing again and again
                     let evaluatedEnv = Map.map (fun _ v -> snd (loop state v)) closure.Env
                     let evaluatedClosure = Closure { closure with Env = evaluatedEnv }
                     (state, evaluatedClosure)
@@ -411,17 +425,17 @@ module Interpreter =
                         (newState, simpleSymbol "unit")
 
                 | TermSequence terms ->
-                    let scopedState = Environment.pushVariableScope state
-                    let mutable currentState = scopedState
-                    let mutable lastResult = simpleSymbol "unit"
+                    Environment.withinScope state None (fun scopedState _ ->
+                        let mutable currentState = scopedState
+                        let mutable lastResult = simpleSymbol "unit"
 
-                    for term in terms do
-                        let newState, result = loop currentState term
-                        currentState <- newState
-                        lastResult <- result
+                        for term in terms do
+                            let newState, result = loop currentState term
+                            currentState <- newState
+                            lastResult <- result
 
-                    let restoredState = Environment.popVariableScope currentState
-                    (restoredState, lastResult)
+                        currentState, lastResult
+                    ) (simpleSymbol "unit")
 
                 | RecordExtend { BaseRecord = Some baseRecord; Extension = extensionFields } ->
                     let state', evaluatedBaseRecord = loop state baseRecord
@@ -490,9 +504,7 @@ module Interpreter =
 
                     match List.tryPick chooser match'.Cases with
                     | None -> raise (UncompletePatternMatchingException (PrettyPrinter.prettyPrintExpr toMatch))
-                    | Some (bindings, rewrite) ->
-                        let newState = Environment.addBindings bindings state
-                        loop newState rewrite
+                    | Some (bindings, rewrite) -> Environment.withinScope state (Some bindings) loop rewrite
 
                 | Symbol s -> processSymbol state s
 
@@ -793,7 +805,7 @@ module Interpreter =
                 | Closure closure, Literal (Integer n) ->
                     let action () = applyClosure closure [] state
                     let oldCache = Dictionary<_, _>(ruleCallCounts)
-                    
+
                     // Warm-up
                     for _ in 1 .. (min 5 (int n)) do
                         ruleCallCounts <- Dictionary(oldCache)
@@ -815,16 +827,16 @@ module Interpreter =
                     let mean = Array.average times
                     let stdDev = sqrt (Array.averageBy (fun t -> (t - mean) ** 2.0) times)
 
-                    Some (RecordExtend { 
+                    Some (RecordExtend {
                         BaseRecord = None
-                        Extension = [ 
+                        Extension = [
                             ("mean", Literal (Float mean))
                             ("median", Literal (Float median))
                             ("stdDev", Literal (Float stdDev))
                             ("min", Literal (Float times.[0]))
                             ("max", Literal (Float times.[times.Length - 1]))
                             ("result", result)
-                        ] 
+                        ]
                     })
                 | _ -> raise (InvalidRuleException "`bench` expect an anonymous function and an integer literal.")
 
