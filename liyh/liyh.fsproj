@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -24,6 +24,7 @@
     <Compile Include="Typecheck/TypeCheck.fs" />
 
     <Compile Include="Execution/Core/Core.fs" />
+    <Compile Include="Execution/Core/AlphaConversion.fs" />
     <Compile Include="Execution/Core/PrettyPrinter.fs" />
     <Compile Include="Execution/Core/CoreCompiler.fs" />
     <Compile Include="Execution/Core/Builtin.fs" />

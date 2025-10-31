@@ -4,6 +4,27 @@
 
 namespace Liyh.Execution.Core
 
+[<RequireQualifiedAccess>]
+module private UniqueName =
+    open System.Collections.Concurrent
+    open System.Text
+
+    let private counters = ConcurrentDictionary<string,int>()
+
+    let private sanitize (s: string) =
+        if System.String.IsNullOrWhiteSpace s then "x"
+        else
+            let sb = StringBuilder()
+            for c in s do
+                if System.Char.IsLetterOrDigit c || c = '_' then sb.Append(c) |> ignore
+                else sb.Append('_') |> ignore
+            sb.ToString()
+
+    let public get (baseName: string) =
+        let baseName = sanitize baseName
+        let id = counters.AddOrUpdate(baseName, 1, fun _ old -> old + 1)
+        sprintf "_v%s%d" baseName id
+
 module Helper =
     open Liyh.Syntax.SyntaxTree
 
@@ -60,11 +81,6 @@ module Helper =
             { ToMatch = if'
               Cases = [ (trueSymbol, then'); (falseSymbol, else') ] }
 
-    let private uniqueNameCounter = ref 0
-    let public getUniqueVariable (baseName: string) =
-        let id = System.Threading.Interlocked.Increment uniqueNameCounter
-        sprintf "_v%s%d" baseName id
-
     type public WhileLoopVariableSource =
         | FromPattern of PatternWithPos
         | FromString of string
@@ -86,7 +102,7 @@ module Helper =
 
         let runningVariableName =
             match variableNameSource with
-            | FromPattern pattern -> tryGetVariable pattern |> Option.defaultValue (getUniqueVariable "")
+            | FromPattern pattern -> tryGetVariable pattern |> Option.defaultValue (UniqueName.get "")
             | FromString name -> name
 
         let runningVariable = Variable runningVariableName
@@ -456,10 +472,10 @@ module CoreCompiler =
         let compiledList = compileExpression cstate lc.ListExpr
         let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
 
-        let listVar = getUniqueVariable "lc_list"
-        let lenVar = getUniqueVariable "lc_length"
-        let indexVar = getUniqueVariable "lc_index"
-        let resultVar = getUniqueVariable "lc_result"
+        let listVar = UniqueName.get "lc_list"
+        let lenVar = UniqueName.get "lc_length"
+        let indexVar = UniqueName.get "lc_index"
+        let resultVar = UniqueName.get "lc_result"
 
         let bindList =
             CoreLet { Pattern = Variable listVar; Value = compiledList; IsVariable = false }
@@ -583,9 +599,9 @@ module CoreCompiler =
         let compiledList = compileExpression cstate loop.ListExpr
         let compiledBody = compileExpression cstate loop.Body
 
-        let listVar = getUniqueVariable "forin_list"
-        let lenVar = getUniqueVariable "forin_length"
-        let indexVar = getUniqueVariable "forin_index"
+        let listVar = UniqueName.get "forin_list"
+        let lenVar = UniqueName.get "forin_length"
+        let indexVar = UniqueName.get "forin_index"
 
         // Stores the list in a variable
         let bindList =
@@ -743,7 +759,7 @@ module CoreCompiler =
     and private compileAlternativePattern (alternatives: LiteralWithPos list) =
         // (A | B | C) -> 'x when 'x ∈ { A, B, C }
         let alternatives = list (List.map compileLiteral alternatives)
-        let uv = Variable (getUniqueVariable "altp")
+        let uv = Variable (UniqueName.get "altp")
         
         WhenClause(uv, contains alternatives uv)
 
@@ -777,10 +793,13 @@ module CoreCompiler =
     // --- Top Level --- //
 
     and private compileDefinition (cstate: State) (definition: TopLevelWithPos) =
-        match removePos definition with
-        | TopLevel.Rule rule -> compileRule cstate rule
-        | TopLevel.Handler handler -> compileHandler cstate handler
-        | other -> failwithf "Todo: %A" other
+        let compiled =
+            match removePos definition with
+            | TopLevel.Rule rule -> compileRule cstate rule
+            | TopLevel.Handler handler -> compileHandler cstate handler
+            | other -> failwithf "Todo: %A" other
+
+        AlphaConversion.alphaConversionDefinition UniqueName.get compiled
 
     and private compileRule (cstate: State) (rule: Rule) =
         let body = compileExpression cstate rule.Body
@@ -834,6 +853,8 @@ module CoreCompiler =
         |> List.concat
         |> sortRules
         |> List.map (compileDefinition cstate)
+
+    // TODO: sort handlers, too!
 
     and private sortRules (definitions: TopLevelWithPos list) =
 
