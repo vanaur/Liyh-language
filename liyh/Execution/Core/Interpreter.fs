@@ -333,11 +333,11 @@ module Interpreter =
 
                 // Early return from the loop for irreducible terms
                 | Literal _ -> (state, term)
+                | Closure { IsEvaluated = true } -> state, term
 
                 | Closure closure ->
-                    // idea: add a field `IsEvaluated: bool` to avoid computing again and again
                     let evaluatedEnv = Map.map (fun _ v -> snd (loop state v)) closure.Env
-                    let evaluatedClosure = Closure { closure with Env = evaluatedEnv }
+                    let evaluatedClosure = Closure { closure with Env = evaluatedEnv; IsEvaluated = true }
                     (state, evaluatedClosure)
 
                 | Variable v ->

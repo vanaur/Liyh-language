@@ -62,6 +62,7 @@ and public CoreTermMatch =
 
 and public Closure =
     { Env: Map<string, CoreTerm>
+      IsEvaluated: bool
       Parameters: string list
       Value: CoreTerm }
 

@@ -100,6 +100,7 @@ module AlphaConversion =
 
             Closure
                 { Env = newEnv
+                  IsEvaluated = c.IsEvaluated
                   Parameters = newParams
                   Value = newValue }
 

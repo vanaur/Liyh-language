@@ -155,6 +155,7 @@ module Helper =
                     Value = body } ->
             Closure
                 { Env = env
+                  IsEvaluated = false
                   Parameters = params
                   Value = flattenTermSequence body }
         | FunctionalApplication { Base = func; Arguments = args } ->
@@ -659,6 +660,7 @@ module CoreCompiler =
 
         Closure
             { Env = capturedEnv
+              IsEvaluated = false
               Parameters = parameters
               Value = body }
 
