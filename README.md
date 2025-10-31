@@ -4,224 +4,54 @@
     <h1>ＬＩＹＨ</h1>
 </div>
 
-<center>
-    <i>Liyh</i> is a modern, statically typed, general-purpose programming language based on the symbolic rewriting paradigm but extended to support a functional and imperative style, featuring one-shot algebraic effects as well as a flexible syntax thanks to indentation and mixfix operators.
-</center>
+<div align="center">
+    Liyh is a modern, <b>statically typed</b>, <b>general-purpose</b> programming language rooted in a <b>rule-based symbolic term rewriting</b> paradigm, extended to support both <b>functional</b> and <b>imperative</b> styles. It features <b>one-shot algebraic effects</b> and offers a <b>flexible</b> and <b>light</b> syntax, thanks to indentation and mixfix operators.
+</div>
 
-# Description & features
+<div align="center">
+    <h4><a href="TODO">Website</a> | <a href = "TODO">Try it out</a></h4>
+</div>
 
-> [!NOTE]
-> All information can be found [on the project website](/TODO)!
+<div align="right">
+    <sub>— Built with ❤︎ by <a href="https://github.com/vanaur">vanaur</a></sub>
+</div>
 
-<br/>
+## Description
+Liyh is a programming language project exploring the paradigm based on symbolic rewriting rules. It is not new, but it is not popular either, and is often too specific, too academic, or not really explored in the context of general programming. The aim is to make it fun, practical and original to use.
 
-Liyh is a quite flexible language. Its core is based on [term rewriting](https://en.wikipedia.org/wiki/Rewriting#Term_rewriting_systems) and abstract, undefined symbols are first class citizen. For a language to be useful, it may be extended with a pleasant syntax and some more features. This is what was done with Liyh, featuring overall
+It is worth noting that Liyh was not designed "top-down" but "bottom-up": starting solely from a "symbolic term rewriting system" to arrive at a feature-rich programming language, without breaking the foundations. This, we hope, makes Liyh consistent and "harmonious".
 
- - rules and term rewriting as the execution strategy and main paradigm
- - `innermost` ("strict") and `outermost` ("lazy") evaluation
- - closures / lambda functions and functional application
- - `let`-expressions and mutables (but not shared) variables
- - powerful pattern matching (via `match`, `let` and equational style function definition), including
-   - non-linear patterns
-   - `as` patterns
-   - conditional patterns
-   - types as patterns
-   - custom notation as patterns
-   - alternative patterns
-   - pattern matching on almost every expressions the language provide
-   - pattern matching on functions (and their parameters)
- - mixfix operators (called `notation`) with explicit definition, precedence and associativity
- - loops (`for` and `while`)
- - list and list comprehensions
- - one-shot algebraic effect & handlers
- - Static type-checking and strongly typed, with
-   - compile-time type checking
-   - type inference (and optional type annotations)
-   - ad-hoc and parametric polymorphism
-   - algebraic data types
-   - row-polymorphic records
- - indentation sensitive syntax
- - simple module system (one file = one module, private members by default)
- - frontend implementation efforts
-   - efforts to ensure that the compiler returns meaningful error messages
-   - incremental and parallel compilation between files (still to be done, but the foundation has been laid)
-   - small, readable code base
+### Key features
+The language has several features, but the most interesting ones are probably...
 
-as well as other details...
+ - **Rule-based:** your programme defines a system of rewriting rules (with priorities, strategies and fancy syntax);
+ - **Powerful pattern matching:** beyond the usual pattern matching, you can use non-linear patterns, conditional patterns, operator patterns, disjoint patterns, symbol patterns, etc.
+ - **Functional:** the declarative style lends itself well to functional programming, notably there are no references, everything is immutable by default, recursion is idiomatic, and there are closures and first-class functions. There is no support for currying.
+ - **Imperative:** it would be foolish to do without loops and local, not shared mutable variables in order to be a "purist"; loops and mutable variables are useful, so they have been added.
+ - **One-shot algebraic effects:** control flow is extended with one-shot algebraic effects, in a relatively original and practical form. Side effects are encapsulated under algebraic effects.
+ - **Statically typed:** your programme will be statically checked for type consistency; rules are also typed and offer ad-hoc and parametric polymorphism.
+ - **Measure's unit system:** you can write a programme that manipulates values with units of measurement; Liyh guarantees their consistency at compile-time and their conversion at runtime. You can define your own systems.
+ - **Symbolic-wise:** it is not possible to combine "static typing" and "abstract/undefined symbols", but it is possible to frame pure symbolic behaviour to achieve a programme that is ultimately statically typed and flexible. We invented what we call "symbolic effects" to address this problem.
+ - **Mixfix operators:** the language supports the definition of mixfix operators. You can define fancy notations!
 
-In short, Liyh is designed as a modern general-purpose language built around a lightweight and consistent core. All features, with a few exceptions, flow naturally from the basic paradigm and are simply made more accessible through the language.
+One thing that was very important to us during the design process was consistency: we want a consistent language, not just a collection of cool features. We hope that this desire is reflected in the final product.
 
-The language is inspired by F#, Python, Mathematica, Erlang, Haskell and others. The language is intended to be very accessible to anyone, but no less capable, allowing it to be adapted to the preferred or appropriate style.
-
-To learn more, visit [the website](/TODO)! 🧙
-
-# Basic examples
-
-> [!NOTE]
-> So that you are not too confused by the notations, here are the basic rules:
-> - `'a` designates a variable binding for pattern matching.
-> - `foo[x₁, x₂, ..., xₙ]` is is basically a function call.
-> - `bar[x₁, x₂, ..., xₙ] -> ...` define a function/rule.
->
-> Everything else should be understandable!
-
-<details><summary><b>Hello, world</b></summary>
+### Hello, world!
+Visit the website for a more interesting overview of the language, but in the meantime, here is an example of program:
 
 ```
 use Liyh
 
-main[] ->
-    using terminal() handle
-        println["Hello, world!"]
-```
-
-This example use algebraic effect to print something to the terminal. All effects are handled by algebraic effects & handlers, up to some debugging-purpose native functions. That's why this "hello, world" can seem cumbersome. The language provides access to native IO functions for debugging, without having to go through algebraic effects, in order to have a quick way to test things:
-
- - `log['x]` : displays a language element on the screen; it is equivalent to `printfn "%A" x` in F# for example.
- - `bench['action, 'n]` : performs a benchmark `'n` times of the application of `'action` (which must be a closure) and returns a record `{ result = ..., time = ... }`.
-
-</details>
-
-<details><summary><b>Symbolic Peano arithmetic</b></summary>
-
-```
-use Liyh
-
-peano_add[zero, 'n] -> 'n
-peano_add[succ['n], 'm] -> succ[peano_add['n, 'm]]
-
-to_int[zero] -> 0
-to_int[succ['n]] -> 1 + to_int['n]
+greeting[name] ->
+    "Oh, hello {name}! And welcome to Liyh!"
 
 main[] ->
-    let n1 = succ[succ[succ[zero]]]
-    let n2 = succ[zero]
-    let n3 = to_int[peano_add[n1, n2]]
-
-    using terminal() handle
-        println["{n1} + {n2} = {n3}"]
+    using Terminal() handle
+        let greet = greeting["awesome user"]
+        println["Message: {greet}"]
 ```
 
-This example illustrate the symbolic term rewriting process in action by defining the _rules_ `peano_add` and `to_int` up to some patterns. Note that _no_ definition of the symbols have to be provided, only the relation between them is relevant.
-
-</details>
-
-<details><summary><b>Counter algebraic effect</b></summary>
-
-```
-use Liyh
-
-my_counter('state)[increment] -> () with 'state + 1
-my_counter('state)[get_count] -> 'state
-
-main[] ->
-    let initial_count = 28
-
-    using my_counter(initial_count) handle
-        increment[]
-        increment[]
-        let result = get_count[]
-
-        using terminal() handle
-            println["The counter gives {result}!"]
-```
-
-... and this would display `"The counter gives 30!"`. This example shows how to define handlers for the _de facto_ effects `increment` and `get_count` that manage a counter, nammed `state` in each handler. The continuation, often
-
-Continuation, which is usually manipulated directly in effect languages, is implicit here, and handlers are just an extension of basic rewriting rules. Note that this can be achieved because Liyh's algebraic effects are _one-shot_, meaning that continuation can only be launched once at most. This has advantages and limitations.
-
-</details>
-
-<details><summary><b>Some pattern matching</b></summary>
-
-```
-eq['a, 'a] -> true
-eq[_, _] -> false
-
-fib[(0 | 1) as 'n] -> 'n
-fib['n] -> fib['n - 1] + fib['n - 2]
-
-incr['n] -> 'n + 1
-decr['n] -> 'n - 1
-incr[decr['n]] outermost -> 'n
-decr[incr['n]] outermost -> 'n
-
-length[{}] -> 0
-length[_ :: 'xs] -> 1 + length['xs]
-
-animal_name[simba] -> lion
-animal_name[nemo] -> fish
-animal_name[dumbo] -> elephant
-```
-
-This example illustrate some pattern-matching capabilities of the language. Note that each function is defined as a rule that must match a pattern.
-
-</details>
-
-<details><summary><b>State effect & handlers</b></summary>
-
-```
-use Liyh
-
-my_state('state)[puts['new_state]] -> () with 'new_state
-my_state('state)[get] -> 'state
-
-update_with['n] when 'n % 2 == 0 -> puts['n :: get]
-update_with[_] -> ()
-
-main[] ->
-    using my_state({}) handle
-        for k = 0 to 20 do
-            update_with[k]
-        
-        using terminal() handle
-            let result = get[]
-            println["Result: {result}"]
-```
-
-... and this would display `{ 0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20 }`. This illustrate that, within an handled environment, we can call functions that use effects (regardless of the handler) and that effects are composable: we use `puts`, `get`, and `println` in a layered manner.
-
-</details>
-
-<details><summary><b>Mixfix notations</b></summary>
-
-
-```
-use Liyh
-
-notation |'x| -> abs['x]
-    name: "absolute-value"
-    associativity: none
-    precedence: 10
-
-notation <'x|'y> -> braket['x, 'y]
-    name: "bra-ket"
-    associativity: none
-    precedence: 10
-
-notation schedule 'what inviting 'who at 'time near 'place -> schedule['what, 'who, 'time, 'place]
-    name: "scheduling"
-    associativity: none
-    precedence: 8
-
-notation 't pm -> hour['t, pm]
-    name: "pm-hour"
-    associativity: none
-    precedence: 12
-
-main[] ->
-    let example1 = <17|21>
-    let example2 = |3 - 7|
-    let example3 = schedule dinner inviting Alice at 18pm near fountain
-```
-
-This example illustrates some definitions of notations, or so-called "mixfix" operators. In particular, we see that the definition consists of alternating variables and fixed parts, which allows us to define useful notations, such as the absolute value, specific to the domain, such as the Dirac Bra-Ket notation, or more natural ones such as the scheduling.
-
-Note also, once again, that undefined symbols are first-class values, which is why we can write "`schedule dinner inviting Alice at 18pm near fountain`" where `dinner`, `Alice`, `18pm` and `fountain` are symbols but not part of the notation.
-
-It should be noted that notations are _not_ macros.
-
-</details>
+This example illustrates the use of algebraic effects to display information on the screen, as well as the syntax of the language and the definition of two rules, `greeting` and `main`.
 
 ## Every contribution is worthwhile 💪
 The project is in the development and reflexion phase, so many things are
@@ -231,6 +61,8 @@ The project is in the development and reflexion phase, so many things are
 - may be more effectively implemented
 
 Don't hesitate to make your contribution to the project. Even the smallest report of spelling mistakes will be appreciated. If you have any other suggestions for the project, we will be happy to hear from you.
+
+Furthermore, the greatest contribution you can make to the project is to use it. If you would like to share what you have done with Liyh, please do not hesitate to let us know.
 
 ## Credits & acknowledgements
 Persons:
