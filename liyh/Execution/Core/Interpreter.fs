@@ -140,8 +140,9 @@ module Interpreter =
             (state: RunningState)
             (subst: Substitution option)
             (action: RunningState -> CoreTerm -> RunningState * CoreTerm)
-            (term: CoreTerm)
+            (term: CoreTerm option)
             =
+            let term = Option.defaultValue (simpleSymbol "unit") term
             let scopedState = pushVariableScope state
             let boundState = Option.map (fun a -> addBindings a scopedState) subst |> Option.defaultValue scopedState
             let newState, result = action boundState term
@@ -222,14 +223,14 @@ module Interpreter =
             match matchTerm a c subst with
             | None -> None
             | Some subst' ->
-                let wc = applySubstitution subst' b
-
-                if whenClauseStack.Contains wc then
+                if whenClauseStack.Contains b then
                     None // Cycle detected in the when-clause, pattern failure
                 else
-                    whenClauseStack <- whenClauseStack.Add wc
+                    whenClauseStack <- whenClauseStack.Add b
                     try
-                        let wcResult = normalize state globalEnv wc
+                        let _, wcResult =
+                            Environment.withinScope state (Some subst') (fun s _ -> s, normalize s globalEnv b) None
+
                         match wcResult with
                         | Symbol { Symbol = "true" } -> Some subst'
                         | Symbol { Symbol = "false" } -> None
@@ -237,7 +238,7 @@ module Interpreter =
                     finally
                         // As it stands, the `try-finally` is unnecessary, but in case of doubt where the exception
                         // is caught and the interpreter is restarted, this is the step that must be taken.
-                        whenClauseStack <- whenClauseStack.Remove wc
+                        whenClauseStack <- whenClauseStack.Remove b
 
         | Symbol s1, Symbol s2 when s1.Children.Length = s2.Children.Length ->
             let rec matchChildren i subst =
@@ -293,89 +294,23 @@ module Interpreter =
 
         | _ -> None
 
-    and private applySubstitution (subst: Substitution) (term: CoreTerm) =
-
-        let rec apply (term: CoreTerm) =
-            match term with
-            | Literal _ -> term
-
-            | Variable v ->
-                match subst.TryGetValue v with
-                | true, term' -> term'
-                | _ -> term
-
-            | Symbol ({ IsVariable = true } as s) ->
-                match subst.TryGetValue s.Symbol with
-                | true, Symbol f ->
-                    let newChildren = List.map apply s.Children
-                    Symbol { f with Children = f.Children @ newChildren }
-
-                | true, Closure closure ->
-                    let newChildren = List.map apply s.Children
-                    if newChildren.IsEmpty then Closure closure
-                    else FunctionalApplication { Base = Closure closure; Arguments = newChildren }
-
-                | true, f -> raise (NonApplicationSymbolException (PrettyPrinter.prettyPrintExpr f))
-
-                | _ -> term
-
-            | Symbol s ->
-                let newChildren = List.map apply s.Children
-                Symbol { s with Children = newChildren }
-
-            | Closure closure ->
-                let newEnv = Map.map (fun _ v -> apply v) closure.Env
-                let newVal = apply closure.Value
-                Closure { closure with Env = newEnv; Value = newVal }
-
-            | Match match' ->
-                Match {
-                    ToMatch = apply match'.ToMatch
-                    Cases = List.map (fun (a, b) -> apply a, apply b) match'.Cases }
-
-            | WhileLoop whileLoop ->
-                WhileLoop {
-                    Predicate = apply whileLoop.Predicate
-                    Body = apply whileLoop.Body }
-
-            | Resume resume ->
-                Resume {
-                    Rewrite = apply resume.Rewrite
-                    State = apply resume.State }
-
-            | Handle handle ->
-                Handle {
-                    handle with
-                        ToHandle = apply handle.ToHandle
-                        State = apply handle.State }
-
-            | UpdateVariable(s, upd) -> UpdateVariable(s, apply upd)
-            | CoreLet l -> CoreLet { l with Value = apply l.Value }
-            | RecordExtend { BaseRecord = o; Extension = fs } -> RecordExtend { BaseRecord = o; Extension = List.map (fun (a, b) -> a, apply b) fs }
-            | FunctionalApplication { Base = f; Arguments = args } -> FunctionalApplication { Base = apply f; Arguments = List.map apply args }
-            | TermSequence terms -> TermSequence (List.map apply terms)
-            | WhenClause(a, b) -> WhenClause(apply a, apply b)
-            | AsClause(a, b) -> AsClause(apply a, apply b)
-
-            | Wildcard -> Wildcard
-
-        apply term
-
     and private tryRule (loop: RunningState -> CoreTerm -> RunningState * CoreTerm) (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
         let result =
             match matchTerm state globalEnv rule.LHS term Map.empty with
             | None -> None
             | Some subst ->
                 let evaluateWithBindings () =
-                    Environment.withinScope state (Some subst) loop rule.RHS
+                    Environment.withinScope state (Some subst) loop (Some rule.RHS)
 
                 match rule.WhenClause with
                 | Some wc ->
-                    let wc = applySubstitution subst wc
-                    match normalize state globalEnv wc with
+                    let _, wcResult =
+                        Environment.withinScope state (Some subst) (fun s _ -> s, normalize s globalEnv wc) None
+
+                    match wcResult with
                     | Symbol { Symbol = "true" } -> Some evaluateWithBindings
                     | Symbol { Symbol = "false" } -> None
-                    | _ -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr wc, "tryRule"))
+                    | _ -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr wcResult, "tryRule"))
                 | _ ->
                     Some evaluateWithBindings
 
@@ -435,7 +370,7 @@ module Interpreter =
                             lastResult <- result
 
                         currentState, lastResult
-                    ) (simpleSymbol "unit")
+                    ) None
 
                 | RecordExtend { BaseRecord = Some baseRecord; Extension = extensionFields } ->
                     let state', evaluatedBaseRecord = loop state baseRecord
@@ -504,7 +439,7 @@ module Interpreter =
 
                     match List.tryPick chooser match'.Cases with
                     | None -> raise (UncompletePatternMatchingException (PrettyPrinter.prettyPrintExpr toMatch))
-                    | Some (bindings, rewrite) -> Environment.withinScope state (Some bindings) loop rewrite
+                    | Some (bindings, rewrite) -> Environment.withinScope state (Some bindings) loop (Some rewrite)
 
                 | Symbol s -> processSymbol state s
 
