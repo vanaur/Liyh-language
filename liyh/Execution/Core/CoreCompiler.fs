@@ -735,9 +735,9 @@ module CoreCompiler =
         match lhs with
         | Symbol symb ->
             if symb.Children.IsEmpty then Symbol { symb with Children = args }
-            else failwithf "Application on non-applicable symbol"
+            else failwithf "Application on non-applicable symbol: %s" (PrettyPrinter.prettyPrintExpr lhs)
         | Variable v -> variableSymbol v args
-        | _ -> failwith "Application on non-applicable symbol"
+        | _ -> failwithf "Application on non-applicable symbol: %s" (PrettyPrinter.prettyPrintExpr lhs)
 
     and private compileAsPattern (cstate: State) (basePatt: PatternWithPos) (asPatt: PatternWithPos) =
         let basePatt = compilePattern cstate basePatt
