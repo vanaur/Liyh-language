@@ -168,7 +168,8 @@ module AlphaConversion =
         | Resume r ->
             Resume
                 { Rewrite = ac renaming r.Rewrite
-                  State = ac renaming r.State }
+                  State = ac renaming r.State
+                  FromHandler = r.FromHandler }
 
         | Handle h ->
             Handle

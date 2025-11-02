@@ -81,7 +81,8 @@ and public CoreWhile =
 
 and public CoreResume =
     { Rewrite: CoreTerm
-      State: CoreTerm }
+      State: CoreTerm
+      FromHandler: string }
 
 and public CoreHandle =
     { Handler: string

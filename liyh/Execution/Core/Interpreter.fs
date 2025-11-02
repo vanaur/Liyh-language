@@ -36,7 +36,7 @@ module Interpreter =
 
     exception private InvalidRuleException of string
     exception private VariableToUpdateNotFoundException of string
-    exception private WhenClauseException of got: string * where: string
+    exception private WhenClauseException of got: string
     exception private NonApplicationSymbolException of string
     exception private CyclicBindingException of string
     exception private FreeVariableException of string
@@ -78,20 +78,25 @@ module Interpreter =
 
     type private Substitution = Map<string, CoreTerm>
 
-    type private HandlerEnvironment =
-        { Handler: string
-          State: CoreTerm }
+    [<Struct>]
+    type HandlerEnvironment =
+        { HandlerName: string
+          Handlers: CoreHandler array
+          HandlerState: CoreTerm
+          Resumed: bool }
 
     [<Struct>]
-    type private RunningState =
+    type RunningState =
         { VariableEnvironments: Substitution list
           RecursionDepth: int
-          HandlerEnvironment: HandlerEnvironment list }
+          HandlerEnvironment: Map<string, HandlerEnvironment> }
 
         static member Empty =
             { VariableEnvironments = List.empty
-              HandlerEnvironment = List.empty
+              HandlerEnvironment = Map.empty
               RecursionDepth = 0 }
+
+    exception public ZeroShot of {| Result: CoreTerm; FinalState: RunningState |}
 
     module private Environment =
 
@@ -228,13 +233,9 @@ module Interpreter =
                 else
                     whenClauseStack <- whenClauseStack.Add b
                     try
-                        let _, wcResult =
-                            Environment.withinScope state (Some subst') (fun s _ -> s, normalize s globalEnv b) None
-
-                        match wcResult with
-                        | Symbol { Symbol = "true" } -> Some subst'
-                        | Symbol { Symbol = "false" } -> None
-                        | _ -> raise (WhenClauseException (PrettyPrinter.prettyPrintExpr wcResult, "matchTerm"))
+                        match checkWhenClause state globalEnv subst' (Some b) with
+                        | true -> Some subst'
+                        | false -> None
                     finally
                         // As it stands, the `try-finally` is unnecessary, but in case of doubt where the exception
                         // is caught and the interpreter is restarted, this is the step that must be taken.
@@ -294,6 +295,20 @@ module Interpreter =
 
         | _ -> None
 
+    and private checkWhenClause
+        (state: RunningState)
+        (globalEnv: GlobalEnvironment)
+        (subst: Substitution)
+        (wc: CoreTerm option)
+        =
+        match wc with
+        | None -> true
+        | Some wc ->
+            match Environment.withinScope state (Some subst) (fun s _ -> s, normalize s globalEnv wc) None with
+            | _, Symbol { Symbol = "true" } -> true
+            | _, Symbol { Symbol = "false" } -> false
+            | _, other -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr other))
+
     and private tryRule (loop: RunningState -> CoreTerm -> RunningState * CoreTerm) (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
         let result =
             match matchTerm state globalEnv rule.LHS term Map.empty with
@@ -302,17 +317,9 @@ module Interpreter =
                 let evaluateWithBindings () =
                     Environment.withinScope state (Some subst) loop (Some rule.RHS)
 
-                match rule.WhenClause with
-                | Some wc ->
-                    let _, wcResult =
-                        Environment.withinScope state (Some subst) (fun s _ -> s, normalize s globalEnv wc) None
-
-                    match wcResult with
-                    | Symbol { Symbol = "true" } -> Some evaluateWithBindings
-                    | Symbol { Symbol = "false" } -> None
-                    | _ -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr wcResult, "tryRule"))
-                | _ ->
-                    Some evaluateWithBindings
+                match checkWhenClause state globalEnv subst rule.WhenClause with
+                | true -> Some evaluateWithBindings
+                | false -> None
 
         match result with
         | None -> None
@@ -453,12 +460,106 @@ module Interpreter =
             processNormalize()
 
         and processHandle (state: RunningState) (handle: CoreHandle) =
-            failwith "TODO"
+            match globalEnv.GetRelevantHandlers handle.Handler with
+            | [||] -> failwithf "No handler found for `%s`." handle.Handler
+            | handlers ->
+                let newHandlerEnv =
+                    { HandlerName = handle.Handler
+                      Handlers = handlers
+                      HandlerState = snd (loop state handle.State)
+                      Resumed = false }
+
+                let stateWithHandlers =
+                    { state with HandlerEnvironment = Map.add handle.Handler newHandlerEnv state.HandlerEnvironment }
+
+                try Environment.withinScope stateWithHandlers None loop (Some handle.ToHandle)
+                with ZeroShot zeroShot -> zeroShot.FinalState, zeroShot.Result
 
         and processResume (state: RunningState) (resume: CoreResume) =
-            failwith "TODO"
+            let _, evaluatedHandlerState = loop state resume.State
+
+            let state =
+                { state with
+                    HandlerEnvironment = 
+                        Map.change resume.FromHandler 
+                            (Option.map (fun henv -> 
+                                { henv with
+                                    HandlerState = evaluatedHandlerState
+                                    Resumed = true }))
+                            state.HandlerEnvironment }
+
+            loop state resume.Rewrite
+
+        and tryHandler (state: RunningState) (term: CoreTerm) (handlerName: string) (henv: HandlerEnvironment) (handler: CoreHandler) =
+            let inline hasResumed (state: RunningState) (handlerName: string) =
+                (Map.find handlerName state.HandlerEnvironment).Resumed
+
+            match matchTerm state globalEnv handler.LHS term Map.empty with
+            | None -> None
+            | Some subst1 ->
+                match matchTerm state globalEnv handler.State henv.HandlerState subst1 with
+                | None -> None
+                | Some subst2 ->
+                    match checkWhenClause state globalEnv subst2 handler.WhenClause with
+                    | false -> None
+                    | true ->
+                        let state, result = Environment.withinScope state (Some subst2) loop (Some handler.RHS)
+
+                        if not (hasResumed state handlerName) then
+                            // If the handler has not resumed, then it does not continue the calculation,
+                            // so we must stop at this point, hence the `ZeroShot` exception for the exact
+                            // same control-flow behaviour.
+                            raise (ZeroShot {| Result = result; FinalState = state |})
+                        else
+                            // Otherwise, the calculation continues, resetting the `Resumed` field for the next time.
+                            let newState =
+                                { state with
+                                    HandlerEnvironment =
+                                        Map.change handlerName
+                                            (Option.map (fun henv -> { henv with Resumed = false }))
+                                            state.HandlerEnvironment }
+
+                            Some (newState, result)
+
+        and tryHandlers (state: RunningState) (term: CoreTerm) =
+
+            // TODO: we have to handle innermost AND outermost handlers
+
+            state.HandlerEnvironment
+            |> Map.tryPick (fun handlerName handlerEnvironment ->
+                handlerEnvironment.Handlers
+                |> Array.tryPick (tryHandler state term handlerName handlerEnvironment))
+
+        and tryRules (state: RunningState) (symbol: CoreSymbol) (term: CoreTerm) =
+
+            //
+            // If outermost rules exist for this symbol, then the children are not evaluated and only those
+            // rules (only the outermost rules) are applied. If the result has changed, then it means the
+            // rule applied, the outermost result is returned. If it has not changed, then the innermost
+            // rules are applied, this time reducing the children and testing only the innermost rules.
+            //
+
+            let rules = globalEnv.GetRelevantRules term
+            let outRules, inRules = rules |> Array.partition _.Strategy.IsOutermost
+            let outermostResult = applyGivenRules state term outRules
+
+            if snd outermostResult <> term
+            then outermostResult
+            else
+                let newChildren = List.map (loop state >> snd) symbol.Children
+                let newTerm = Symbol { symbol with Children = newChildren }
+                let innermostResult = applyGivenRules state newTerm inRules
+
+                if snd innermostResult <> newTerm
+                then innermostResult
+                else
+                    match newTerm with
+                    | Builtin state result -> result // in practice, we woul add them in `inRules`.
+                    | _ -> state, newTerm
 
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
+
+            (*
 
             // Check the recursion depth and throw an error to avoid getting the .NET exception on stack overflow.
             if state.RecursionDepth >= maxRecursionDepth then
@@ -467,13 +568,12 @@ module Interpreter =
 
             let state = { state with RecursionDepth = state.RecursionDepth + 1 }
 
+            *)
+
             if symbol.IsVariable then
                 match Environment.lookupVariable symbol.Symbol state with
                 | None -> raise (FreeVariableException symbol.Symbol)
-                | Some s ->
-                    raise (NonApplicationSymbolException symbol.Symbol)
-                    //failwithf "Applying a variable symbol without `FunctionalApplication`: %s" symbol.Symbol
-                    //loop state (FunctionalApplication(s, newChildren))
+                | Some _ -> raise (NonApplicationSymbolException symbol.Symbol)
             else
 
                 // --- debug purpose --- //
@@ -483,31 +583,11 @@ module Interpreter =
                 | false, _ -> ruleCallCounts.Add(key, 1)
                 | true, count -> ruleCallCounts.[key] <- count + 1
 
-                //
-                // If outermost rules exist for this symbol, then the children are not evaluated and only those
-                // rules (only the outermost rules) are applied. If the result has changed, then it means the
-                // rule applied, the outermost result is returned. If it has not changed, then the innermost
-                // rules are applied, this time reducing the children and testing only the innermost rules.
-                //
-
                 let term = Symbol symbol
-                let rules = globalEnv.GetRelevantRules term
-                let outRules, inRules = rules |> Array.partition _.Strategy.IsOutermost
-                let outermostResult = applyGivenRules state term outRules
 
-                if snd outermostResult <> term
-                then outermostResult
-                else
-                    let newChildren = List.map (loop state >> snd) symbol.Children
-                    let newTerm = Symbol { symbol with Children = newChildren }
-                    let innermostResult = applyGivenRules state newTerm inRules
-
-                    if snd innermostResult <> newTerm
-                    then innermostResult
-                    else
-                        match newTerm with
-                        | Builtin state result -> result // in practice, we woul add them in `inRules`.
-                        | _ -> state, newTerm
+                match tryHandlers state term with
+                | None -> tryRules state symbol term
+                | Some result -> result
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
             let clen = closure.Parameters.Length
@@ -793,8 +873,8 @@ module Interpreter =
             let msg = sprintf "Cannot update the unfound variable '%s." s
             immediateRuntimeError RuntimeInternal msg
 
-        | WhenClauseException(got, where) ->
-            let msg = sprintf "When-clause error at %s: expected `true` or `false` but got `%s`." where got
+        | WhenClauseException got ->
+            let msg = sprintf "When-clause error: expected `true` or `false` but got `%s`." got
             immediateRuntimeError RuntimeInternal msg
 
         | NonApplicationSymbolException s ->

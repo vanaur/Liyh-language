@@ -177,10 +177,11 @@ module Helper =
             CoreTerm.Match
                 { ToMatch = flattenTermSequence toMatch
                   Cases = List.map (fun (a, b) -> flattenTermSequence a, flattenTermSequence b) cases }
-        | Resume { Rewrite = rewrite; State = state } ->
+        | Resume { Rewrite = rewrite; State = state; FromHandler = fh } ->
             Resume
                 { Rewrite = flattenTermSequence rewrite
-                  State = flattenTermSequence state }
+                  State = flattenTermSequence state
+                  FromHandler = fh }
         | Handle { Handler = handler
                    State = state
                    ToHandle = toHandle } ->
@@ -406,10 +407,12 @@ module CoreCompiler =
     open Helper
 
     type private State =
-        { Notations: Notation list }
+        { Notations: Notation list
+          CurrentHandler: string option }
 
         static member Empty =
-            { Notations = List.empty }
+            { Notations = List.empty
+              CurrentHandler = None }
 
     let rec private compileExpression (cstate: State) (expr: ExpressionWithPos) =
         match removePos expr with
@@ -707,7 +710,10 @@ module CoreCompiler =
         let state = compileExpression cstate resume.HandlerState
         let value = compileExpression cstate resume.Value
 
-        Resume { Rewrite = value; State = state }
+        Resume {
+            Rewrite = value
+            State = state
+            FromHandler = cstate.CurrentHandler.Value }
 
     // --- Patterns --- //
 
@@ -819,6 +825,8 @@ module CoreCompiler =
               Strategy = strategy }
 
     and private compileHandler (cstate: State) (handler: Handler) =
+        let cstate = { cstate with CurrentHandler = Some handler.Name }
+
         let body = compileExpression cstate handler.Body
         let name = handler.Name
         let hstate = compilePattern cstate handler.State
