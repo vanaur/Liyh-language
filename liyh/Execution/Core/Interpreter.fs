@@ -309,29 +309,6 @@ module Interpreter =
             | _, Symbol { Symbol = "false" } -> false
             | _, other -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr other))
 
-    and private tryRule (loop: RunningState -> CoreTerm -> RunningState * CoreTerm) (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
-        let result =
-            match matchTerm state globalEnv rule.LHS term Map.empty with
-            | None -> None
-            | Some subst ->
-                let evaluateWithBindings () =
-                    Environment.withinScope state (Some subst) loop (Some rule.RHS)
-
-                match checkWhenClause state globalEnv subst rule.WhenClause with
-                | true -> Some evaluateWithBindings
-                | false -> None
-
-        match result with
-        | None -> None
-        | Some rewrite ->
-            let result = rewrite()
-            if rule.Strategy.IsInvalid then
-                match snd result with
-                | Literal (String msg) -> raise (InvalidRuleException msg)
-                | other -> raise (InvalidRuleException (PrettyPrinter.prettyPrintExpr other))
-            else
-                Some result
-
     and private normalize (state: RunningState) (globalEnv: GlobalEnvironment) (term: CoreTerm) =
 
         let rec loop (state: RunningState) (term: CoreTerm) =
@@ -530,33 +507,6 @@ module Interpreter =
                 handlerEnvironment.Handlers
                 |> Array.tryPick (tryHandler state term handlerName handlerEnvironment))
 
-        and tryRules (state: RunningState) (symbol: CoreSymbol) (term: CoreTerm) =
-
-            //
-            // If outermost rules exist for this symbol, then the children are not evaluated and only those
-            // rules (only the outermost rules) are applied. If the result has changed, then it means the
-            // rule applied, the outermost result is returned. If it has not changed, then the innermost
-            // rules are applied, this time reducing the children and testing only the innermost rules.
-            //
-
-            let rules = globalEnv.GetRelevantRules term
-            let outRules, inRules = rules |> Array.partition _.Strategy.IsOutermost
-            let outermostResult = applyGivenRules state term outRules
-
-            if snd outermostResult <> term
-            then outermostResult
-            else
-                let newChildren = List.map (loop state >> snd) symbol.Children
-                let newTerm = Symbol { symbol with Children = newChildren }
-                let innermostResult = applyGivenRules state newTerm inRules
-
-                if snd innermostResult <> newTerm
-                then innermostResult
-                else
-                    match newTerm with
-                    | Builtin state result -> result // in practice, we woul add them in `inRules`.
-                    | _ -> state, newTerm
-
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
 
             (*
@@ -606,7 +556,7 @@ module Interpreter =
             let result =
                 try
                     Array.tryPick
-                        (fun r -> try tryRule loop state globalEnv r term with InvalidRuleException _ as ex -> raise ex)
+                        (fun r -> try tryRule state globalEnv r term with InvalidRuleException _ as ex -> raise ex)
                         rules
                     |> Option.defaultValue (state, term)
                 with
@@ -620,6 +570,56 @@ module Interpreter =
         and applyRules (state: RunningState) (term: CoreTerm) =
             let rules = globalEnv.GetRelevantRules term
             applyGivenRules state term rules
+
+        and tryRules (state: RunningState) (symbol: CoreSymbol) (term: CoreTerm) =
+
+            //
+            // If outermost rules exist for this symbol, then the children are not evaluated and only those
+            // rules (only the outermost rules) are applied. If the result has changed, then it means the
+            // rule applied, the outermost result is returned. If it has not changed, then the innermost
+            // rules are applied, this time reducing the children and testing only the innermost rules.
+            //
+
+            let rules = globalEnv.GetRelevantRules term
+            let outRules, inRules = rules |> Array.partition _.Strategy.IsOutermost
+            let outermostResult = applyGivenRules state term outRules
+
+            if snd outermostResult <> term
+            then outermostResult
+            else
+                let newChildren = List.map (loop state >> snd) symbol.Children
+                let newTerm = Symbol { symbol with Children = newChildren }
+                let innermostResult = applyGivenRules state newTerm inRules
+
+                if snd innermostResult <> newTerm
+                then innermostResult
+                else
+                    match newTerm with
+                    | Builtin state result -> result // in practice, we woul add them in `inRules`.
+                    | _ -> state, newTerm
+
+        and tryRule (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
+            let result =
+                match matchTerm state globalEnv rule.LHS term Map.empty with
+                | None -> None
+                | Some subst ->
+                    let evaluateWithBindings () =
+                        Environment.withinScope state (Some subst) loop (Some rule.RHS)
+
+                    match checkWhenClause state globalEnv subst rule.WhenClause with
+                    | true -> Some evaluateWithBindings
+                    | false -> None
+
+            match result with
+            | None -> None
+            | Some rewrite ->
+                let result = rewrite()
+                if rule.Strategy.IsInvalid then
+                    match snd result with
+                    | Literal (String msg) -> raise (InvalidRuleException msg)
+                    | other -> raise (InvalidRuleException (PrettyPrinter.prettyPrintExpr other))
+                else
+                    Some result
 
         and (|Builtin|_|) (state: RunningState) (term: CoreTerm) =
 
