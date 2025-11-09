@@ -1264,7 +1264,7 @@ module Parser =
             choice topLevelParsers |>> Some
 
         let parseComment = 
-            attempt (spaces >>. skipString "--" >>. skipRestOfLine true >>. spaces) >>% None
+            attempt (spaces >>. skipString "--" <?> "" >>. skipRestOfLine true >>. spaces) >>% None
 
         let parseWhitespace = 
             attempt (skipMany1 (satisfy System.Char.IsWhiteSpace)) >>% None
@@ -1407,8 +1407,15 @@ module Parser =
                 let newAlignmentMessage =
                     if alignmentColumns.Length = 0 then None
                     else
-                        let columnsStr = String.concat ", " alignmentColumns
-                        Some($"the parser could expect alignment at column {columnsStr}")
+                        let columnsStr =
+                            match alignmentColumns.Length with
+                            | 1 -> alignmentColumns.[0]
+                            | 2 -> sprintf "%s or %s" alignmentColumns.[0] alignmentColumns.[1]
+                            | _ ->
+                                let allButLast = alignmentColumns.[..alignmentColumns.Length - 2]
+                                let last = alignmentColumns.[alignmentColumns.Length - 1]
+                                sprintf "%s or %s" (String.concat ", " allButLast) last
+                        Some($"the parser could expect alignment at column {columnsStr} for indentation")
 
                 Array.append
                     (match newAlignmentMessage with Some msg -> [| msg |] | None -> [||])
