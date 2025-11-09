@@ -215,8 +215,8 @@ module MixFix =
                             | [Hole; Fixed sym; Hole] ->
                                 attempt (parse {
                                     let! pos = getPosition
-                                    do! pstringAligned pos sym (sprintf "infix operator '%s'" sym) .>> spaces
-                                    let! right = parseExprWithMinPrec (level.Level + levelUpdate)
+                                    do! pstringAligned left.Pos sym (sprintf "infix operator '%s'" sym) .>> spaces
+                                    let! right = atLeast left.Pos (parseExprWithMinPrec (level.Level + levelUpdate))
                                     let result =
                                         { Pos = left.Pos
                                           Node = MixfixOperator { Name = op.Name; Arguments = [left; right] }

@@ -891,34 +891,32 @@ module Parser =
                 List.fold (fun expr transf -> transf expr) baseExpr postfixes
                 |> linearizeUfcsChain
 
-        let inline expressionBlockHandler p =
-            parse {
-                do! spaces
-                let! pos = getPosition
-
-                // First element without strict indentation constraints (required for user-defined
-                // mixfix operators, I don't know how to do it any other way...)
-                let! head = p .>>? spacesOrComment
-
-                // The rest of the block follows the normal indentation.
-                let! tail = attempt (blockOf (p .>>? spacesOrComment) |> exact pos) <|>% []
-
-                let allExprs = head :: tail
-                return match allExprs with
-                       | [ x ] -> x
-                       | xs -> { Pos = xs.Head.Pos; Node = Expression.ExpressionSequence xs; Pos' = (List.last xs).Pos' }
-            }
-
-        // Create a dynamic mixfix parser that uses the current user state
-        fun stream ->
+        // Créer le parser mixfix AVANT le block handler
+        fun (stream: CharStream<_>) ->
             let currentParser = parse {
                 let! operators = getMixfixOperators
-                // Create a temporary mixfix parser with the current operators
                 let tempParserRef = { MixfixParserRef.Operators = operators; CurrentParser = None }
                 let mixfixParser = MixfixParser(tempParserRef)
-                // Create the expression parser using the mixfix parser
-                let expressionParser = mixfixParser.CreateParser (expressionBlockHandler parseTerm)
-                return! expressionBlockHandler expressionParser
+
+                let singleExprParser = mixfixParser.CreateParser parseTerm
+
+                // Block handler parsing line by line
+                let blockParser = parse {
+                    do! spaces
+                    let! pos = getPosition
+
+                    let! head = singleExprParser .>>? spacesOrComment
+                    let! tail = attempt (blockOf (singleExprParser .>>? spacesOrComment) |> exact pos) <|>% []
+
+                    return
+                        match head :: tail with
+                        | [ x ] -> x
+                        | xs -> { Pos = xs.Head.Pos
+                                  Node = ExpressionSequence xs
+                                  Pos' = (List.last xs).Pos' }
+                }
+                
+                return! blockParser
             }
             currentParser stream
 
