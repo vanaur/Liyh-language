@@ -946,7 +946,7 @@ module Parser =
         |> parseWithPos
         |>> TopLevel.Use
 
-    let private parseRule =
+    let private parseRule' =
         pipe6
             (spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>.
@@ -969,6 +969,78 @@ module Parser =
                       Type = type'
                       Strategy = strategy
                       Body = rewriting })
+
+    let private parseMixfixRule =
+        fun stream ->
+            let currentParser = parse {
+                let! operators = getMixfixOperators
+                let tempParserRef = { MixfixPatternParserRef.Operators = operators; CurrentParser = None }
+                let mixfixParser = MixfixPatternParser(tempParserRef)
+                
+                let atomicPattern = PatternParser.parsePattern
+                let mixfixPatternParser = mixfixParser.CreateParser atomicPattern
+
+                return! pipe5
+                    (spaces >>. between (skipChar '(') (skipChar ')') mixfixPatternParser)
+                    (spaces >>. opt (skipString "when" <?> "when-clause" >>? spaces >>. parseExpressionRef))
+                    (spaces >>. opt (skipChar ':' <?> "rule's type" >>? spaces >>. TypeParser.parseType))
+                    (spaces >>. opt parseStrategy)
+                    (spaces >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
+                    (fun lhsPattern whenClause type' strategy rewriting ->
+                        // Extract the head symbol and collect patterns
+                        let rec findHeadAndPatterns p =
+                            match p.Node with
+                            | Pattern.SymbolPattern id -> (Some id, [])
+                            | Pattern.MixfixOperatorPattern(a, b) ->
+                                let op = operators |> List.find (fun x -> x.Name = a)
+
+                                // Try to extract an IdentifierWithPos from op.RewritesTo.
+                                // If none found, fallback to the operator name with lhsPattern positions.
+                                let extractIdFromExpr (e: ExpressionWithPos) =
+                                    let rec aux (ex: ExpressionWithPos) =
+                                        match ex.Node with
+                                        | Identifier id -> Some id
+                                        | Apply app -> aux app.LHS
+                                        | _ -> None
+                                    aux e
+
+                                let headId =
+                                    match extractIdFromExpr op.RewritesTo with
+                                    | Some id -> id.Node
+                                    | None -> failwith "??"
+
+                                (Some headId, b)
+                            | Pattern.ApplyPattern (base', args) ->
+                                let (headOpt, basePatterns) = findHeadAndPatterns base'
+                                // collect patterns coming from each argument (ignore their head ids)
+                                let argPatterns = args |> List.collect (fun arg -> snd (findHeadAndPatterns arg))
+                                (headOpt, basePatterns @ argPatterns)
+                            | _ -> (None, [ p ])
+                        
+                        let (headSymbolOpt, patterns) = findHeadAndPatterns lhsPattern
+
+                        let name = 
+                            match headSymbolOpt with
+                            | Some id -> 
+                                { Node = id.Name.Node
+                                  Pos = id.Name.Pos
+                                  Pos' = id.Name.Pos' }
+                            | None -> 
+                                { Node = "_mixfix_rule"
+                                  Pos = lhsPattern.Pos
+                                  Pos' = lhsPattern.Pos' }
+
+                        TopLevel.Rule
+                            { Name = name
+                              Patterns = patterns
+                              WhenClause = whenClause
+                              Type = type'
+                              Strategy = strategy
+                              Body = rewriting })
+            }
+            currentParser stream
+
+    let private parseRule = attempt parseMixfixRule <|> parseRule'
 
     let private parseExport =
         pipe2
@@ -1084,7 +1156,7 @@ module Parser =
                 let parseFixedPart =
                     parseAnyNonSpace >>= fun fixedPart ->
                         if List.contains fixedPart reserved
-                        then fail (sprintf "The symbol '%s' was used as a fixed part of a notation, but it is reserved by the language." fixedPart)
+                        then fail (sprintf "The symbol '%s' was used as a fixed part of a notation, but it is reserved by the language" fixedPart)
                         else preturn (FixedPart fixedPart)
 
                 choiceL [
