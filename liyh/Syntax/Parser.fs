@@ -48,7 +48,7 @@ module Parser =
     // Utilities to work with notation state
     let private getMixfixOperators: Parser<MixfixOperator list, NotationState IndentState> =
         fun stream -> Reply stream.UserState.UserState.MixfixOperators
-    
+
     let private addMixfixOperator (op: MixfixOperator): Parser<unit, NotationState IndentState> =
         fun stream ->
             stream.UserState <-
@@ -71,6 +71,8 @@ module Parser =
           "notation"; "using"; "use"; "innermost"; "outermost"; "unreachable"; "--"; "to"; "downto"; "type";
           "type-alias"; "."; ]
 
+    let private reservedSet = System.Collections.Generic.HashSet<string>(reserved)
+
     /// Retrieves operator parts defined by user custom notations.
     let private reservedByUser (id: string) (operators: MixfixOperator list) =
         operators
@@ -90,35 +92,36 @@ module Parser =
         /// The `export` parameter disables this failure if set to `true`.
         let public parseName (export: bool) =
             let parseUsualName =
-                regex @"[_\p{L}][_\p{L}\p{N}]*"
-                <?> "valid name (unicode string that does not begin with a number or '_')"
-
+                parse {
+                    let! first = satisfy (fun c -> c = '_' || System.Char.IsLetter c)
+                    let! rest = manySatisfy (fun c -> c = '_' || System.Char.IsLetter c || System.Char.IsDigit c)
+                    return string first + rest
+                } <?> "valid name (unicode string that does not begin with a number or '_')"
+            
             let parsePlainName =
                 between
-                    (pchar '`')
-                    (pchar '`')
-                    (many1
-                        (satisfy (fun c -> c <> '`' && c <> '\n' && c <> '\r'))
-                        |>> fun cs -> System.String.Join("", cs))
+                    (pchar '`' <?> "")
+                    (pchar '`' <?> "closing '`'")
+                    (manySatisfy (fun c -> c <> '`' && c <> '\n' && c <> '\r'))
 
             choice [ parseUsualName; parsePlainName ]
             >>= fun name ->
-                parse {
-                    let! operators = getMixfixOperators
-                    match reservedByUser name operators with
-                    | None ->
-                        if List.contains name reserved
-                        then return! fail (sprintf "'%s' is a reserved symbol by the language" name)
-                        else return name
-
-                    | Some userReservedIn ->
-                        if export then return name
-                        else
-                            return! fail
-                                (sprintf "'%s' is reserved by the user/lib-defined notation '%s' and cannot be used as a name"
-                                    name
-                                    userReservedIn)
-                }
+                if not export && reservedSet.Contains(name) then
+                    fail (sprintf "'%s' is a reserved symbol by the language" name)
+                else
+                    parse {
+                        let! operators = getMixfixOperators
+                        match reservedByUser name operators with
+                        | None -> return name
+                        | Some userReservedIn ->
+                            if export then 
+                                return name
+                            else
+                                return! fail
+                                    (sprintf "'%s' is reserved by the user/lib-defined notation '%s' and cannot be used as a name"
+                                        name
+                                        userReservedIn)
+                    }
 
         /// Parses a valid name according to the Liyh specification and returns it as a character string.
         /// This parser may fail in a definition context if the name is already defined in a custom notation.
@@ -132,19 +135,10 @@ module Parser =
         /// This parser may fail in a definition context if the name is already defined in a custom notation.
         let public parseIdentifier =
             parseWithPos parseIdentifierName >>= fun firstName ->
-                let rec parseQualifiers acc =
-                    choice [
-                        attempt
-                            (pchar '.'
-                                >>. lookAhead (parseWithPos parseIdentifierName)
-                                >>. parseWithPos parseIdentifierName)
-                            >>= fun nextName -> parseQualifiers (nextName :: acc)
-
-                        preturn acc
-                    ]
-
-                parseQualifiers [] |>> fun qualifierParts ->
-                    match List.rev qualifierParts with
+                let parseQualifier = pchar '.' >>. parseWithPos parseIdentifierName
+                
+                many parseQualifier |>> fun qualifierParts ->
+                    match qualifierParts with
                     | [] -> { Qualifier = []; Name = firstName }
                     | qualifiers ->
                         { Qualifier = firstName :: List.take (List.length qualifiers - 1) qualifiers
@@ -582,8 +576,7 @@ module Parser =
     let private parseBindingVariable =
         pipe2
             (skipChar '\'')
-            (NameParser.parseName false
-            )
+            (NameParser.parseName false)
             (fun _ name ->
                 if List.contains name reserved then
                     fail (sprintf "reserved identifier '%s'" name)
