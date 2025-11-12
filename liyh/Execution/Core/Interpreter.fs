@@ -163,6 +163,11 @@ module Interpreter =
             | Symbol { Symbol = symbol } when Map.containsKey symbol this.RulesMap -> this.RulesMap.[symbol]
             | _ -> Array.empty
 
+        member inline public this.HasOutermostRules (term: CoreTerm) =
+            term
+            |> this.GetRelevantRules
+            |> Array.exists _.Strategy.IsOutermost
+
         member inline public this.GetRelevantHandlers (handler: string) =
             Map.tryFind handler this.HandlersMap
             |> Option.defaultValue Array.empty
@@ -197,6 +202,70 @@ module Interpreter =
         let handlersMap = handlersLists |> Map.map (fun _ v -> v |> List.rev |> List.toArray)
 
         { RulesMap = rulesMap; HandlersMap = handlersMap }
+
+    /// Substitution for outermost rules.
+    let rec private substitute (env: Substitution) (term: CoreTerm) : CoreTerm =
+        match term with
+        | (Literal _ | Wildcard) -> term
+        | Variable v ->
+            match Map.tryFind v env with
+            | Some t -> t
+            | None -> term
+
+        | Symbol s -> Symbol { s with Children = List.map (substitute env) s.Children }
+
+        | RecordExtend { BaseRecord = br; Extension = ext } ->
+            RecordExtend {
+                BaseRecord = br |> Option.map (substitute env)
+                Extension = List.map (fun (k, v) -> k, substitute env v) ext }
+
+        | Match matchTerm ->
+            Match {
+                ToMatch = substitute env matchTerm.ToMatch
+                Cases = List.map (fun (pat, body) -> substitute env pat, substitute env body) matchTerm.Cases }
+
+        | Closure c ->
+            Closure {
+                c with 
+                    Value = substitute env c.Value
+                    Env = Map.map (fun _ v -> substitute env v) c.Env }
+
+        | FunctionalApplication { Base = f; Arguments = args } ->
+            FunctionalApplication {
+                Base = substitute env f
+                Arguments = List.map (substitute env) args }
+
+        | TermSequence terms ->
+            TermSequence (List.map (substitute env) terms)
+
+        | CoreLet letTerm ->
+            CoreLet {
+                letTerm with
+                    Pattern = substitute env letTerm.Pattern
+                    Value = substitute env letTerm.Value }
+
+        | WhileLoop whileTerm ->
+            WhileLoop {
+                Predicate = substitute env whileTerm.Predicate
+                Body = substitute env whileTerm.Body }
+
+        | UpdateVariable(name, value) ->
+            UpdateVariable(name, substitute env value)
+
+        | Handle handleTerm ->
+            Handle {
+                Handler = handleTerm.Handler
+                State = substitute env handleTerm.State
+                ToHandle = substitute env handleTerm.ToHandle }
+
+        | Resume resumeTerm ->
+            Resume {
+                FromHandler = resumeTerm.FromHandler
+                State = substitute env resumeTerm.State
+                Rewrite = substitute env resumeTerm.Rewrite }
+
+        | AsClause(p, v) -> AsClause(substitute env p, v)
+        | WhenClause(p, w) -> WhenClause(substitute env p, substitute env w)
 
     let mutable private whenClauseStack = Set.empty<CoreTerm>
 
@@ -311,7 +380,33 @@ module Interpreter =
 
     and private normalize (state: RunningState) (globalEnv: GlobalEnvironment) (term: CoreTerm) =
 
+        //
+        // Outermost vs Innermost evaluation strategy:
+        //
+        // The interpreter uses two distinct evaluation strategies that are selected based on rule annotations:
+        //
+        // 1. Outermost-first strategy (top-down):
+        //    - When a symbol has at least one outermost rule, the entire subtree is evaluated using outermost-first strategy
+        //    - Rules are applied to the unevaluated term first, without evaluating children
+        //    - If no rule applies, children are recursively evaluated using the same outermost-first strategy
+        //    - After child evaluation, outermost rules are tried again on the reconstructed term
+        //    - Only if no outermost rule applies even after child evaluation, it falls back to innermost strategy
+        //
+        // 2. Innermost-first strategy (bottom-up):
+        //    - Used when no outermost rules exist for a symbol
+        //    - Children are evaluated first (recursively, using their appropriate strategies)
+        //    - Rules are applied to the fully evaluated term
+        //
+        // The main evaluation loop dynamically selects the appropriate strategy based on the presence of outermost rules.
+        // This should preserves lexical scoping while allowing both strategies to coexist in the same program.
+        //
+
         let rec loop (state: RunningState) (term: CoreTerm) =
+            if term.IsSymbol
+            then (if globalEnv.HasOutermostRules term then loopOutermost else loopInnermost) state term
+            else loopInnermost state term
+
+        and loopInnermost (state: RunningState) (term: CoreTerm) =
             let inline processNormalize () =
                 match term with
 
@@ -435,6 +530,29 @@ module Interpreter =
                     (state, term)
 
             processNormalize()
+
+        and loopOutermost (state: RunningState) (term: CoreTerm) =
+
+            let rec applyAndContinue state term rules =
+                let newState, newTerm = applyGivenRules state term rules
+                if newTerm <> term then loopOutermost newState newTerm
+                else newState, newTerm
+
+            match term with
+            | Symbol s ->
+                let rules = globalEnv.GetRelevantRules term
+                if globalEnv.HasOutermostRules term then
+                    let state1, term1 = applyAndContinue state term rules
+                    if term1 <> term then state1, term1
+                    else
+                        let children = List.map (loopOutermost state1 >> snd) s.Children
+                        let newTerm = Symbol { s with Children = children }
+                        applyAndContinue state1 newTerm rules
+                else
+                    loopInnermost state term
+
+            | _ ->
+                loopInnermost state term
 
         and processHandle (state: RunningState) (handle: CoreHandle) =
             match globalEnv.GetRelevantHandlers handle.Handler with
@@ -598,28 +716,21 @@ module Interpreter =
                     | Builtin state result -> result // in practice, we woul add them in `inRules`.
                     | _ -> state, newTerm
 
-        and tryRule (state: RunningState) (globalEnv: GlobalEnvironment) (rule: CoreRule) (term: CoreTerm) =
-            let result =
-                match matchTerm state globalEnv rule.LHS term Map.empty with
-                | None -> None
-                | Some subst ->
-                    let evaluateWithBindings () =
-                        Environment.withinScope state (Some subst) loop (Some rule.RHS)
-
-                    match checkWhenClause state globalEnv subst rule.WhenClause with
-                    | true -> Some evaluateWithBindings
-                    | false -> None
-
-            match result with
+        and tryRule state globalEnv rule term =
+            match matchTerm state globalEnv rule.LHS term Map.empty with
             | None -> None
-            | Some rewrite ->
-                let result = rewrite()
-                if rule.Strategy.IsInvalid then
-                    match snd result with
-                    | Literal (String msg) -> raise (InvalidRuleException msg)
-                    | other -> raise (InvalidRuleException (PrettyPrinter.prettyPrintExpr other))
+            | Some subst ->
+                if not (checkWhenClause state globalEnv subst rule.WhenClause) then None
                 else
-                    Some result
+                    let rhs =
+                        if rule.Strategy.IsOutermost then substitute subst rule.RHS
+                        else rule.RHS
+
+                    let rewriteFn =
+                        if rule.Strategy.IsOutermost then loopOutermost
+                        else loop
+
+                    Some (Environment.withinScope state (Some subst) rewriteFn (Some rhs))
 
         and (|Builtin|_|) (state: RunningState) (term: CoreTerm) =
 
