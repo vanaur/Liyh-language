@@ -796,6 +796,7 @@ module Interpreter =
                 | Literal (Integer _), Literal (Integer b) when b < 0I -> None
                 | Literal (Integer a), Literal (Integer b) -> Some (Literal (Integer (pown a (int b))))
                 | Literal (Float a), Literal (Float b) -> Some (Literal (Float (System.Math.Pow(a, b))))
+                | Literal (Float a), Literal (Integer b) -> Some (Literal (Float (System.Math.Pow(a, double b))))
                 | _ -> None
 
             | Eq(a, b) -> literalBinaryComparison a b ( = ) ( = )
