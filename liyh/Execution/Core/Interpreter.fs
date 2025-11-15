@@ -458,6 +458,7 @@ module Interpreter =
                         let map1 = Map.ofList extensionFields
                         let map2 = Map.ofList originalFields
                         let map3 = Map.crushingMerge map2 map1
+                        let map3 = Map.map (fun _ -> loop state >> snd) map3
                         (state', RecordExtend { BaseRecord = None; Extension = Map.toList map3 })
 
                     | other -> raise (NotBaseRecordException (PrettyPrinter.prettyPrintExpr other))
