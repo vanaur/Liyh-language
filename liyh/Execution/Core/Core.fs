@@ -1,4 +1,4 @@
-namespace Liyh.Execution.Core
+namespace rec Liyh.Execution.Core
 
 //
 // The 'core' (LiyhCore) is a minimalist version of the language used for
@@ -7,6 +7,60 @@ namespace Liyh.Execution.Core
 // At this level, there is no real distinction between a "term" and
 // a "pattern", the same structure is used for both.
 //
+
+
+[<CustomEquality; CustomComparison>]
+type public CoreSymbol =
+    internal
+        { Symbol: string
+          Children: CoreTerm list
+          IsVariable: bool
+          mutable __hashCache: int }
+
+    override this.GetHashCode() =
+        if this.__hashCache = 0 then
+            let mutable hc = System.HashCode()
+
+            hc.Add this.Symbol
+            hc.Add this.IsVariable
+            Seq.iter hc.Add this.Children
+
+            let h = hc.ToHashCode()
+            this.__hashCache <- if h = 0 then 1 else h
+
+        this.__hashCache
+
+    override this.Equals(other: obj) =
+        match other with
+        | :? CoreSymbol as otherSym ->
+            if System.Object.ReferenceEquals(this, otherSym) then
+                true
+            else
+                if this.GetHashCode() <> otherSym.GetHashCode() then
+                    false
+                else
+                    this.IsVariable = otherSym.IsVariable &&
+                    this.Symbol = otherSym.Symbol &&
+                    this.Children = otherSym.Children
+        | _ -> false
+
+    interface System.IEquatable<CoreSymbol> with
+        member this.Equals(other) = this.Equals(other)
+
+    interface System.IComparable with
+        member this.CompareTo(other) =
+            match other with
+            | :? CoreSymbol as otherSym ->
+                let c = compare this.IsVariable otherSym.IsVariable
+                if c <> 0 then c
+                else
+                    let c = compare this.Symbol otherSym.Symbol
+                    if c <> 0 then c
+                    else
+                        compare this.Children otherSym.Children
+            | _ -> 1
+
+
 
 type public CoreTerm =
 
@@ -40,11 +94,6 @@ type public CoreTerm =
     | WhenClause of CoreTerm * CoreTerm
     | AsClause of CoreTerm * CoreTerm
     | Wildcard
-
-and public CoreSymbol =
-    { Symbol: string
-      Children: CoreTerm list
-      IsVariable: bool }
 
 and public CoreLiteral =
     | Integer of bigint

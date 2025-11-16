@@ -32,7 +32,8 @@ module Helper =
         Symbol
             { Symbol = name
               Children = args
-              IsVariable = false }
+              IsVariable = false
+              __hashCache = 0 }
 
     let public simpleSymbol (name: string) =
         symbol name []
