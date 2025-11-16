@@ -451,7 +451,7 @@ module CoreCompiler =
         let inline apply converted child =
             match converted with
             | Symbol symb -> Symbol { symb with Children = child :: symb.Children }
-            | Variable v -> variableSymbol v [ child ]
+            | Variable v -> FunctionalApplication { Base = converted; Arguments = [ child ] } //variableSymbol v [ child ]
             | Closure _ -> FunctionalApplication { Base = converted; Arguments = [ child ] }
             | _ -> failwith "Application on non-applicable term"
 
