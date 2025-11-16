@@ -783,7 +783,26 @@ module Interpreter =
                         | _ -> None
                 | None -> None
 
+            let inline collectionAccess (lst: CoreTerm) (tpl: CoreTerm) =
+                match tpl with
+                | Symbol { Symbol = "tuple"; Children = [ index ] } ->
+                    match snd (loop state index) with
+                    | Literal (Integer i) ->
+                        let rec findNth n term =
+                            match term with
+                            | Nil -> raise (InvalidRuleException $"index out of range, {i}.")
+                            | Cons(x, _) when n = 0 -> Some x
+                            | Cons(_, xs) -> findNth (n - 1) xs
+                            | other -> raise (InvalidRuleException $"invalid list structure, {PrettyPrinter.prettyPrintExpr other}.")
+
+                        let idx = int i
+                        if idx < 0 then raise (InvalidRuleException $"index out of range, {i}.")
+                        findNth idx lst
+                    | _ -> None
+                | _ -> None
+
             match term with
+            | Symbol { Symbol = "collection_access"; Children = [ lst; tuple ] } -> collectionAccess lst tuple
             | Plus(a, b) -> literalBinaryOperation a b ( + ) ( + )
             | Minus(a, b) -> literalBinaryOperation a b ( - ) ( - )
             | Asterisk(a, b) -> literalBinaryOperation a b ( * ) ( * )
