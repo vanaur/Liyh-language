@@ -19,13 +19,13 @@ type public CoreSymbol =
 
     override this.GetHashCode() =
         if this.__hashCache = 0 then
-            let mutable hc = System.HashCode()
+            let mutable h = this.Symbol.GetHashCode()
+            h <- h * 31 + (if this.IsVariable then 1 else 0)
 
-            hc.Add this.Symbol
-            hc.Add this.IsVariable
-            Seq.iter hc.Add this.Children
+            let childCount = min 4 this.Children.Length
+            for i = 0 to childCount - 1 do
+                h <- h * 31 + this.Children.[i].GetHashCode()
 
-            let h = hc.ToHashCode()
             this.__hashCache <- if h = 0 then 1 else h
 
         this.__hashCache

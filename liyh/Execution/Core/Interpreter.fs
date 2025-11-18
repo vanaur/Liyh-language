@@ -78,14 +78,12 @@ module Interpreter =
 
     type private Substitution = Map<string, CoreTerm>
 
-    [<Struct>]
     type HandlerEnvironment =
         { HandlerName: string
           Handlers: CoreHandler array
           HandlerState: CoreTerm
           Resumed: bool }
 
-    [<Struct>]
     type RunningState =
         { VariableEnvironments: Substitution list
           RecursionDepth: int
