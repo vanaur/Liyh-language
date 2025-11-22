@@ -1,7 +1,7 @@
 namespace Liyh.Execution.Core
 
 //
-// An interpreter for 'LiyhCore', i.e., a minimal (~ desugared) intermediate representation of Liyh.
+// An interpreter for 'LiyhCore', i.e., a minimal (~ desugared) intermediate representation of Liyh. 🐿️
 //
 // The interpreter is naive and comparable to a tree walk, but adapted and designed primarily with the
 // symbolic rewriting model in mind:
@@ -737,12 +737,72 @@ module Interpreter =
                 let a = snd (loop state a)
                 let b = snd (loop state b)
 
-                match a, b with
-                | Literal (Integer a), Literal (Integer b) -> Some (Literal (Integer (actionInt64 a b)))
-                | Literal (Float a), Literal (Float b) -> Some (Literal (Float (actionFloat64 a b)))
-                | Literal (Integer a), Literal (Float b) -> Some (Literal (Float (actionFloat64 (double a) b)))
-                | Literal (Float a), Literal (Integer b) -> Some (Literal (Float (actionFloat64 a (double b))))
-                | _ -> None
+                try
+                    match a, b with
+                    | Literal (Integer a), Literal (Integer b) -> Some (Literal (Integer (actionInt64 a b)))
+                    | Literal (Float a), Literal (Float b) -> Some (Literal (Float (actionFloat64 a b)))
+                    | Literal (Integer a), Literal (Float b) -> Some (Literal (Float (actionFloat64 (double a) b)))
+                    | Literal (Float a), Literal (Integer b) -> Some (Literal (Float (actionFloat64 a (double b))))
+                    | _ -> None
+                with
+                | :? System.DivideByZeroException ->
+                    term |> PrettyPrinter.prettyPrintExpr
+                         |> sprintf "division by zero in `%s`"
+                         |> InvalidRuleException
+                         |> raise
+
+            let exponentiationOperation a b =
+                let a = snd (loop state a)
+                let b = snd (loop state b)
+
+                let raiseError message =
+                    term |> PrettyPrinter.prettyPrintExpr
+                         |> sprintf "%s in `%s`" message
+                         |> InvalidRuleException
+                         |> raise
+
+                let validateFloat result =
+                    if System.Double.IsNaN result then raiseError "invalid result (NaN) in exponentiation"
+                    elif System.Double.IsInfinity result then raiseError "overflow in exponentiation"
+                    else Some (Literal (Float result))
+
+                try
+                    match a, b with
+                    | Literal (Integer a), Literal (Integer b) when b = 0I ->
+                        if a = 0I then raiseError "undefined operation"
+                        else Some (Literal (Integer 1I))
+
+                    | Literal (Integer a), Literal (Integer b) when a = 0I && b < 0I ->
+                        raiseError "division by zero"
+
+                    | Literal (Integer a), Literal (Integer b) when b > 0I ->
+                        if b <= 2147483647I then
+                            try
+                                Some (Literal (Integer (pown a (int32 b))))
+                            with
+                            | :? System.OverflowException ->
+                                raiseError "overflow in exponentiation"
+                        else
+                            raiseError "overflow in exponentiation"
+
+                    | Literal (Integer a), Literal (Integer b) when b < 0I ->
+                        if a = 0I then raiseError "division by zero"
+                        System.Math.Pow(double a, double b) |> validateFloat
+
+                    | Literal (Float a), Literal (Float b) ->
+                        System.Math.Pow(a, b) |> validateFloat
+
+                    | Literal (Integer a), Literal (Float b) ->
+                        System.Math.Pow(double a, b) |> validateFloat
+                    
+                    | Literal (Float a), Literal (Integer b) ->
+                        System.Math.Pow(a, double b) |> validateFloat
+
+                    | _ -> None
+                with
+                | :? InvalidRuleException as ex -> raise ex
+                | :? System.DivideByZeroException -> raiseError "division by zero"
+                | :? System.OverflowException -> raiseError "overflow in exponentiation"
 
             let inline literalBinaryComparison a b actionInt64 actionFloat64 =
                 let a = snd (loop state a)
@@ -806,16 +866,7 @@ module Interpreter =
             | Asterisk(a, b) -> literalBinaryOperation a b ( * ) ( * )
             | Slash(a, b) -> literalBinaryOperation a b ( / ) ( / )
             | Percent(a, b) -> literalBinaryOperation a b ( % ) ( % )
-            | DoubleAsterisk(a, b) ->
-                let a = snd (loop state a)
-                let b = snd (loop state b)
-
-                match a, b with
-                | Literal (Integer _), Literal (Integer b) when b < 0I -> None
-                | Literal (Integer a), Literal (Integer b) -> Some (Literal (Integer (pown a (int b))))
-                | Literal (Float a), Literal (Float b) -> Some (Literal (Float (System.Math.Pow(a, b))))
-                | Literal (Float a), Literal (Integer b) -> Some (Literal (Float (System.Math.Pow(a, double b))))
-                | _ -> None
+            | DoubleAsterisk(a, b) -> exponentiationOperation a b
 
             | Eq(a, b) -> literalBinaryComparison a b ( = ) ( = )
             | Neq(a, b) -> literalBinaryComparison a b ( <> ) ( <> )
