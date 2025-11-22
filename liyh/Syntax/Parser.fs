@@ -661,7 +661,7 @@ module Parser =
         let parseListComprehension =
             pipe4
                 parseExpressionRef
-                (spaces >>. skipString "for" >>. spaces >>. NameParser.parseIdentifierName)
+                (spaces >>. skipString "for" >>. spaces >>. PatternParser.parsePattern)
                 (spaces >>. skipString "in" >>. spaces >>. parseExpressionRef)
                 (opt (spaces >>. skipString "if" >>. spaces >>. parseExpressionRef))
                 (fun expr var range condition ->

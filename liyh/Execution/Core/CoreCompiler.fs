@@ -473,7 +473,7 @@ module CoreCompiler =
 
     and private compileListComprehension (cstate: State) (lc: ListComprehension) =
         let compiledItem = compileExpression cstate lc.ItemValue
-        let compiledPattern = Variable lc.Pattern
+        let compiledPattern = compilePattern cstate lc.Pattern
         let compiledList = compileExpression cstate lc.ListExpr
         let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
 

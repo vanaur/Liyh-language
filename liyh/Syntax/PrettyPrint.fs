@@ -65,7 +65,7 @@ module PrettyPrint =
                 sprintf
                     "{ %s for %s in %s%s }"
                     (prettyPrintExpression lc.ItemValue)
-                    lc.Pattern
+                    (prettyPrintPattern lc.Pattern)
                     (prettyPrintExpression lc.ListExpr)
                     ifStr
             | Range r ->

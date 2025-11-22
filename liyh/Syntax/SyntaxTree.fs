@@ -87,7 +87,7 @@ module SyntaxTree =
 
     and public ListComprehension =
         { ItemValue: ExpressionWithPos
-          Pattern: string
+          Pattern: PatternWithPos
           ListExpr: ExpressionWithPos
           IfPred: ExpressionWithPos option }
 
