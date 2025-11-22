@@ -949,15 +949,23 @@ module Interpreter =
                 match a, b with
                 | Closure closure, Literal (Integer n) ->
                     let action () = applyClosure closure [] state
-                    let oldCache = Dictionary<_, _>(ruleCallCounts)
+
+                    let oldCache = Dictionary(ruleCallCounts)
+
+                    System.GC.Collect()
+                    System.GC.WaitForPendingFinalizers()
+                    System.GC.Collect()
 
                     // Warm-up
                     for _ in 1 .. (min 5 (int n)) do
                         ruleCallCounts <- Dictionary(oldCache)
                         action() |> ignore
 
+                    // First real run (to get the result)
+                    ruleCallCounts <- Dictionary(oldCache)
                     let _, result = action()
 
+                    // Timings
                     let times =
                         [| for _ in 1 .. int n ->
                             ruleCallCounts <- Dictionary(oldCache)
@@ -966,8 +974,10 @@ module Interpreter =
                             sw.Stop()
                             sw.Elapsed.TotalMilliseconds |]
 
-                    Array.sortInPlace times
+                    // Restore memo
+                    ruleCallCounts <- oldCache
 
+                    Array.sortInPlace times
                     let median = times.[times.Length / 2]
                     let mean = Array.average times
                     let stdDev = sqrt (Array.averageBy (fun t -> (t - mean) ** 2.0) times)
@@ -983,7 +993,9 @@ module Interpreter =
                             ("result", result)
                         ]
                     })
-                | _ -> raise (InvalidRuleException "`bench` expect an anonymous function and an integer literal.")
+
+                | _ ->
+                    raise (InvalidRuleException "`bench` expect an anonymous function and an integer literal.")
 
             | _ -> None
             |> Option.map (fun r -> state, r)
