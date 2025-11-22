@@ -828,8 +828,8 @@ module Interpreter =
             | Or(a, b) -> booleanAlgebra a b ( || ) (fun a -> if a then Some true else None)
             | Not a ->
                 match snd (loop state a) with
-                | Symbol { Symbol = "true" } -> Some falseSymbol
-                | Symbol { Symbol = "false" } -> Some trueSymbol
+                | SymbolTrue -> Some falseSymbol
+                | SymbolFalse -> Some trueSymbol
                 | _ -> None
 
             (* // --- under consideration --- //

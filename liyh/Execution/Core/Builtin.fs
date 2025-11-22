@@ -142,6 +142,16 @@ module Builtin =
         | Symbol { Symbol = "not"; Children = [ a ] } -> Some(a)
         | _ -> None
 
+    and public (|SymbolTrue|_|) =
+        function
+        | Symbol { Symbol = "true"; Children = [] } -> true
+        | _ -> false
+
+    and public (|SymbolFalse|_|) =
+        function
+        | Symbol { Symbol = "false"; Children = [] } -> true
+        | _ -> false
+
     // -- Types --
 
     and public (|IsType|_|) =
