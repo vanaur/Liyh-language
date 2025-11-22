@@ -372,8 +372,8 @@ module Interpreter =
         | None -> true
         | Some wc ->
             match Environment.withinScope state (Some subst) (fun s _ -> s, normalize s globalEnv wc) None with
-            | _, Symbol { Symbol = "true" } -> true
-            | _, Symbol { Symbol = "false" } -> false
+            | _, SymbolTrue -> true
+            | _, SymbolFalse -> false
             | _, other -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr other))
 
     and private normalize (state: RunningState) (globalEnv: GlobalEnvironment) (term: CoreTerm) =
@@ -499,11 +499,11 @@ module Interpreter =
                     let rec loopExecution currentState =
                         let newState, predResult = loop currentState whileLoop.Predicate
                         match predResult with
-                        | Symbol { Symbol = "true" } ->
+                        | SymbolTrue ->
                             let bodyState, _ = loop newState whileLoop.Body
                             loopExecution bodyState
 
-                        | Symbol { Symbol = "false" } -> (newState, simpleSymbol "unit")
+                        | SymbolFalse -> (newState, simpleSymbol "unit")
                         | other -> raise (WhileLoopPredicateException (PrettyPrinter.prettyPrintExpr other))
 
                     loopExecution state
@@ -759,8 +759,8 @@ module Interpreter =
 
                 let symbolToBool =
                     function
-                    | Symbol { Symbol = "true" } -> Some true
-                    | Symbol { Symbol = "false" } -> Some false
+                    | SymbolTrue -> Some true
+                    | SymbolFalse -> Some false
                     | _ -> None
 
                 let boolToSymbol =
