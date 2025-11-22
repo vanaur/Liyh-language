@@ -94,12 +94,12 @@ module Interpreter =
               HandlerEnvironment = Map.empty
               RecursionDepth = 0 }
 
-    exception public ZeroShot of {| Result: CoreTerm; FinalState: RunningState |}
+    exception private ZeroShot of {| Result: CoreTerm; FinalState: RunningState |}
 
     module private Environment =
 
         /// Retrieves the variable given in the running state if found.
-        let public lookupVariable (name: string) (state: RunningState) =
+        let inline public lookupVariable (name: string) (state: RunningState) =
             state.VariableEnvironments
             |> List.tryPick (Map.tryFind name)
 
@@ -119,18 +119,18 @@ module Interpreter =
             { state with VariableEnvironments = updatedEnvironments }
 
         /// Returns a new running state after adding a scope to the environment.
-        let public pushVariableScope (state: RunningState) =
+        let inline public pushVariableScope (state: RunningState) =
             { state with VariableEnvironments = Map.empty :: state.VariableEnvironments }
 
         /// Returns a new running state after removing the last added scope, if it exists, otherwise throws an exception.
-        let public popVariableScope (state: RunningState) =
+        let inline public popVariableScope (state: RunningState) =
             match state.VariableEnvironments with
             | [] -> failwith "Cannot pop from empty environment stack"
         //    | [_] -> failwith "Cannot pop the global environment"
             | _ :: rest -> { state with VariableEnvironments = rest }
 
         /// Returns a new running state after adding a binding. New bindings overwrite old ones.
-        let public addBindings (bindings: Substitution) (state: RunningState) =
+        let inline public addBindings (bindings: Substitution) (state: RunningState) =
             match state.VariableEnvironments with
             | [] -> failwith "No environment to bind to"
             | currentEnv :: rest ->
