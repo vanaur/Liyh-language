@@ -1,7 +1,7 @@
 namespace Liyh.Execution.Core
 
 module AlphaConversion =
-    open Liyh.Execution.Core
+    open Liyh.Execution
 
     let rec private boundVariables (term: CoreTerm) : Set<string> =
         match term with

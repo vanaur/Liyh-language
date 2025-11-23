@@ -6,6 +6,8 @@ module Program =
     open Liyh.Utils.ErrorReporter
     open Liyh.Module.LiyhPackage
     open Liyh.TypeCheck
+    open Liyh.Execution
+    open Liyh.Execution.Core
 
     open Binarysharp.Benchmark
 

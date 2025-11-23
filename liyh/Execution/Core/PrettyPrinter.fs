@@ -2,6 +2,7 @@
 namespace Liyh.Execution.Core
 
 module PrettyPrinter =
+    open Liyh.Execution
     open System
 
     let private indentSize = 4

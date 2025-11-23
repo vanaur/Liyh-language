@@ -26,6 +26,7 @@ module private UniqueName =
         sprintf "_v%s%d" baseName id
 
 module Helper =
+    open Liyh.Execution
     open Liyh.Syntax.SyntaxTree
 
     let public symbol (name: string) (args: CoreTerm list) =
@@ -287,6 +288,7 @@ module Helper =
         loop term, asDefined
 
 module CoreTermSubstitution =
+    open Liyh.Execution
 
     let rec public replaceCoreTerm (substitutions: Map<CoreTerm, CoreTerm>) (term: CoreTerm) =
         match Map.tryFind term substitutions with
@@ -403,6 +405,7 @@ module CoreTermSubstitution =
 
 [<RequireQualifiedAccess>]
 module CoreCompiler =
+    open Liyh.Execution
     open Liyh.Module
     open Liyh.Syntax.SyntaxTree
     open Helper

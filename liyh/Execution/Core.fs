@@ -1,4 +1,4 @@
-namespace rec Liyh.Execution.Core
+namespace rec Liyh.Execution
 
 //
 // The 'core' (LiyhCore) is a minimalist version of the language used for

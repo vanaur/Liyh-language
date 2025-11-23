@@ -30,8 +30,9 @@ namespace Liyh.Execution.Core
 
 module Interpreter =
     open System.Collections.Generic
-    open Liyh.Execution.Core.Helper
-    open Liyh.Execution.Core.Builtin
+    open Liyh.Execution
+    open Helper
+    open Builtin
     open Liyh.Utils.ErrorReporter
 
     exception private InvalidRuleException of string

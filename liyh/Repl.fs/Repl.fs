@@ -5,7 +5,7 @@ module Repl =
     open Liyh.Utils.ErrorReporter
     open Liyh.Module.LiyhPackage
     open Liyh.TypeCheck
-    open Liyh.Execution.Core
+    open Liyh.Execution
     open System
     open System.Text
     open System.Linq
