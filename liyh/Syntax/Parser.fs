@@ -884,7 +884,6 @@ module Parser =
                 List.fold (fun expr transf -> transf expr) baseExpr postfixes
                 |> linearizeUfcsChain
 
-        // Créer le parser mixfix AVANT le block handler
         fun (stream: CharStream<_>) ->
             let currentParser = parse {
                 let! operators = getMixfixOperators
@@ -895,7 +894,7 @@ module Parser =
 
                 // Block handler parsing line by line
                 let blockParser = parse {
-                    do! spaces
+                    do! spacesOrComment
                     let! pos = getPosition
 
                     let! head = singleExprParser .>>? spacesOrComment
