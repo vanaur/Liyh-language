@@ -155,7 +155,13 @@ module Interpreter =
 
     type private GlobalEnvironment =
         { RulesMap: Map<string, CoreRule array>
-          HandlersMap: Map<string, CoreHandler array> }
+          HandlersMap: Map<string, CoreHandler array>
+          DecisionTree: Map<string, DecisionTree.DecisionTree> }
+
+        member inline public this.GetDecisionTree (term: CoreTerm) =
+            match term with
+            | Symbol { Symbol = symbol } -> Map.tryFind symbol this.DecisionTree
+            | _ -> None
 
         member inline public this.GetRelevantRules (term: CoreTerm) =
             match term with
@@ -199,8 +205,138 @@ module Interpreter =
 
         let rulesMap = rulesLists |> Map.map (fun _ v -> v |> List.rev |> List.toArray)
         let handlersMap = handlersLists |> Map.map (fun _ v -> v |> List.rev |> List.toArray)
+        let decisionTree = rulesMap |> Map.map (fun _ -> DecisionTreeCompiler.compileRules)
 
-        { RulesMap = rulesMap; HandlersMap = handlersMap }
+        { RulesMap = rulesMap
+          HandlersMap = handlersMap
+          DecisionTree = decisionTree }
+
+    /// Experimental pattern matching via decision tree for rules.
+    module private DecisionTreeEvaluation =
+        open DecisionTree
+
+        type public MatchResult =
+            | Success of ruleIndex: int * bindings: Map<string, CoreTerm>
+            | Failure
+
+        let rec public eval
+            (state: RunningState)
+            (normalize: RunningState -> CoreTerm -> RunningState * CoreTerm)
+            (tree: DecisionTree.DecisionTree)
+            (term: CoreTerm)
+            (currentBindings: Substitution)
+            =
+
+            let evalRecursive = eval state normalize
+
+            match tree with
+            | Fail -> Failure
+            
+            | Leaf(ruleIndex, pathBindings) ->
+                let finalBindings =
+                    pathBindings
+                    |> Map.fold (fun acc varName path ->
+                        let value = PathAccess.access path term
+                        Map.add varName value acc) currentBindings
+
+                Success(ruleIndex, finalBindings)
+
+            | Switch(path, cases, defaultCase) ->
+                let accessedTerm = PathAccess.access path term
+                match accessedTerm with
+                | Symbol { Symbol = sym; IsVariable = false; Children = children } ->
+                    let arity = children.Length
+                    match Map.tryFind (sym, arity) cases with
+                    | Some subtree -> evalRecursive subtree term currentBindings
+                    | None -> 
+                        defaultCase 
+                        |> Option.map (fun subtree -> evalRecursive subtree term currentBindings)
+                        |> Option.defaultValue Failure
+                | _ ->
+                    defaultCase 
+                    |> Option.map (fun subtree -> evalRecursive subtree term currentBindings)
+                    |> Option.defaultValue Failure
+
+            | SwitchLiteral(path, cases, defaultCase) ->
+                let accessedTerm = PathAccess.access path term
+                match accessedTerm with
+                | Literal lit ->
+                    match Map.tryFind lit cases with
+                    | Some subtree -> evalRecursive subtree term currentBindings
+                    | None ->
+                        defaultCase
+                        |> Option.map (fun subtree -> evalRecursive subtree term currentBindings)
+                        |> Option.defaultValue Failure
+                | _ ->
+                    defaultCase
+                    |> Option.map (fun subtree -> evalRecursive subtree term currentBindings)
+                    |> Option.defaultValue Failure
+
+            | ArityCheck(path, expectedArity, success, failure) ->
+                match PathAccess.access path term with
+                | Symbol { Children = children } when children.Length = expectedArity ->
+                    evalRecursive success term currentBindings
+                | _ ->
+                    match failure with
+                    | Some subtree -> evalRecursive subtree term currentBindings
+                    | None -> Failure
+
+            | TypeCheck(path, cases, defaultCase) ->
+                let termType =
+                    match PathAccess.access path term with
+                    | Symbol _ -> TSymbol
+                    | Variable _ -> TVariable
+                    | Literal (Integer _) -> TLiteral TInteger
+                    | Literal (Float _) -> TLiteral TFloat
+                    | Literal (String _) -> TLiteral TString
+                    | Literal (Char _) -> TLiteral TChar
+                    | Closure _ -> TClosure
+                    | RecordExtend _ -> TRecord
+                    | Wildcard -> TWildcard
+                    | _ -> TWildcard
+
+                match Map.tryFind termType cases with
+                | Some subtree -> evalRecursive subtree term currentBindings
+                | None ->
+                    defaultCase
+                    |> Option.map (fun subtree -> evalRecursive subtree term currentBindings)
+                    |> Option.defaultValue Failure
+
+            | Bind(varName, path, continuation) ->
+                let value = PathAccess.access path term
+                match Map.tryFind varName currentBindings with
+                | Some existingValue when existingValue = value -> evalRecursive continuation term currentBindings
+                | Some _ -> Failure
+                | None ->
+                    let newBindings = Map.add varName value currentBindings
+                    evalRecursive continuation term newBindings
+
+            | WhenGuard(guard, pathBindings, success, failure) ->
+                let guardBindings =
+                    pathBindings
+                    |> Map.fold (fun acc varName path ->
+                        let value = PathAccess.access path term
+                        Map.add varName value acc) currentBindings
+
+                match evalGuard state normalize guard guardBindings with
+                | true -> evalRecursive success term currentBindings
+                | false ->
+                    match failure with
+                    | Some subtree -> evalRecursive subtree term currentBindings
+                    | None -> Failure
+
+        and private evalGuard
+            (state: RunningState)
+            (normalize: RunningState -> CoreTerm -> RunningState * CoreTerm)
+            (guard: CoreTerm)
+            (bindings: Substitution) =
+
+            let _, result = Environment.withinScope state (Some bindings) normalize (Some guard)
+
+            match result with
+            | SymbolTrue -> true
+            | SymbolFalse -> false
+            | other -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr other))
 
     /// Substitution for outermost rules.
     let rec private substitute (env: Substitution) (term: CoreTerm) : CoreTerm =
@@ -655,6 +791,7 @@ module Interpreter =
 
                 match tryHandlers state term with
                 | None -> tryRules state symbol term
+              //| None -> tryRulesWithDecisionTree state symbol term
                 | Some result -> result
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
@@ -731,6 +868,45 @@ module Interpreter =
                         else loop
 
                     Some (Environment.withinScope state (Some subst) rewriteFn (Some rhs))
+
+        and tryRulesWithDecisionTree (state: RunningState) (symbol: CoreSymbol) (term: CoreTerm) =
+
+            let runTree (s: RunningState) (t: CoreTerm) =
+                match globalEnv.GetDecisionTree t with
+                | Some tree -> DecisionTreeEvaluation.eval s loop tree t Map.empty
+                | None -> DecisionTreeEvaluation.Failure
+
+            let processSuccess (s: RunningState) (t: CoreTerm) (ruleIndex: int) (bindings: Substitution) =
+                let rule = globalEnv.GetRelevantRules(t).[ruleIndex]
+                let rhs = if rule.Strategy.IsOutermost then substitute bindings rule.RHS else rule.RHS
+                let strategy = if rule.Strategy.IsOutermost then loopOutermost else loopInnermost
+
+                Environment.withinScope s (Some bindings) strategy (Some rhs)
+
+            if globalEnv.HasOutermostRules term then
+                match runTree state term with
+                | DecisionTreeEvaluation.Success(idx, bindings) -> processSuccess state term idx bindings
+                | DecisionTreeEvaluation.Failure ->
+                    let newChildren = List.map (loop state >> snd) symbol.Children
+                    let newTerm = Symbol { symbol with Children = newChildren }
+                    
+                    match runTree state newTerm with
+                    | DecisionTreeEvaluation.Success(idx, bindings) -> processSuccess state newTerm idx bindings
+                    | DecisionTreeEvaluation.Failure ->
+                        match newTerm with
+                        | Builtin state result -> result
+                        | _ -> state, newTerm
+
+            else
+                let newChildren = List.map (loop state >> snd) symbol.Children
+                let newTerm = Symbol { symbol with Children = newChildren }
+
+                match runTree state newTerm with
+                | DecisionTreeEvaluation.Success(idx, bindings) -> processSuccess state newTerm idx bindings
+                | DecisionTreeEvaluation.Failure ->
+                    match newTerm with
+                    | Builtin state result -> result
+                    | _ -> state, newTerm
 
         and (|Builtin|_|) (state: RunningState) (term: CoreTerm) =
 
@@ -1048,6 +1224,10 @@ module Interpreter =
 
                 | _ ->
                     raise (InvalidRuleException "`bench` expect an anonymous function and an integer literal.")
+
+            | Symbol { Symbol = "show_decision_tree"; Children = [ Symbol { Symbol = s } ] } ->
+                printfn "%s" (DecisionTreePrinter.prettyPrint globalEnv.DecisionTree.[s])
+                Some term
 
             | _ -> None
             |> Option.map (fun r -> state, r)
