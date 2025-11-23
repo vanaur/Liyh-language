@@ -25,6 +25,9 @@
     <Compile Include="Typecheck/TypeCheck.fs" />
 
     <Compile Include="Execution/Core.fs" />
+
+    <Compile Include="Execution/FFI/C/CFFI.fs" />
+
     <Compile Include="Execution/Core/AlphaConversion.fs" />
     <Compile Include="Execution/Core/PrettyPrinter.fs" />
     <Compile Include="Execution/Core/CoreCompiler.fs" />
