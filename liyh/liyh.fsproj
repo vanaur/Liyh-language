@@ -30,6 +30,7 @@
 
     <Compile Include="Execution/Core/AlphaConversion.fs" />
     <Compile Include="Execution/Core/PrettyPrinter.fs" />
+    <Compile Include="Execution/Core/DecisionTree.fs" />
     <Compile Include="Execution/Core/CoreCompiler.fs" />
     <Compile Include="Execution/Core/Builtin.fs" />
     <Compile Include="Execution/Core/Interpreter.fs" />
