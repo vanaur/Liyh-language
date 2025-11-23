@@ -36,12 +36,10 @@ type public CoreSymbol =
             if System.Object.ReferenceEquals(this, otherSym) then
                 true
             else
-                if this.GetHashCode() <> otherSym.GetHashCode() then
-                    false
-                else
-                    this.IsVariable = otherSym.IsVariable &&
+                (this.GetHashCode() = otherSym.GetHashCode())
+                || (this.IsVariable = otherSym.IsVariable &&
                     this.Symbol = otherSym.Symbol &&
-                    this.Children = otherSym.Children
+                    this.Children = otherSym.Children)
         | _ -> false
 
     interface System.IEquatable<CoreSymbol> with
