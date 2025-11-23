@@ -31,6 +31,7 @@
     <Compile Include="Execution/Core/Builtin.fs" />
     <Compile Include="Execution/Core/Interpreter.fs" />
 
+    <Compile Include="Repl.fs/Repl.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
