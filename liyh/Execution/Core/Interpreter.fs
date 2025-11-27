@@ -46,6 +46,7 @@ module Interpreter =
     exception private WhileLoopPredicateException of string
     exception private UncompletePatternMatchingException of string
     exception private ArityMismatchException of int * int * string
+    exception private NonUnitFinalizerException of got: string
 
     #if DEBUG
     let private maxRecursionDepth = 443
@@ -155,8 +156,7 @@ module Interpreter =
 
     type private GlobalEnvironment =
         { RulesMap: Map<string, CoreRule array>
-          HandlersMap: Map<string, CoreHandler array>
-          DecisionTree: Map<string, DecisionTree.DecisionTree> }
+          HandlersMap: Map<string, CoreHandler array * CoreHandler option>
 
         member inline public this.GetDecisionTree (term: CoreTerm) =
             match term with
@@ -175,7 +175,7 @@ module Interpreter =
 
         member inline public this.GetRelevantHandlers (handler: string) =
             Map.tryFind handler this.HandlersMap
-            |> Option.defaultValue Array.empty
+            |> Option.defaultValue (Array.empty, None)
 
     /// Builds the global runtime environment based on the given definitions.
     let private buildGlobalEnvironment (defs: CoreDefinition seq) =
@@ -692,8 +692,8 @@ module Interpreter =
 
         and processHandle (state: RunningState) (handle: CoreHandle) =
             match globalEnv.GetRelevantHandlers handle.Handler with
-            | [||] -> failwithf "No handler found for `%s`." handle.Handler
-            | handlers ->
+            | [||], _ -> failwithf "No handler found for `%s`." handle.Handler
+            | handlers, finalizer ->
                 let newHandlerEnv =
                     { HandlerName = handle.Handler
                       Handlers = handlers
@@ -703,8 +703,43 @@ module Interpreter =
                 let stateWithHandlers =
                     { state with HandlerEnvironment = Map.add handle.Handler newHandlerEnv state.HandlerEnvironment }
 
-                try Environment.withinScope stateWithHandlers None loop (Some handle.ToHandle)
-                with ZeroShot zeroShot -> zeroShot.FinalState, zeroShot.Result
+                // The finaliser must be of type `unit` and is used to clean up external resources
+                // (flush, free, dispose, close file, etc.) when using algebraic effects with an FFI.
+                // Otherwise, they don't serve much other purpose, but that's normal; that's the point.
+                // It's a `defer`-like or a `finally`-like feature.
+
+                let resultState, resultTerm =
+                    try Environment.withinScope stateWithHandlers None loop (Some handle.ToHandle)
+                    with ZeroShot zeroShot -> zeroShot.FinalState, zeroShot.Result
+
+                let finalize = processFinalizer resultState finalizer newHandlerEnv
+                let resultState = Option.defaultValue resultState finalize
+
+                resultState, resultTerm
+
+        and processFinalizer (state: RunningState) (finalizer: CoreHandler option) (henv: HandlerEnvironment) =
+            match finalizer with
+            | None -> None
+            | Some fh ->
+                match getCurrentHandlerState state henv.HandlerName with
+                | Some hstate ->
+                    match matchTerm state globalEnv fh.State hstate Map.empty with
+                    | Some subst ->
+                        match Environment.withinScope state (Some subst) loop (Some fh.RHS) with
+                        | fialState, Symbol { Symbol = "unit"; Children = [] } -> Some fialState
+                        | _, other -> raise (NonUnitFinalizerException (PrettyPrinter.prettyPrintExpr other))
+
+                    | None ->
+                        let got = PrettyPrinter.prettyPrintExpr hstate
+                        let expected = PrettyPrinter.prettyPrintExpr fh.State
+                        raise (PatternMatchFailedException (got, expected, $"{henv.HandlerName}'s finalizer"))
+
+                | None -> failwithf "State does not exist for the finaliser."
+
+        and getCurrentHandlerState (state: RunningState) (hname: string) =
+            state.HandlerEnvironment
+            |> Map.tryFind hname
+            |> Option.map _.HandlerState
 
         and processResume (state: RunningState) (resume: CoreResume) =
             let _, evaluatedHandlerState = loop state resume.State
@@ -1282,6 +1317,10 @@ module Interpreter =
         | InvalidRuleException msg ->
             let msg = sprintf "Invalid rule reached: %s" msg
             immediateRuntimeError Runtime msg
+
+        | NonUnitFinalizerException got ->
+            let msg = sprintf "Expected an unit return type for the finalizer but got `%s`." got
+            immediateRuntimeError RuntimeInternal msg
 
         | ex -> raise ex
 
