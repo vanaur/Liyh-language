@@ -66,10 +66,10 @@ module Parser =
 
     /// Reserved names and symbols for the language.
     let private reserved =
-        [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "is"; "as"; "_"; "->"; "["; "match"; "|>";
+        [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "is"; "as"; "_"; "->"; "["; "|>";
           "if"; "then"; "else"; "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "=";
-          "notation"; "using"; "use"; "innermost"; "outermost"; "unreachable"; "--"; "to"; "downto"; "type";
-          "type-alias"; "."; ]
+          "notation"; "using"; "use"; "innermost"; "outermost"; "invalid"; "--"; "to"; "downto"; "type";
+          "type-alias"; "."; "extern" ]
 
     let private reservedSet = System.Collections.Generic.HashSet<string>(reserved)
 
