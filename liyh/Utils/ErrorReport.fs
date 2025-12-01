@@ -63,10 +63,10 @@ module ErrorReporter =
             let cursor =
                 ColorTerm.colorize (ColorTerm.Indexed 131) (if len <= 1 then "^" else "𜰉")
 
-            String.replicate 8 " "
+            String.replicate 9 " "
             + "𜰊"
             + " "
-            + String.replicate (11 - (8 + 2) + start) " "
+            + String.replicate (12 - (9 + 2) + start) " "
             + String.replicate len cursor
 
         let startLine = max 1L (errorLine - 2L)
@@ -95,17 +95,17 @@ module ErrorReporter =
         let cleaned = compress [] trimmed
 
         let sb = StringBuilder()
-        sb.Append(indent 8 "⋮") |> ignore
+        sb.Append(indent 9 "⋮") |> ignore
         sb.AppendLine() |> ignore
 
         for (lineNum, line) in cleaned do
-            let lineNumStr = sprintf "%3d" lineNum
+            let lineNumStr = sprintf "%4d" lineNum
             sb.AppendFormat("    {0} {1}  {2}\n", lineNumStr, "│", line) |> ignore
 
             if lineNum = errorLine then
                 sb.Append(caretLine + "\n") |> ignore
 
-        sb.Append(indent 8 "⋮") |> ignore
+        sb.Append(indent 9 "⋮") |> ignore
         sb.ToString()
 
     let private formatListItems (items: string seq) =
