@@ -33,6 +33,7 @@ The language has several features, but the most interesting ones are probably...
  - **Measure's unit system:** you can write a programme that manipulates values with units of measurement; Liyh guarantees their consistency at compile-time and their conversion at runtime. You can define your own systems.
  - **Symbolic-wise:** it is not possible to combine "static typing" and "abstract/undefined symbols", but it is possible to frame pure symbolic behaviour to achieve a programme that is ultimately statically typed and flexible. We invented what we call "symbolic effects" to address this problem.
  - **Mixfix operators:** the language supports the definition of mixfix operators. You can define fancy notations!
+ - **Simple Foreign Function Interface:** Liyh provides a simple-to-use (unidirectional) FFI for C, supporting the basic literal types, pointers, structures, and arrays.
 
 One thing that was very important to us during the design process was consistency: we want a consistent language, not just a collection of cool features. We hope that this desire is reflected in the final product.
 
