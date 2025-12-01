@@ -185,3 +185,9 @@ module Builtin =
         function
         | Symbol { Symbol = "debug_print"; Children = [ value ] } -> Some value
         | _ -> None
+
+    and public (|Ptr|_|) =
+        function
+        | Symbol { Symbol = "ptr"; Children = [ Literal (Integer ptr) ] } -> Some (nativeint ptr)
+        | _ -> None
+

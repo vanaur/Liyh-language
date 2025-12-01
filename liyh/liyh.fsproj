@@ -24,15 +24,14 @@
 
     <Compile Include="Typecheck/TypeCheck.fs" />
 
-    <Compile Include="Execution/Core.fs" />
-
     <Compile Include="Execution/FFI/C/CFFI.fs" />
-
+    <Compile Include="Execution/Core.fs" />
+    <Compile Include="Execution/Core/Builtin.fs" />
+    <Compile Include="Execution/Core/FFI.fs" />
     <Compile Include="Execution/Core/AlphaConversion.fs" />
     <Compile Include="Execution/Core/PrettyPrinter.fs" />
     <Compile Include="Execution/Core/DecisionTree.fs" />
     <Compile Include="Execution/Core/CoreCompiler.fs" />
-    <Compile Include="Execution/Core/Builtin.fs" />
     <Compile Include="Execution/Core/Interpreter.fs" />
 
     <Compile Include="Repl.fs/Repl.fs" />

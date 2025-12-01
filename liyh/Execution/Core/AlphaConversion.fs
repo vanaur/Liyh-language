@@ -229,3 +229,4 @@ module AlphaConversion =
                     RHS = newRHS
                     WhenClause = newWhen }
 
+        | Extern _ -> def

@@ -19,6 +19,9 @@ module PrettyPrinter =
                    Children = []
                    IsVariable = true } -> sprintf "'%s" s
 
+        | Builtin.Ptr p ->
+            sprintf "ptr[0x%016x]" (int64 p)
+
         | Symbol { Symbol = s
                    Children = xs
                    IsVariable = false } ->
@@ -41,13 +44,15 @@ module PrettyPrinter =
         | Literal(Float x) ->
 
             let formatDouble (x: double) =
-                let s = x.ToString("G15", Globalization.CultureInfo.InvariantCulture)
-
-                if s.Contains(".") then
-                    let trimmed = s.TrimEnd('0')
-                    if trimmed.EndsWith(".") then trimmed + "0" else trimmed
+                if System.Double.IsNaN(x) || System.Double.IsInfinity(x) then
+                    x.ToString("G15", Globalization.CultureInfo.InvariantCulture)
                 else
-                    s + ".0"
+                    let s = x.ToString("G15", Globalization.CultureInfo.InvariantCulture)
+                    if s.Contains(".") then
+                        let trimmed = s.TrimEnd('0')
+                        if trimmed.EndsWith(".") then trimmed + "0" else trimmed
+                    else
+                        s + ".0"
 
             formatDouble x
 

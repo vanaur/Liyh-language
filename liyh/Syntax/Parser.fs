@@ -1039,7 +1039,7 @@ module Parser =
             (fun _ lst -> TopLevel.ModuleExport lst)
 
     let private parseSignature (mustIndicateRetType: bool) =
-        let parseRetType = skipChar ':' >>. spaces >>. TypeParser.parseType
+        let parseRetType = (skipChar ':' <|> skipString "->") >>. spaces >>. TypeParser.parseType
 
         pipe3
             (spaces >>. NameParser.parseName false)
@@ -1127,6 +1127,20 @@ module Parser =
                       Strategy = strategy
                       Type = type'
                       Body = rewriting })
+
+    let private parseExtern =
+        pipe5
+            (spaces >>. skipString "extern")
+            (spaces >>. opt (choice [ skipStringCI "C" >>% C ]) <?> "language target")
+            (spaces >>. parseWithPos (between (pchar '"') (pchar '"') (many1Chars (noneOf "\""))))
+            (spaces >>. skipString "as" >>. spaces >>. parseWithPos NameParser.parseIdentifier)
+            (spaces >>. blockOf (parseSignature true))
+            (fun _ lang lib asName content ->
+                Extern
+                    { Language = Option.defaultValue C lang
+                      Library = lib
+                      AsName = asName
+                      Content = content })
 
     type private NotationField =
         | Name of string
@@ -1250,6 +1264,7 @@ module Parser =
               parseWithPos parseType
               parseWithPos parseNotation
               attempt (parseWithPos parseHandler)
+              parseWithPos parseExtern
               parseWithPos parseRule ]
 
         let parseStatement = 

@@ -30,9 +30,10 @@ namespace Liyh.Execution.Core
 
 module Interpreter =
     open System.Collections.Generic
+    open System.Runtime.InteropServices
     open Liyh.Execution
-    open Helper
-    open Builtin
+    open Liyh.Execution.Core.Helper
+    open Liyh.Execution.Core.Builtin
     open Liyh.Utils.ErrorReporter
 
     exception private InvalidRuleException of string
@@ -47,6 +48,7 @@ module Interpreter =
     exception private UncompletePatternMatchingException of string
     exception private ArityMismatchException of int * int * string
     exception private NonUnitFinalizerException of got: string
+    exception private UnboundExternalFunctionException of lib: string * fn: string
 
     #if DEBUG
     let private maxRecursionDepth = 443
@@ -157,6 +159,17 @@ module Interpreter =
     type private GlobalEnvironment =
         { RulesMap: Map<string, CoreRule array>
           HandlersMap: Map<string, CoreHandler array * CoreHandler option>
+          DecisionTree: Map<string, DecisionTree.DecisionTree>
+          ExternLibraries: Map<string, FFI.CFFI.DynLib * Map<string, FFI.CFFI.FunctionSignature>> }
+
+        member inline public this.GetExternLibrary (term: CoreTerm) =
+            match term with
+            | Symbol { Symbol = symbol } as symb ->
+                this.ExternLibraries
+                |> Map.tryPick (fun qualifier value ->
+                    if symbol.StartsWith(qualifier + ".") then Some value
+                    else None)
+            | _ -> None
 
         member inline public this.GetDecisionTree (term: CoreTerm) =
             match term with
@@ -185,31 +198,46 @@ module Interpreter =
             | Symbol { Symbol = s } -> s
             | _ -> failwith "expected symbol on LHS"
 
+        let inline addRule (rm: Map<string, CoreRule list>) (r: CoreRule) =
+            let sym = projectSymbol r.LHS
+            let updated = r :: (Map.tryFind sym rm |> Option.defaultValue [])
+            Map.add sym updated rm
+
+        let inline addHandler (hm: Map<string, CoreHandler list>) (h: CoreHandler) =
+            let updated = h :: (Map.tryFind h.HandlerName hm |> Option.defaultValue [])
+            Map.add h.HandlerName updated hm
+
+        let inline addExtern (ex: Map<string, FFI.CFFI.DynLib * Map<string, FFI.CFFI.FunctionSignature>>) (e: CoreExtern) =
+            Map.add e.LibraryName (e.Library, e.Functions) ex
+
         let rmInit: Map<string, CoreRule list> = Map.empty
         let hmInit: Map<string, CoreHandler list> = Map.empty
+        let exInit: Map<string, FFI.CFFI.DynLib * Map<string, FFI.CFFI.FunctionSignature>> = Map.empty
 
-        let rulesLists, handlersLists =
+        let rulesLists, handlersLists, externLibraries =
             defs
-            |> Seq.fold (fun (rm, hm) ->
+            |> Seq.fold (fun (rm, hm, ex) ->
                 function
-                | Rule r ->
-                    let sym = projectSymbol r.LHS
-                    let updated = r :: (Map.tryFind sym rm |> Option.defaultValue [])
-                    Map.add sym updated rm, hm
+                | Rule r -> addRule rm r, hm, ex
+                | Handler h -> rm, addHandler hm h, ex
+                | Extern e -> rm, hm, addExtern ex e
 
-                | Handler h ->
-                    let updated = h :: (Map.tryFind h.HandlerName hm |> Option.defaultValue [])
-                    rm, Map.add h.HandlerName updated hm
+            ) (rmInit, hmInit, exInit)
 
-            ) (rmInit, hmInit)
+        let inline finalizer (v: CoreHandler list) =
+            match List.partition (fun h -> h.LHS.IsWildcard) v with
+            | [], others -> Array.ofList others, None
+            | f :: _, others -> Array.ofList others, Some f
 
         let rulesMap = rulesLists |> Map.map (fun _ v -> v |> List.rev |> List.toArray)
-        let handlersMap = handlersLists |> Map.map (fun _ v -> v |> List.rev |> List.toArray)
+        //let handlersMap = handlersLists |> Map.map (fun _ v -> (v |> List.rev |> List.toArray), None)
+        let handlersMap = handlersLists |> Map.map (fun _ -> finalizer)
         let decisionTree = rulesMap |> Map.map (fun _ -> DecisionTreeCompiler.compileRules)
 
         { RulesMap = rulesMap
           HandlersMap = handlersMap
-          DecisionTree = decisionTree }
+          DecisionTree = decisionTree
+          ExternLibraries = externLibraries }
 
     /// Experimental pattern matching via decision tree for rules.
     module private DecisionTreeEvaluation =
@@ -824,10 +852,24 @@ module Interpreter =
 
                 let term = Symbol symbol
 
-                match tryHandlers state term with
-                | None -> tryRules state symbol term
-              //| None -> tryRulesWithDecisionTree state symbol term
-                | Some result -> result
+                match globalEnv.GetExternLibrary term with
+                | Some (lib, functions) ->
+                    match symbol.Symbol.Split '.' with      // not a big fan of this...
+                    | [| qual; functionName |] ->
+                        match Map.tryFind functionName functions with
+                        | Some f ->
+                            let children = symbol.Children |> List.map (loop state >> snd)
+                            state, FFI.callExternalFunction f lib children
+                        | None ->
+                            raise (UnboundExternalFunctionException(qual, functionName))
+                    | _ ->
+                        failwith $"Invalid symbol format: expected 'Namespace.FunctionName', got '{symbol.Symbol}'."
+
+                | None ->
+                    match tryHandlers state term with
+                    | None -> tryRules state symbol term
+                  //| None -> tryRulesWithDecisionTree state symbol term
+                    | Some result -> result
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
             let clen = closure.Parameters.Length
@@ -1141,6 +1183,10 @@ module Interpreter =
                 match a, t with
                 | Literal lit, Symbol { Symbol = s } when s = "Int" || s = "Float" || s = "Char" ->
                     Some (Literal (convertLiteral lit s))
+
+                | Ptr ptr, Symbol { Symbol = "String" } ->
+                    Some (Literal (String (Marshal.PtrToStringUTF8 ptr)))
+
                 | _ -> None
 
             | Show value ->
@@ -1320,6 +1366,10 @@ module Interpreter =
 
         | NonUnitFinalizerException got ->
             let msg = sprintf "Expected an unit return type for the finalizer but got `%s`." got
+            immediateRuntimeError RuntimeInternal msg
+
+        | UnboundExternalFunctionException(lib, fn) ->
+            let msg = sprintf "Unfound external function: `%s` from the external library interface `%s`." fn lib
             immediateRuntimeError RuntimeInternal msg
 
         | ex -> raise ex

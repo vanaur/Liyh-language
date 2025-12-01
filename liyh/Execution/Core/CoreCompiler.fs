@@ -403,11 +403,99 @@ module CoreTermSubstitution =
 
             | Wildcard -> term
 
+module ExternTypes =
+    open System
+    open System.Text
+    open System.Security.Cryptography
+    open System.Collections.Concurrent
+    open Liyh.Syntax.SyntaxTree
+    open Liyh.Execution
+    open FFI.CFFI
+
+    let private structCache = ConcurrentDictionary<string, System.Type>()
+
+    let private hashShort (s: string) =
+        use sha = SHA256.Create()
+        let bytes = Encoding.UTF8.GetBytes(s)
+        let hash = sha.ComputeHash(bytes)
+
+        BitConverter.ToString(hash, 0, 8).Replace("-", "").ToLowerInvariant()
+
+    let rec private typeSignature (t: WithPos<Type>) : string =
+        let rec qnameToString { Node = { Qualifier = qual; Name = { Node = name } } } =
+            let qualPart = String.concat "." (qual |> List.map (fun q -> q.Node))
+            if String.IsNullOrEmpty qualPart then name else qualPart + "." + name
+
+        match removePos t with
+        | NamedType idwp ->
+            qnameToString idwp
+
+        | ParametrizedType(idwp, args) ->
+            let baseName = qnameToString idwp
+            let argsS = args |> List.map typeSignature |> String.concat ","
+            $"{baseName}<{argsS}>"
+
+        | RowRecordType fields ->
+            let fieldsS =
+                fields
+                |> List.map (fun (fname, fty) -> $"{fname}:{typeSignature fty}")
+                |> String.concat ";"
+            $"record{{{fieldsS}}}"
+
+        | other ->
+            failwithf "Unsupported AST type in signature: %A" other
+
+    let rec public externTypeToCType (externType: WithPos<Type>) : CType =
+        match removePos externType with
+        | NamedType idwp ->
+            match idwp.Node.Qualifier with
+            | [{ Node = "C" }] ->
+                match idwp.Node.Name.Node with
+                | "Int32"   -> CType.Int32
+                | "Int64"   -> CType.Int64
+                | "Char"    -> CType.Char
+                | "Float32" -> CType.Float32
+                | "Single"  -> CType.Single
+                | "Float64" -> CType.Float64
+                | "String"  -> CType.String
+                | "Void"    -> CType.Void
+                | "Ptr"     -> CType.Pointer CType.Void
+                | unknown   -> failwithf "Unknown C type: %s" unknown
+            | _ ->
+                failwithf "Invalid type for external signature: %s" (string idwp.Node)
+
+        | ParametrizedType(idwp, ps) ->
+            let mainType = externTypeToCType (withPosOf externType (NamedType idwp))
+            let argTypes = List.map externTypeToCType ps
+
+            match mainType, argTypes with
+            | CType.Pointer _, [a] -> CType.Pointer a
+            | _ -> failwithf "Unsupported parametrized type: main=%A, args=%A" mainType argTypes
+
+        | RowRecordType fields ->
+            let sigStr = typeSignature externType
+            structCache.GetOrAdd(sigStr, Func<string, System.Type>(fun _ ->
+                let mapper (name, ty) =
+                    { Name = name
+                      FieldType = externTypeToCType ty
+                      Offset = None }
+
+                let fieldArray = fields |> List.toArray |> Array.map mapper
+                let shortHash = hashShort sigStr
+                let structName = $"struct_{shortHash}"
+                defineStruct structName fieldArray StructLayout.Sequential
+            ))
+            |> CType.Struct
+
+        | RuleType _ -> CType.Pointer CType.Void
+        | other -> failwithf "Unsupported type in extern declaration: %s" (string other)
+
 [<RequireQualifiedAccess>]
 module CoreCompiler =
     open Liyh.Execution
     open Liyh.Module
     open Liyh.Syntax.SyntaxTree
+    open FFI.CFFI
     open Helper
 
     type private State =
@@ -809,6 +897,7 @@ module CoreCompiler =
             match removePos definition with
             | TopLevel.Rule rule -> compileRule cstate rule
             | TopLevel.Handler handler -> compileHandler cstate handler
+            | TopLevel.Extern extrn -> compileExtern extrn
             | other -> failwithf "Todo: %A" other
 
         AlphaConversion.alphaConversionDefinition UniqueName.get compiled
@@ -847,6 +936,35 @@ module CoreCompiler =
               State = hstate
               WhenClause = whenClause
               Strategy = strategy }
+
+    and private compileExtern (extrn: Extern) =
+        let lib = DynLib.Load extrn.Library.Node
+        let functions =
+            extrn.Content
+            |> List.map (fun sgn ->
+                let returnType =
+                    sgn.ReturnType
+                    |> Option.map ExternTypes.externTypeToCType
+                    |> Option.defaultValue CType.Void
+
+                let parameters =
+                    sgn.ArgumentsType
+                    |> List.map ExternTypes.externTypeToCType
+                    |> Array.ofList
+
+                let funSig =
+                    { Name = sgn.Name
+                      ReturnType = returnType
+                      Parameters = parameters }
+
+                sgn.Name, funSig)
+
+            |> Map.ofList
+
+        CoreDefinition.Extern
+            { LibraryName = string (removePos extrn.AsName)
+              Library = lib
+              Functions = functions }
 
     // --- Module --- //
 

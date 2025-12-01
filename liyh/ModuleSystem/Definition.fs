@@ -10,6 +10,7 @@ module Definitions =
     type public DefinitionType =
         | Rule
         | Handler
+        | Extern
         | Effect
         | Type
         | TypeAlias
@@ -19,6 +20,7 @@ module Definitions =
             match this with
             | Rule -> "rule"
             | Handler -> "handler"
+            | Extern -> "extern"
             | Effect -> "effect"
             | Type -> "type"
             | TypeAlias -> "type alias"
@@ -29,6 +31,7 @@ module Definitions =
         match node with
         | TopLevel.Rule _ -> Some Rule
         | TopLevel.Handler _ -> Some Handler
+        | TopLevel.Extern _ -> Some Extern
         | TopLevel.Effect _ -> Some Effect
         | TopLevel.Type _ -> Some Type
         | TopLevel.TypeAlias _ -> Some TypeAlias

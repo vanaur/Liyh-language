@@ -174,11 +174,21 @@ module SyntaxTree =
         | Type of SumType
         | TypeAlias of name: string * vartypes: string list * TypeWithPos
         | Notation of Notation
+        | Extern of Extern
         | Measure
         | Unit
         | UnitSystem
         | UnitConversion
         | ModuleExport of string list
+
+    and public Extern =
+        { Language: ExternLanguageTarget
+          Library: string WithPos
+          AsName: Identifier WithPos
+          Content: Signature list }
+
+    and public ExternLanguageTarget =
+        | C
 
     and public SumType =
         { Name: string

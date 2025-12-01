@@ -275,14 +275,15 @@ module public CFFI =
 
     [<Struct>]
     type public FunctionSignature =
-        { returnType: CType
-          parameters: CType[] }
+        { Name: string
+          ReturnType: CType
+          Parameters: CType[] }
 
     [<Struct>]
     type public StructFieldDefinition =
-        { name: string
-          fieldType: CType
-          offset: int option }
+        { Name: string
+          FieldType: CType
+          Offset: int option }
 
     [<RequireQualifiedAccess>]
     type public StructLayout =
@@ -351,7 +352,7 @@ module public CFFI =
 
     let private structRegistry = StructureRegistry()
 
-    let public DefineStruct (name: string) (fields: StructFieldDefinition[]) (layout: StructLayout) =
+    let public defineStruct (name: string) (fields: StructFieldDefinition[]) (layout: StructLayout) =
         try
             match structRegistry.TryGet name with
             | Some existingType -> existingType
@@ -365,15 +366,15 @@ module public CFFI =
                     fields
                     |> Array.map (fun field ->
                         let (marshalType, sizeConst) =
-                            match field.fieldType with
+                            match field.FieldType with
                             | CType.FixedArray(CType.Char, size) -> (Some UnmanagedType.ByValTStr, Some size)
                             | CType.FixedArray(_, size) -> (Some UnmanagedType.ByValArray, Some size)
                             | _ -> (None, None)
 
                         let sd: StructureMarshaller.StructField =
-                            { name = field.name
-                              fieldType = cTypeToFieldType field.fieldType
-                              offset = field.offset
+                            { name = field.Name
+                              fieldType = cTypeToFieldType field.FieldType
+                              offset = field.Offset
                               marshalType = marshalType
                               sizeConst = sizeConst }
 
@@ -387,7 +388,7 @@ module public CFFI =
         with ex ->
             raise (StructureDefinitionException(name, ex.Message))
 
-    let public CreateStructInstance (structType: Type) (fieldValues: (string * obj)[]) =
+    let public createStructInstance (structType: Type) (fieldValues: (string * obj)[]) =
         try
             let instance = Activator.CreateInstance(structType)
 
@@ -402,7 +403,7 @@ module public CFFI =
         with ex ->
             raise (StructureDefinitionException(structType.Name, sprintf "Failed to create instance: %s" ex.Message))
 
-    let public GetStructField (structInstance: obj) (fieldName: string) =
+    let public getStructField (structInstance: obj) (fieldName: string) =
         let structType = structInstance.GetType()
         let field = structType.GetField(fieldName)
 
@@ -411,7 +412,7 @@ module public CFFI =
 
         field.GetValue(structInstance)
 
-    let public SetStructField (structInstance: obj) (fieldName: string) (value: obj) =
+    let public setStructField (structInstance: obj) (fieldName: string) (value: obj) =
         let structType = structInstance.GetType()
         let field = structType.GetField(fieldName)
 
@@ -434,18 +435,21 @@ module public CFFI =
                     Path.Combine(directory, fileName + ".dll")
                 else
                     path
+
             elif RuntimeInformation.IsOSPlatform OSPlatform.OSX then
                 if not (fileName.Contains(".")) then
                     Path.Combine(directory, "lib" + fileName + ".dylib")
                 else
                     path
-            else if // Linux
+
+            else if
                 not (fileName.Contains("."))
             then
                 Path.Combine(directory, "lib" + fileName + ".so")
             else
                 path
 
+        /// Load the dynamic library if it exists.
         static member public Load(path: string) =
             let normalizedPath = DynLib.NormalizeLibraryPath path
             let libName = Path.GetFileNameWithoutExtension normalizedPath
@@ -486,8 +490,8 @@ module public CFFI =
         /// Creates a C function pointer that redirects to an F# function.
         /// The returned pointer can be passed to a C function awaiting a callback.
         member public this.CreateCallback (func: obj[] -> obj) (signature: FunctionSignature) : nativeint =
-            let parameterTypes = Array.map cTypeToParamType signature.parameters
-            let returnType = cTypeToReturnType signature.returnType
+            let parameterTypes = Array.map cTypeToParamType signature.Parameters
+            let returnType = cTypeToReturnType signature.ReturnType
             let delegateType = DelegateBuilder.BuildDelegateType(parameterTypes, returnType)
 
             let (shimType, fieldInfo, methodInfo) = 
@@ -506,16 +510,16 @@ module public CFFI =
             ptr
 
         member private this.CreateDynamicDelegate(signature: FunctionSignature) =
-            let parameterTypes = Array.map cTypeToParamType signature.parameters
-            let returnType = cTypeToReturnType signature.returnType
+            let parameterTypes = Array.map cTypeToParamType signature.Parameters
+            let returnType = cTypeToReturnType signature.ReturnType
             DelegateBuilder.BuildDelegateType(parameterTypes, returnType)
 
         member private this.PrepareArguments (signature: FunctionSignature) (args: obj[]) =
-            Array.zip signature.parameters args
+            Array.zip signature.Parameters args
             |> Array.map (fun (ctype, arg) -> if arg = null then null else arg)
 
         member private this.ProcessReturnValue (signature: FunctionSignature) (result: obj) =
-            match signature.returnType with
+            match signature.ReturnType with
             | CType.String -> convertIntPtrToStringObj result
             | CType.Pointer _ -> convertIntPtrToPtrObj result
             | _ -> result
@@ -524,12 +528,12 @@ module public CFFI =
             if disposed then
                 invalidOp "The library has been disposed"
 
-            if Array.length args <> Array.length signature.parameters then
+            if Array.length args <> Array.length signature.Parameters then
                 raise (
                     IncorrectNumberOfArgumentsException(
                         libName,
                         fname,
-                        Array.length signature.parameters,
+                        Array.length signature.Parameters,
                         Array.length args
                     )
                 )

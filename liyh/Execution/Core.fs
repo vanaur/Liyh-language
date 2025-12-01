@@ -139,6 +139,7 @@ and public CoreHandle =
 type public CoreDefinition =
     | Rule of CoreRule
     | Handler of CoreHandler
+    | Extern of CoreExtern
 
 and public CoreRule =
     { LHS: CoreTerm
@@ -153,6 +154,11 @@ and public CoreHandler =
       State: CoreTerm
       WhenClause: CoreTerm option
       Strategy: Liyh.Syntax.SyntaxTree.RewritingStrategy }
+
+and public CoreExtern =
+    { LibraryName: string
+      Library: FFI.CFFI.DynLib
+      Functions: Map<string, FFI.CFFI.FunctionSignature> }
 
 type public CoreProgram = CoreDefinition list
 
