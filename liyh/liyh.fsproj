@@ -34,7 +34,7 @@
     <Compile Include="Execution/Core/CoreCompiler.fs" />
     <Compile Include="Execution/Core/Interpreter.fs" />
 
-    <Compile Include="Repl.fs/Repl.fs" />
+    <Compile Include="Repl/Repl.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
