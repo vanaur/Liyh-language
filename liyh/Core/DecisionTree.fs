@@ -1,7 +1,7 @@
-namespace Liyh.Execution.Core
+namespace Liyh.Core
 
 module DecisionTree =
-    open Liyh.Execution
+    open Liyh.Core
 
     type public Path =
         | Root
@@ -88,7 +88,8 @@ module DecisionTree =
 
 module DecisionTreeCompiler =
     open DecisionTree
-    open Liyh.Execution
+    open Liyh.Core
+    open Liyh.Core.Helper
 
     type public PatternInfo =
         { Variables: Set<string>
@@ -122,12 +123,12 @@ module DecisionTreeCompiler =
             | _ -> Wildcard
 
     let private mkEqualityGuard (var1: string) (var2: string) =
-        Symbol { Symbol = "eq"; Children = [Variable var1; Variable var2]; IsVariable = false; __hashCache = 0 }
+        symbol "eq" [Variable var1; Variable var2]
 
     let private mergeGuards (existing: CoreTerm option) (newGuard: CoreTerm) =
         match existing with
         | None -> newGuard
-        | Some g -> Symbol { Symbol = "and"; Children = [g; newGuard]; IsVariable = false; __hashCache = 0 }
+        | Some g -> symbol "and" [g; newGuard]
 
     let private partitionByConstructor (path: Path) (occurrences: PatternOccurrence list) =
         let mutable byConstructor = Map.empty<(string * int), PatternOccurrence list>
@@ -321,7 +322,7 @@ module DecisionTreeCompiler =
         compile { Occurrences = occurrences; RemainingPaths = [ Root ] }
 
 module DecisionTreePrinter =
-    open Liyh.Execution
+    open Liyh.Core
     open DecisionTree
     open System.Text
 

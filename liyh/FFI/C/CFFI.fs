@@ -1,4 +1,4 @@
-namespace Liyh.Execution.FFI
+namespace Liyh.FFI
 
 /// Loads useful functions for Windows.
 module private Kernel32 =

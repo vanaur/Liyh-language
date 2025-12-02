@@ -1,7 +1,7 @@
-namespace Liyh.Execution.Core
+namespace Liyh.Core
 
 module Builtin =
-    open Liyh.Execution
+    open Liyh.Core
 
     // --- Lists --- //
 

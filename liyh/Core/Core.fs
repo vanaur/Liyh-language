@@ -1,4 +1,4 @@
-namespace rec Liyh.Execution
+namespace rec Liyh.Core
 
 //
 // The 'core' (LiyhCore) is a minimalist version of the language used for
@@ -157,8 +157,8 @@ and public CoreHandler =
 
 and public CoreExtern =
     { LibraryName: string
-      Library: FFI.CFFI.DynLib
-      Functions: Map<string, FFI.CFFI.FunctionSignature> }
+      Library: Liyh.FFI.CFFI.DynLib
+      Functions: Map<string, Liyh.FFI.CFFI.FunctionSignature> }
 
 type public CoreProgram = CoreDefinition list
 

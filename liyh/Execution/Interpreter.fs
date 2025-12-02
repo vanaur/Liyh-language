@@ -31,9 +31,11 @@ namespace Liyh.Execution.Core
 module Interpreter =
     open System.Collections.Generic
     open System.Runtime.InteropServices
-    open Liyh.Execution
-    open Liyh.Execution.Core.Helper
-    open Liyh.Execution.Core.Builtin
+    open Liyh.FFI.CFFI
+    open Liyh.Execution.FFI
+    open Liyh.Core
+    open Liyh.Core.Helper
+    open Liyh.Core.Builtin
     open Liyh.Utils.ErrorReporter
 
     exception private InvalidRuleException of string
@@ -160,7 +162,7 @@ module Interpreter =
         { RulesMap: Map<string, CoreRule array>
           HandlersMap: Map<string, CoreHandler array * CoreHandler option>
           DecisionTree: Map<string, DecisionTree.DecisionTree>
-          ExternLibraries: Map<string, FFI.CFFI.DynLib * Map<string, FFI.CFFI.FunctionSignature>> }
+          ExternLibraries: Map<string, DynLib * Map<string, FunctionSignature>> }
 
         member inline public this.GetExternLibrary (term: CoreTerm) =
             match term with
@@ -207,12 +209,12 @@ module Interpreter =
             let updated = h :: (Map.tryFind h.HandlerName hm |> Option.defaultValue [])
             Map.add h.HandlerName updated hm
 
-        let inline addExtern (ex: Map<string, FFI.CFFI.DynLib * Map<string, FFI.CFFI.FunctionSignature>>) (e: CoreExtern) =
+        let inline addExtern (ex: Map<string, DynLib * Map<string, FunctionSignature>>) (e: CoreExtern) =
             Map.add e.LibraryName (e.Library, e.Functions) ex
 
         let rmInit: Map<string, CoreRule list> = Map.empty
         let hmInit: Map<string, CoreHandler list> = Map.empty
-        let exInit: Map<string, FFI.CFFI.DynLib * Map<string, FFI.CFFI.FunctionSignature>> = Map.empty
+        let exInit: Map<string, DynLib * Map<string, FunctionSignature>> = Map.empty
 
         let rulesLists, handlersLists, externLibraries =
             defs
@@ -375,7 +377,7 @@ module Interpreter =
             | Some t -> t
             | None -> term
 
-        | Symbol s -> Symbol { s with Children = List.map (substitute env) s.Children }
+        | Symbol s -> copySymbolWithNewChildren s (List.map (substitute env) s.Children)
 
         | RecordExtend { BaseRecord = br; Extension = ext } ->
             RecordExtend {
@@ -484,7 +486,7 @@ module Interpreter =
                 if s1.IsVariable then
                     match subst.TryGetValue s1.Symbol with
                     | true, term -> if term = subject then Some subst else None
-                    | _ -> Some (Map.add s1.Symbol (Symbol { s1 with Children = [] }) subst)
+                    | _ -> Some (Map.add s1.Symbol (copySymbolWithNewChildren s1 []) subst)
 
                 else
                     if s1.Symbol = s2.Symbol then Some subst
@@ -643,7 +645,7 @@ module Interpreter =
                         applyClosure closure normalizedArgs state
 
                     | Symbol s ->   // TODO: handle outermost also here?
-                        let newSymbol = Symbol { s with Children = s.Children @ normalizedArgs }
+                        let newSymbol = copySymbolWithNewChildren s (s.Children @ normalizedArgs)
                         let _, result = applyRules finalState newSymbol
                         (finalState, result)
 
@@ -710,7 +712,7 @@ module Interpreter =
                     if term1 <> term then state1, term1
                     else
                         let children = List.map (loopOutermost state1 >> snd) s.Children
-                        let newTerm = Symbol { s with Children = children }
+                        let newTerm = copySymbolWithNewChildren s children
                         applyAndContinue state1 newTerm rules
                 else
                     loopInnermost state term
@@ -859,7 +861,7 @@ module Interpreter =
                         match Map.tryFind functionName functions with
                         | Some f ->
                             let children = symbol.Children |> List.map (loop state >> snd)
-                            state, FFI.callExternalFunction f lib children
+                            state, callExternalFunction f lib children
                         | None ->
                             raise (UnboundExternalFunctionException(qual, functionName))
                     | _ ->
@@ -920,7 +922,7 @@ module Interpreter =
             then outermostResult
             else
                 let newChildren = List.map (loop state >> snd) symbol.Children
-                let newTerm = Symbol { symbol with Children = newChildren }
+                let newTerm = copySymbolWithNewChildren symbol newChildren
                 let innermostResult = applyGivenRules state newTerm inRules
 
                 if snd innermostResult <> newTerm
@@ -965,8 +967,8 @@ module Interpreter =
                 | DecisionTreeEvaluation.Success(idx, bindings) -> processSuccess state term idx bindings
                 | DecisionTreeEvaluation.Failure ->
                     let newChildren = List.map (loop state >> snd) symbol.Children
-                    let newTerm = Symbol { symbol with Children = newChildren }
-                    
+                    let newTerm = copySymbolWithNewChildren symbol newChildren
+
                     match runTree state newTerm with
                     | DecisionTreeEvaluation.Success(idx, bindings) -> processSuccess state newTerm idx bindings
                     | DecisionTreeEvaluation.Failure ->
@@ -976,7 +978,7 @@ module Interpreter =
 
             else
                 let newChildren = List.map (loop state >> snd) symbol.Children
-                let newTerm = Symbol { symbol with Children = newChildren }
+                let newTerm = copySymbolWithNewChildren symbol newChildren
 
                 match runTree state newTerm with
                 | DecisionTreeEvaluation.Success(idx, bindings) -> processSuccess state newTerm idx bindings
@@ -1225,7 +1227,7 @@ module Interpreter =
                     | Some s -> rangeFn start s stop
                     |> Seq.map (makeLiteral >> Literal)
                     |> Seq.toList
-                    |> list
+                    |> listSymbol
                     |> Some
 
                 match start, step, stop with

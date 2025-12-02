@@ -1,7 +1,7 @@
-namespace Liyh.Execution.Core
+namespace Liyh.Core
 
 module AlphaConversion =
-    open Liyh.Execution
+    open Liyh.Core.Helper
 
     let rec private boundVariables (term: CoreTerm) : Set<string> =
         match term with
@@ -54,7 +54,7 @@ module AlphaConversion =
 
         | Symbol symb ->
             let children = List.map (ac renaming) symb.Children
-            Symbol { symb with Children = children }
+            copySymbolWithNewChildren symb children
 
         | Literal _ -> term
 

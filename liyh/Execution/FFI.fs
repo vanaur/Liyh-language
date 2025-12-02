@@ -1,10 +1,11 @@
-namespace Liyh.Execution.Core
+namespace Liyh.Execution
 
 module FFI =
     open System
     open System.Reflection
-    open Liyh.Execution.FFI.CFFI
-    open Liyh.Execution
+    open Liyh.FFI.CFFI
+    open Liyh.Core
+    open Liyh.Core.Helper
 
     exception public UnsupportedMarshalingTypeException of CoreTerm * CType
     exception public MarshalingOverflowErrorException of string
@@ -155,22 +156,16 @@ module FFI =
                 |> List.ofArray
             RecordExtend { BaseRecord = None; Extension = fields }
 
-        | CType.Void ->
-            Symbol { Symbol = "unit"; Children = []; IsVariable = false; __hashCache = 0 }
-
         | CType.Pointer _ ->
-            let ptrSymbol p =
-                Symbol
-                    { Symbol = "ptr"
-                      Children = [ Literal (Integer (bigint (int64 p))) ]
-                      IsVariable = false
-                      __hashCache = 0 }
+            let ptrSymbol p = symbol "ptr" [ Literal (Integer (bigint (int64 p))) ]
 
             match value with
             | :? nativeint as p -> ptrSymbol p
             | _ -> ptrSymbol 0
 
         | CType.FixedArray (ctype, size) ->
+            failwithf "Unsupported for now: CType.FixedArray"
+            (*
             if value = null then
                 raise (MarshalingErrorException $"Cannot unmarshal null into fixed array of size {size} and element type {ctype}")
 
@@ -191,6 +186,9 @@ module FFI =
 
             | _ ->
                 marshalingError value ctype
+            *)
+
+        | CType.Void -> simpleSymbol "unit"
 
     let inline public callExternalFunction (signature: FunctionSignature) (dynLib: DynLib) (args: CoreTerm list) =
         if signature.Parameters.Length <> args.Length then
