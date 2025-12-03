@@ -3,31 +3,6 @@ namespace rec Liyh.Core
 
 module public Helper =
 
-    //
-    // Any symbol have to be constructed using one of the following helpers.
-    // This paves the way for future optimisations.
-    //
-
-    let public symbol (name: string) (args: CoreTerm list) =
-        Symbol
-            { Symbol = name
-              Children = args
-              IsVariable = false
-              __hashCache = 0 }
-
-    let public variableSymbol (name: string) (args: CoreTerm list) =
-        Symbol
-            { Symbol = name
-              Children = args
-              IsVariable = true
-              __hashCache = 0 }
-
-    let public copySymbolWithNewChildren (symb: CoreSymbol) (children: CoreTerm list) =
-        Symbol { symb with Children = children }
-
-    let public simpleSymbol (name: string) =
-        symbol name []
-
     /// Reprsent the if-then-else operation.
     let public ifte (if': CoreTerm) (then': CoreTerm) (else': CoreTerm) =
         Match

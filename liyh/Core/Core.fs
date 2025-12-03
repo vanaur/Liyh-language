@@ -8,7 +8,6 @@ namespace rec Liyh.Core
 // a "pattern", the same structure is used for both.
 //
 
-
 [<CustomEquality; CustomComparison>]
 type public CoreSymbol =
     internal
@@ -57,8 +56,6 @@ type public CoreSymbol =
                     else
                         compare this.Children otherSym.Children
             | _ -> 1
-
-
 
 type public CoreTerm =
 
@@ -161,4 +158,32 @@ and public CoreExtern =
       Functions: Map<string, Liyh.FFI.CFFI.FunctionSignature> }
 
 type public CoreProgram = CoreDefinition list
+
+[<AutoOpen>]
+module public SymbolHelper =
+
+    //
+    // Any symbol have to be constructed using one of the following helpers.
+    // This paves the way for future optimisations.
+    //
+
+    let public symbol (name: string) (args: CoreTerm list) =
+        Symbol
+            { Symbol = name
+              Children = args
+              IsVariable = false
+              __hashCache = 0 }
+
+    let public variableSymbol (name: string) (args: CoreTerm list) =
+        Symbol
+            { Symbol = name
+              Children = args
+              IsVariable = true
+              __hashCache = 0 }
+
+    let public copySymbolWithNewChildren (symb: CoreSymbol) (children: CoreTerm list) =
+        Symbol { symb with Children = children }
+
+    let public simpleSymbol (name: string) =
+        symbol name []
 
