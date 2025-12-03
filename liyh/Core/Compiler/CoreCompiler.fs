@@ -663,6 +663,7 @@ module CoreCompiler =
                 | Some Outermost -> 0
                 | Some Innermost -> 1
                 | Some Invalid -> 2
+                | Some Memoize -> 1
                 | None -> 1
 
             let compareRules (i1, { Node = Rule r1 }) (i2, { Node = Rule r2 }) =

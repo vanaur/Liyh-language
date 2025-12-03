@@ -257,6 +257,9 @@ module SyntaxTree =
         /// No rewriting is possible; this is an exceptional case (compile time or runtime).
         | Invalid
 
+        /// Cache results for future uses.
+        | Memoize
+
     and public Module =
         { ModuleDescription: string option
           ModuleContent: TopLevelWithPos list }

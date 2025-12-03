@@ -58,8 +58,11 @@ module Interpreter =
     let private maxRecursionDepth = 1399
     #endif
 
-    /// For debugging purpose, count each call to a specific rule
+    /// For debugging purpose, count each call to a specific rule.
     let mutable private ruleCallCounts = Dictionary<string * int, int>()
+
+    /// For rules marked as `memoized`.
+    let mutable private memoizedRules = Dictionary<CoreTerm, CoreTerm>()
 
     /// Display a table that shows how many time a given symbol was invoked.
     let private printRuleCallCounts (ruleCallCounts: IDictionary<(string * int), int>) =
@@ -938,15 +941,26 @@ module Interpreter =
             | Some subst ->
                 if not (checkWhenClause state globalEnv subst rule.WhenClause) then None
                 else
-                    let rhs =
+                    let rhs () =
                         if rule.Strategy.IsOutermost then substitute subst rule.RHS
                         else rule.RHS
 
-                    let rewriteFn =
+                    let rewriteFn () =
                         if rule.Strategy.IsOutermost then loopOutermost
                         else loop
 
-                    Some (Environment.withinScope state (Some subst) rewriteFn (Some rhs))
+                    // This should not be done foolishly. The behaviour of memoization may not be as expected
+                    // if effects, I/O, etc. are used. A preliminary analysis is necessary to justify that
+                    // the use of memoization is valid; here, no verification is performed.
+                    match rule.Strategy.IsMemoize, memoizedRules.TryGetValue term with
+                    | true, (true, value) -> Some (state, value)
+                    | true, (false, _) ->
+                        let (_, value) as res = Environment.withinScope state (Some subst) (rewriteFn()) (Some (rhs()))
+                        memoizedRules.[term] <- value
+                        Some res
+
+                    | false, _ ->
+                        Some (Environment.withinScope state (Some subst) (rewriteFn()) (Some (rhs())))
 
         and tryRulesWithDecisionTree (state: RunningState) (symbol: CoreSymbol) (term: CoreTerm) =
 
@@ -1261,7 +1275,8 @@ module Interpreter =
                 | Closure closure, Literal (Integer n) ->
                     let action () = applyClosure closure [] state
 
-                    let oldCache = Dictionary(ruleCallCounts)
+                    let oldCache1 = Dictionary(ruleCallCounts)
+                    let oldCache2 = Dictionary(memoizedRules)
 
                     System.GC.Collect()
                     System.GC.WaitForPendingFinalizers()
@@ -1269,24 +1284,28 @@ module Interpreter =
 
                     // Warm-up
                     for _ in 1 .. (min 5 (int n)) do
-                        ruleCallCounts <- Dictionary(oldCache)
+                        ruleCallCounts <- Dictionary(oldCache1)
+                        memoizedRules <- Dictionary(oldCache2)
                         action() |> ignore
 
                     // First real run (to get the result)
-                    ruleCallCounts <- Dictionary(oldCache)
+                    ruleCallCounts <- Dictionary(oldCache1)
+                    memoizedRules <- Dictionary(oldCache2)
                     let _, result = action()
 
                     // Timings
                     let times =
                         [| for _ in 1 .. int n ->
-                            ruleCallCounts <- Dictionary(oldCache)
+                            ruleCallCounts <- Dictionary(oldCache1)
+                            memoizedRules <- Dictionary(oldCache2)
                             let sw = System.Diagnostics.Stopwatch.StartNew()
                             action() |> ignore
                             sw.Stop()
                             sw.Elapsed.TotalMilliseconds |]
 
                     // Restore memo
-                    ruleCallCounts <- oldCache
+                    ruleCallCounts <- oldCache1
+                    memoizedRules <- oldCache2
 
                     Array.sortInPlace times
                     let median = times.[times.Length / 2]

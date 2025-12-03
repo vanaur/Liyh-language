@@ -925,6 +925,7 @@ module Parser =
         choice [
             skipString "innermost" >>% Innermost
             skipString "outermost" >>% Outermost
+            skipString "memoize" >>% Memoize
             skipString "invalid" >>% Invalid ] <?> "rewriting strategy (innermost, outermost or invalid)"
 
     let private parseUse =
