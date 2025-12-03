@@ -14,20 +14,9 @@ type public CoreSymbol =
         { Symbol: string
           Children: CoreTerm list
           IsVariable: bool
-          mutable __hashCache: int }
+          Hash: int }
 
-    override this.GetHashCode() =
-        if this.__hashCache = 0 then
-            let mutable h = this.Symbol.GetHashCode()
-            h <- h * 31 + (if this.IsVariable then 1 else 0)
-
-            let childCount = min 4 this.Children.Length
-            for i = 0 to childCount - 1 do
-                h <- h * 31 + this.Children.[i].GetHashCode()
-
-            this.__hashCache <- if h = 0 then 1 else h
-
-        this.__hashCache
+    override this.GetHashCode() = this.Hash
 
     override this.Equals(other: obj) =
         match other with
@@ -35,10 +24,10 @@ type public CoreSymbol =
             if System.Object.ReferenceEquals(this, otherSym) then
                 true
             else
-                (this.GetHashCode() = otherSym.GetHashCode())
-                || (this.IsVariable = otherSym.IsVariable &&
-                    this.Symbol = otherSym.Symbol &&
-                    this.Children = otherSym.Children)
+                this.Hash = otherSym.Hash &&
+                this.IsVariable = otherSym.IsVariable &&
+                this.Symbol = otherSym.Symbol &&
+                this.Children = otherSym.Children
         | _ -> false
 
     interface System.IEquatable<CoreSymbol> with
@@ -48,13 +37,15 @@ type public CoreSymbol =
         member this.CompareTo(other) =
             match other with
             | :? CoreSymbol as otherSym ->
-                let c = compare this.IsVariable otherSym.IsVariable
+                let c = compare this.Hash otherSym.Hash
                 if c <> 0 then c
                 else
-                    let c = compare this.Symbol otherSym.Symbol
+                    let c = compare this.IsVariable otherSym.IsVariable
                     if c <> 0 then c
                     else
-                        compare this.Children otherSym.Children
+                        let c = compare this.Symbol otherSym.Symbol
+                        if c <> 0 then c
+                        else compare this.Children otherSym.Children
             | _ -> 1
 
 type public CoreTerm =
@@ -162,27 +153,34 @@ type public CoreProgram = CoreDefinition list
 [<AutoOpen>]
 module public SymbolHelper =
 
-    //
-    // Any symbol have to be constructed using one of the following helpers.
-    // This paves the way for future optimisations.
-    //
+    let private computeSymbolHash (symbol: string) (isVariable: bool) (children: CoreTerm list) =
+        let mutable hash = symbol.GetHashCode()
+        hash <- System.HashCode.Combine(hash, (if isVariable then 1 else 0))
+
+        for child in children do
+            hash <- System.HashCode.Combine(hash, child.GetHashCode())
+
+        if hash = 0 then 1 else hash
 
     let public symbol (name: string) (args: CoreTerm list) =
         Symbol
             { Symbol = name
               Children = args
               IsVariable = false
-              __hashCache = 0 }
+              Hash = computeSymbolHash name false args }
 
     let public variableSymbol (name: string) (args: CoreTerm list) =
         Symbol
             { Symbol = name
               Children = args
               IsVariable = true
-              __hashCache = 0 }
+              Hash = computeSymbolHash name true args }
 
     let public copySymbolWithNewChildren (symb: CoreSymbol) (children: CoreTerm list) =
-        Symbol { symb with Children = children }
+        Symbol 
+            { symb with 
+                Children = children
+                Hash = computeSymbolHash symb.Symbol symb.IsVariable children }
 
     let public simpleSymbol (name: string) =
         symbol name []
