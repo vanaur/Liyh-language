@@ -1331,6 +1331,10 @@ module Interpreter =
                 printfn "%s" (DecisionTreePrinter.prettyPrint globalEnv.DecisionTree.[s])
                 Some term
 
+            | Symbol { Symbol = "dot_decision_tree"; Children = [ Symbol { Symbol = s } ] } ->
+                RenderDecisionTree.renderAndOpen globalEnv.DecisionTree.[s]
+                Some term
+
             | _ -> None
             |> Option.map (fun r -> state, r)
 
