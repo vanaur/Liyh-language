@@ -34,6 +34,7 @@ module Interpreter =
     open Liyh.FFI.CFFI
     open Liyh.Execution.FFI
     open Liyh.Core
+    open Liyh.Core.DecisionTree
     open Liyh.Core.Helper
     open Liyh.Core.Builtin
     open Liyh.Utils.ErrorReporter
@@ -246,7 +247,6 @@ module Interpreter =
 
     /// Experimental pattern matching via decision tree for rules.
     module private DecisionTreeEvaluation =
-        open DecisionTree
 
         type public MatchResult =
             | Success of ruleIndex: int * bindings: Map<string, CoreTerm>

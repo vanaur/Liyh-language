@@ -31,7 +31,9 @@
     <Compile Include="Core/Substitution.fs" />
     <Compile Include="Core/Builtin.fs" />
     <Compile Include="Core/PrettyPrinter.fs" />
-    <Compile Include="Core/DecisionTree.fs" />
+    <Compile Include="Core/DecisionTree/DecisionTree.fs" />
+    <Compile Include="Core/DecisionTree/DecisionTreeCompiler.fs" />
+    <Compile Include="Core/DecisionTree/DecisionTreePrettyPrinter.fs" />
     <Compile Include="Core/Compiler/AlphaConversion.fs" />
     <Compile Include="Core/Compiler/CoreCompiler.fs" />
 
