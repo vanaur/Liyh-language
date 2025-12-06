@@ -65,8 +65,31 @@ module Interpreter =
     /// For rules marked as `memoized`.
     let mutable private memoizedRules = Dictionary<CoreTerm, CoreTerm>()
 
+    /// For the fast-path symbol handling of passive symbols.
+    let private passiveSymbolsCache = Dictionary<string, bool>()
+
+    /// Optimised mapping utility: if no elements change physically, the original list is returned.
+    /// This avoids creating thousands of new symbols that are unnecessary for the Garbage Collector.
+    let private physicalMap (f: 'a -> 'a) (l: 'a list) =
+        let rec scan l =
+            match l with
+            | [] -> ValueNone
+            | x :: xs ->
+                let x' = f x
+                if LanguagePrimitives.PhysicalEquality x x' then scan xs
+                else ValueSome (x', xs)
+
+        match scan l with
+        | ValueNone -> l
+        | ValueSome (x', rest) ->
+            let rec mapRest = function
+                | [] -> []
+                | y :: ys -> f y :: mapRest ys
+            x' :: mapRest rest
+
     /// Display a table that shows how many time a given symbol was invoked.
     let private printRuleCallCounts (ruleCallCounts: IDictionary<(string * int), int>) =
+        if ruleCallCounts.Count = 0 then () else
         let data = ruleCallCounts |> Seq.toList |> List.sortByDescending (function KeyValue (_, c) -> c)
         let maxLen = data |> Seq.map (fun (KeyValue((s, a), _)) -> sprintf "%s/%d" s a |> String.length) |> Seq.max
         let headerLabel = "Symbol/arity"
@@ -829,6 +852,45 @@ module Interpreter =
                 handlerEnvironment.Handlers
                 |> Array.tryPick (tryHandler state term handlerName handlerEnvironment))
 
+        /// Function optimised for symbol processing that returns None if not applicable. The purpose of this
+        /// function is to note that certain symbols do not have rewriting rules, thereby avoiding running the
+        /// interpreter in vain. This function therefore typically speeds up the management of recursive data
+        /// structures (lists, trees, etc.).
+        and processSymbolFast (state: RunningState) (symbol: CoreSymbol) =
+
+            let isPassiveSymbol (s: string) (term: CoreTerm) =
+                match passiveSymbolsCache.TryGetValue s with
+                | true, value -> value
+                | false, _ ->
+                    let computedValue =
+                        not (Array.contains s builtinFunctions)
+                        && Array.isEmpty (globalEnv.GetRelevantRules term)
+                        && Array.isEmpty (fst (globalEnv.GetRelevantHandlers s))
+                    passiveSymbolsCache.[s] <- computedValue
+                    computedValue
+
+            /// A fast-path `loop` for common cases.
+            let rec fastResolve (t: CoreTerm) =
+                match t with
+                | Literal _ -> t
+                | Closure clo when clo.IsEvaluated -> t
+                | Symbol s when isPassiveSymbol s.Symbol t ->
+                    let newChildren = physicalMap fastResolve s.Children
+
+                    if LanguagePrimitives.PhysicalEquality s.Children newChildren then t
+                    else copySymbolWithNewChildren s newChildren
+
+                | _ -> snd (loop state t)
+
+            if not (isPassiveSymbol symbol.Symbol (Symbol symbol)) then
+                None
+            else
+                let newChildren = physicalMap fastResolve symbol.Children
+
+                if LanguagePrimitives.PhysicalEquality newChildren symbol.Children
+                then Some (state, Symbol symbol)
+                else Some (state, copySymbolWithNewChildren symbol newChildren)
+
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
 
             (*
@@ -842,39 +904,45 @@ module Interpreter =
 
             *)
 
-            if symbol.IsVariable then
-                match Environment.lookupVariable symbol.Symbol state with
-                | None -> raise (FreeVariableException symbol.Symbol)
-                | Some _ -> raise (NonApplicationSymbolException symbol.Symbol)
-            else
+            // --- debug purpose --- //
 
-                // --- debug purpose --- //
+            let key = symbol.Symbol, symbol.Children.Length
+            match ruleCallCounts.TryGetValue key with
+            | false, _ -> ruleCallCounts.Add(key, 1)
+            | true, count -> ruleCallCounts.[key] <- count + 1
 
-                let key = symbol.Symbol, symbol.Children.Length
-                match ruleCallCounts.TryGetValue key with
-                | false, _ -> ruleCallCounts.Add(key, 1)
-                | true, count -> ruleCallCounts.[key] <- count + 1
+            // -- -- //
 
-                let term = Symbol symbol
+            match processSymbolFast state symbol with
+            | Some result -> result
+            | None ->
 
-                match globalEnv.GetExternLibrary term with
-                | Some (lib, functions) ->
-                    match symbol.Symbol.Split '.' with      // not a big fan of this...
-                    | [| qual; functionName |] ->
-                        match Map.tryFind functionName functions with
-                        | Some f ->
-                            let children = symbol.Children |> List.map (loop state >> snd)
-                            state, callExternalFunction f lib children
-                        | None ->
-                            raise (UnboundExternalFunctionException(qual, functionName))
-                    | _ ->
-                        failwith $"Invalid symbol format: expected 'Namespace.FunctionName', got '{symbol.Symbol}'."
+                if symbol.IsVariable then
+                    match Environment.lookupVariable symbol.Symbol state with
+                    | None -> raise (FreeVariableException symbol.Symbol)
+                    | Some _ -> raise (NonApplicationSymbolException symbol.Symbol)
+                else
 
-                | None ->
-                    match tryHandlers state term with
-                    | None -> tryRules state symbol term
-                  //| None -> tryRulesWithDecisionTree state symbol term
-                    | Some result -> result
+                    let term = Symbol symbol
+
+                    match globalEnv.GetExternLibrary term with
+                    | Some (lib, functions) ->
+                        match symbol.Symbol.Split '.' with      // not a big fan of this...
+                        | [| qual; functionName |] ->
+                            match Map.tryFind functionName functions with
+                            | Some f ->
+                                let children = symbol.Children |> List.map (loop state >> snd)
+                                state, callExternalFunction f lib children
+                            | None ->
+                                raise (UnboundExternalFunctionException(qual, functionName))
+                        | _ ->
+                            failwith $"Invalid symbol format: expected 'Namespace.FunctionName', got '{symbol.Symbol}'."
+
+                    | None ->
+                        match tryHandlers state term with
+                        | None -> tryRules state symbol term
+                      //| None -> tryRulesWithDecisionTree state symbol term
+                        | Some result -> result
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
             let clen = closure.Parameters.Length

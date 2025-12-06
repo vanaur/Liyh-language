@@ -191,3 +191,31 @@ module Builtin =
         | Symbol { Symbol = "ptr"; Children = [ Literal (Integer ptr) ] } -> Some (nativeint ptr)
         | _ -> None
 
+    let public builtinFunctions = [|
+        "range"
+        "concat"
+        "contains"
+        "plus"
+        "minus"
+        "asterisk"
+        "slash"
+        "percent"
+        "double_asterisk"
+        "ge"
+        "geq"
+        "le"
+        "leq"
+        "eq"
+        "neq"
+        "and"
+        "or"
+        "not"
+        "is_type"
+        "cast"
+        "show"
+        "printing_show"
+        "debug_bench"
+        "debug_print"
+        "ptr"
+    |]
+
