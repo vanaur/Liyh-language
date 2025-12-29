@@ -899,6 +899,7 @@ module Parser =
 
                     let! head = singleExprParser .>>? spacesOrComment
                     let! tail = attempt (blockOf (singleExprParser .>>? spacesOrComment) |> exact pos) <|>% []
+                    do! spacesOrComment
 
                     return
                         match head :: tail with
