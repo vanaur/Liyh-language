@@ -39,8 +39,9 @@
     <Compile Include="Core/Execution/FFI.fs" />
     <Compile Include="Core/Execution/Interpreter.fs" />
 
-    <Compile Include="Execution/FFI.fs" />
-    <Compile Include="Execution/Interpreter.fs" />
+    <Compile Include="LyVM/BindingRCL.fs" />
+    <Compile Include="LyVM/BytecodeBuilder.fs" />
+    <Compile Include="LyVM/BytecodeCompiler.fs" />
 
     <Compile Include="Repl/Repl.fs" />
     <Compile Include="Program.fs" />
@@ -49,6 +50,10 @@
   <ItemGroup>
     <PackageReference Include="BenchShark" Version="1.0.0" />
     <PackageReference Include="FParsec" Version="1.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="C/rcl.c" />
   </ItemGroup>
 
   <PropertyGroup>

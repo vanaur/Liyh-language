@@ -1,0 +1,127 @@
+namespace Liyh.LyVM
+
+/// Bindings for the Runtime Core Library (RCL), a C-based library that provides an execution environment
+/// for the Liyh language, implementing the LyVM (Liyh Virtual Machine), which runs Liyh programs.
+module public BindingRCL =
+    open System
+    open System.Runtime.InteropServices
+
+    type public EnvPtr = IntPtr
+    type public VMPtr = IntPtr
+
+    /// This have to be found in the compilation path of the compiler.
+    [<Literal>]
+    let private librcl = "librcl"
+
+    /// Initializes the garbage collector.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public gc_init()
+
+    /// Creates an execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern EnvPtr public create_env()
+
+    /// Disposes the given execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public destroy_env(EnvPtr env)
+
+    /// Sets a label to the execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public set_label(EnvPtr env, int id)
+
+    /// Interns the given symbol name to the execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern uint32 public intern_symbol(EnvPtr env, string name)
+
+    /// Adds a function (given a name (sym) and a label) to the execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public intern_function(EnvPtr env, uint32 sym, int arity, int label)
+
+    /// Adds a string to the pool of strings in the execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)>]
+    extern int public intern_string(EnvPtr env, string s)
+
+    /// Emits a literal float in the given destination register.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public emit_load_float(EnvPtr env, int dstReg, double value)
+
+    /// Emits an instruction. An instruction consists of an operand and at most four parameters, so
+    /// the bytecode instructions are "Four-address code" (4AC) but most of them are at most 3AC.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public emit(EnvPtr env, int op, int a, int b, int c, int d)
+
+    /// Creates a new virtual machine given an execution environment.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern VMPtr public create_vm(EnvPtr env)
+
+    /// Disposes the given virtual machine.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public destroy_vm(VMPtr vm)
+
+    /// Execute the program at the given starting point.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
+    extern void public run_vm(VMPtr vm, int entryLabel)
+
+type public OpCode =
+    | Halt = 0
+    | Jump = 1
+    | JumpFalse = 2
+    | JumpTrue = 3
+    | Reserve = 4
+    | Call = 5
+    | Tailcall = 6
+    | Ret = 7
+    | Apply = 8
+    | Mov = 9
+    | LoadInt = 10
+    | LoadAtom = 11
+    | LoadFloat = 12
+    | LoadChar = 13
+    | LoadString = 14
+    | Add = 15
+    | Sub = 16
+    | Mul = 17
+    | Div = 18
+    | Mod = 19
+    | Neg = 20
+    | Equal = 21
+    | NotEqual = 22
+    | Not = 23
+    | Leq = 24
+    | Le = 25
+    | Ge = 26
+    | Geq = 27
+    | StrCat = 28
+    | MkRecord = 29
+    | ExtendRecord = 30
+    | GetField = 31
+    | Alloc = 32
+    | Closure = 33
+    | CallClosure = 34
+    | GetUpvalue = 35
+    | TestTag = 36
+    | Deconstruct = 37
+    | PPShow = 38
+    | Print = 39
+
+[<Struct>]
+type public ByteCodeInstr =
+    | Label of label: int
+    | Comment of comment: string * newline: bool
+    | Instr of OpCode * int * int * int * int
+
+[<Struct>]
+type public Reg =
+    val Index: int
+    new(idx) = { Index = idx }
+    override this.ToString() = sprintf "r%d" this.Index
+
+[<AutoOpen>]
+module public Reg =
+    let public (|Reg|) (reg: Reg) = reg.Index
+
+type public CompiledProgram =
+    { Program: ByteCodeInstr[]                  // the compiled program
+      EntryPointLabel: int                      // the entry point of the program (label)
+      DispatchTable: Map<string * int, int> }   // symbol/arity, label
+
