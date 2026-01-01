@@ -266,7 +266,7 @@ module Parser =
 
                     do! many (satisfy (fun c -> c = ' ' || c = '\t')) >>% ()
                     do! optional (pstring "//" >>. restOfLine false)
-                    do! skipNewline <?> "un saut de ligne après \"\"\""
+                    do! skipNewline <?> "newline after \"\"\""
 
                     let rec readBlock acc =
                         parse {
