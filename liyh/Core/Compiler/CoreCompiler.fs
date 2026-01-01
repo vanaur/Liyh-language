@@ -230,52 +230,128 @@ module CoreCompiler =
         collectionAccessSymbol (compileExpression cstate expr) (List.rev indices)
 
     and private compileListComprehension (cstate: State) (lc: ListComprehension) =
-        let compiledItem = compileExpression cstate lc.ItemValue
-        let compiledPattern = compilePattern cstate lc.Pattern
-        let compiledList = compileExpression cstate lc.ListExpr
-        let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
 
-        let listVar = UniqueName.get "lc_list"
-        let lenVar = UniqueName.get "lc_length"
-        let indexVar = UniqueName.get "lc_index"
-        let resultVar = UniqueName.get "lc_result"
+        // If the range is an actual syntactic range, we can transform it into a while loop
+        // that iters only on numbers, without creating a new list
 
-        let bindList =
-            CoreLet { Pattern = Variable listVar; Value = compiledList; IsVariable = false }
+        match removePos lc.ListExpr with
+        | Range { RangeStart = start; RangeStep = None; RangeStop = stop } ->
 
-        let bindLen =
-            CoreLet { Pattern = Variable lenVar; Value = symbol "length" [ Variable listVar ]; IsVariable = false }
+            // Optimize looping over range (this only work with integers for now and)
+            // this will cause errors for floats, for example. TODO!
 
-        let bindResult =
-            CoreLet { Pattern = Variable resultVar; Value = symbol "nil" []; IsVariable = true }
+            let startExpr = compileExpression cstate start
+            let stopExpr = compileExpression cstate stop
 
-        let elementBinding =
-            CoreLet { Pattern = compiledPattern; Value = collectionAccessSymbol (Variable listVar) [ Variable indexVar ]; IsVariable = false }
+            let startVarName = UniqueName.get "lc_start"
+            let stopVarName = UniqueName.get "lc_stop"
+            let startVar = Variable startVarName
+            let stopVar = Variable stopVarName
 
-        let appendExpr =
-            symbol "cons" [ compiledItem; Variable resultVar ]
+            let bindStart = CoreLet { Pattern = startVar; Value = startExpr; IsVariable = false }
+            let bindStop = CoreLet { Pattern = stopVar; Value = stopExpr; IsVariable = false }
 
-        let conditionalAppend =
-            match compiledCond with
-            | Some cond -> ifte cond appendExpr (Variable resultVar)
-            | None -> appendExpr
+            let resultVarName = UniqueName.get "lc_result"
+            let resultVar = Variable resultVarName
+            let bindResult = CoreLet { Pattern = resultVar; Value = symbol "nil" []; IsVariable = true }
 
-        let loopBody =
-            TermSequence [ elementBinding; UpdateVariable(resultVar, conditionalAppend) ]
-            |> flattenTermSequence
+            let loopCounterName = UniqueName.get "lc_i"
+            let loopCounterVar = Variable loopCounterName
 
-        TermSequence [
-            bindList
-            bindLen
-            bindResult
-            whileLoop
-                (FromString indexVar)
-                (symbol "minus" [ Variable lenVar; CoreTerm.Literal (CoreLiteral.Integer 1I) ])
-                (CoreTerm.Literal (CoreLiteral.Integer (-1I)))  // Changé de 0 à -1
-                loopBody
-                "minus"
-                "ge"
-            Variable resultVar ]
+            let loopBody =
+                let compiledPattern = compilePattern cstate lc.Pattern
+                let compiledItem = compileExpression cstate lc.ItemValue
+                let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
+
+                let appendExpr = symbol "cons" [ compiledItem; resultVar ]
+                
+                let updateResult =
+                    match compiledCond with
+                    | Some cond -> ifte cond (UpdateVariable(resultVarName, appendExpr)) (simpleSymbol "unit")
+                    | None -> UpdateVariable(resultVarName, appendExpr)
+
+                TermSequence [
+                    CoreLet { Pattern = compiledPattern; Value = loopCounterVar; IsVariable = false }
+                    updateResult ]
+
+            let loopAscRange = 
+                whileLoop 
+                    (FromString loopCounterName) 
+                    stopVar
+                    startVar
+                    loopBody 
+                    "__internal_sub"
+                    "__internal_geq"
+
+            let loopDescRange = 
+                whileLoop 
+                    (FromString loopCounterName) 
+                    stopVar
+                    startVar
+                    loopBody 
+                    "__internal_add"
+                    "__internal_leq"
+
+            let directionCondition = symbol "__internal_leq" [ startVar; stopVar ]
+
+            TermSequence [
+                bindStart
+                bindStop
+                bindResult
+                ifte directionCondition loopAscRange loopDescRange
+                resultVar ]
+
+        | _ ->
+            let compiledItem = compileExpression cstate lc.ItemValue
+            let compiledPattern = compilePattern cstate lc.Pattern
+            let compiledList = compileExpression cstate lc.ListExpr
+            let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
+
+            let cursorVarName = UniqueName.get "lc_cursor"
+            let tailVarName = UniqueName.get "lc_tail"
+            let resultVarName = UniqueName.get "lc_result"
+            let nilVarName = UniqueName.get "lc_nil"
+            
+            let cursorVar = Variable cursorVarName
+            let tailVar = Variable tailVarName
+            let resultVar = Variable resultVarName
+            let nilVar = Variable nilVarName
+
+            let bindCursor = CoreLet { Pattern = cursorVar; Value = compiledList; IsVariable = true }
+            let bindResult = CoreLet { Pattern = resultVar; Value = symbol "nil" []; IsVariable = true }
+            let bindNil = CoreLet { Pattern = nilVar; Value = symbol "nil" []; IsVariable = false }
+
+            let appendExpr = symbol "cons" [ compiledItem; resultVar ]
+            
+            let updateResult =
+                match compiledCond with
+                | Some cond -> ifte cond (UpdateVariable(resultVarName, appendExpr)) (simpleSymbol "unit")
+                | None -> UpdateVariable(resultVarName, appendExpr)
+
+            let loopBody =
+                TermSequence [
+                    CoreLet { 
+                        Pattern = symbol "cons" [ compiledPattern; tailVar ]
+                        Value = cursorVar
+                        IsVariable = false 
+                    }
+                    updateResult
+                    UpdateVariable(cursorVarName, tailVar)
+                ]
+
+            let whileLoop =
+                WhileLoop {
+                    Predicate = symbol "__internal_neq" [ cursorVar; nilVar ]
+                    Body = loopBody
+                }
+
+            TermSequence [
+                bindCursor
+                bindResult
+                bindNil
+                whileLoop
+                symbol "reverse" [ resultVar ]
+            ]
 
     and private compileApply (cstate: State) { LHS = lhs; Arguments = args } =
         let lhs = compileExpression cstate lhs
@@ -300,11 +376,12 @@ module CoreCompiler =
 
             | Interpolation e :: rest ->
                 let e = compileExpression cstate e
-                let spart = showSymbol e
+                let spart = symbol "__internal_ppshow" [ e ] //showSymbol e
                 compileInterpolationPart cstate (spart :: result) rest
 
         let parts = compileInterpolationPart cstate [] (List.rev lstr)
-        List.reduce concatSymbol parts
+        //List.reduce concatSymbol parts
+        List.reduce (fun acc a -> symbol "__internal_strcat" [ acc; a ]) parts
 
     and private compileLiteral (lit: LiteralWithPos) =
         match removePos lit with
@@ -359,45 +436,101 @@ module CoreCompiler =
             (if isDownTo then "geq" else "leq")
 
     and private compileForIn (cstate: State) (loop: ForIn) =
+
+        // If the range is an actual syntactic range, we can transform it into a while loop
+        // that iters only on numbers, without creating a new list
+
+        match removePos loop.ListExpr with
+        | Range { RangeStart = start; RangeStep = None; RangeStop = stop } ->
+
+            // Optimize looping over range (this only work with integers for now and)
+            // this will cause errors for floats, for example. TODO!
+
+            let startExpr = compileExpression cstate start
+            let stopExpr = compileExpression cstate stop
+            let bodyExpr = compileExpression cstate loop.Body
+
+            let startVarName = UniqueName.get "range_start"
+            let stopVarName = UniqueName.get "range_stop"
+            let startVar = Variable startVarName
+            let stopVar = Variable stopVarName
+
+            let bindStart = CoreLet { Pattern = startVar; Value = startExpr; IsVariable = false }
+            let bindStop  = CoreLet { Pattern = stopVar;  Value = stopExpr;  IsVariable = false }
+
+            let loopUp = 
+                whileLoop 
+                    (FromPattern loop.Pattern) 
+                    startVar 
+                    stopVar 
+                    bodyExpr 
+                    "__internal_add" 
+                    "__internal_leq"
+
+            let loopDown = 
+                whileLoop 
+                    (FromPattern loop.Pattern) 
+                    startVar 
+                    stopVar 
+                    bodyExpr 
+                    "__internal_sub" 
+                    "__internal_geq"
+
+            let directionCondition = symbol "__internal_leq" [ startVar; stopVar ]
+
+            TermSequence [
+                bindStart
+                bindStop
+                ifte directionCondition loopUp loopDown ]
+
+        | _ ->
+
+        // We use an iterator.
+
         let compiledPattern = compilePattern cstate loop.Pattern
         let compiledList = compileExpression cstate loop.ListExpr
         let compiledBody = compileExpression cstate loop.Body
 
-        let listVar = UniqueName.get "forin_list"
-        let lenVar = UniqueName.get "forin_length"
-        let indexVar = UniqueName.get "forin_index"
+        let cursorName = UniqueName.get "iter_cursor"
+        let tailName = UniqueName.get "iter_tail"
+        let nilName = UniqueName.get "iter_nil"
 
-        // Stores the list in a variable
-        let bindList =
+        let cursorVar = Variable cursorName
+        let tailVar = Variable tailName
+        let nilVar = Variable nilName
+
+        let bindCursor =
             CoreLet {
-                Pattern = Variable listVar
+                Pattern = cursorVar
                 Value = compiledList
+                IsVariable = true }
+
+        let bindNil =
+            CoreLet {
+                Pattern = nilVar
+                Value = symbol "nil" []
                 IsVariable = false }
 
-        // Binds an item in the list to the body pattern
-        let bindElement =
-            CoreLet {
-                Pattern = compiledPattern
-                Value = collectionAccessSymbol (Variable listVar) [ Variable indexVar ]
-                IsVariable = false }
+        let consPattern = symbol "cons" [ compiledPattern; tailVar ]
 
-        // Stores the list's length in a variable
-        let bindLength =
-            CoreLet {
-                Pattern = Variable lenVar
-                Value = symbol "length" [ Variable listVar ]
-                IsVariable = false }
+        let loopBody =
+            TermSequence [
+                CoreLet { 
+                    Pattern = consPattern
+                    Value = cursorVar
+                    IsVariable = false }
+                compiledBody
+                UpdateVariable(cursorName, tailVar) ]
+
+        let whileLoop = 
+            WhileLoop {
+                Predicate = symbol "__internal_neq" [ cursorVar; nilVar ]
+                Body = loopBody }
 
         TermSequence [
-            bindList
-            bindLength
-            whileLoop
-                (FromString indexVar)
-                (CoreTerm.Literal (CoreLiteral.Integer 0I))
-                (Variable lenVar)
-                (TermSequence [ bindElement; compiledBody ] |> flattenTermSequence)
-                "plus"
-                "le" ]
+            bindCursor
+            bindNil
+            whileLoop ]
 
     and private compileLamda (cstate: State) (lambda: Lambda) =
         let parameters = 
@@ -528,7 +661,7 @@ module CoreCompiler =
         // (A | B | C) -> 'x when 'x ∈ { A, B, C }
         let alternatives = listSymbol (List.map compileLiteral alternatives)
         let uv = Variable (UniqueName.get "altp")
-        
+
         WhenClause(uv, containsSymbol alternatives uv)
 
     and private compileRecordPattern (cstate: State) (fields: (string * PatternWithPos) list) =
