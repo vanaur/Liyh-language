@@ -14,6 +14,9 @@ module Utils =
         let inline public containsBy (pred: 't -> bool) (lst: 't list) =
             List.tryFind pred lst |> Option.isSome
 
+        let inline public filterMap predicate mapper =
+            List.filter predicate >> List.map mapper
+
     module Benchmark =
         open System
         open Binarysharp.Benchmark
