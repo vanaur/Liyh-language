@@ -217,5 +217,7 @@ module Builtin =
         "debug_bench"
         "debug_print"
         "ptr"
+        "show_decision_tree"
+        "dot_decision_tree"
     |]
 

@@ -6,8 +6,8 @@ module Program =
     open Liyh.Utils.ErrorReporter
     open Liyh.Module.LiyhPackage
     open Liyh.TypeCheck
-    open Liyh.Execution
-    open Liyh.Execution.Core
+    open Liyh.Core.Execution
+    open Liyh.Core.Execution.Core
     open System.Runtime.InteropServices
     open Liyh.Core
 

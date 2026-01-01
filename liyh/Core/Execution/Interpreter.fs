@@ -1,4 +1,4 @@
-namespace Liyh.Execution.Core
+namespace Liyh.Core.Execution.Core
 
 //
 // An interpreter for 'LiyhCore', i.e., a minimal (~ desugared) intermediate representation of Liyh. 🐿️
@@ -32,7 +32,7 @@ module Interpreter =
     open System.Collections.Generic
     open System.Runtime.InteropServices
     open Liyh.FFI.CFFI
-    open Liyh.Execution.FFI
+    open Liyh.Core.Execution.FFI
     open Liyh.Core
     open Liyh.Core.DecisionTree
     open Liyh.Core.Helper
@@ -858,6 +858,8 @@ module Interpreter =
         /// structures (lists, trees, etc.).
         and processSymbolFast (state: RunningState) (symbol: CoreSymbol) =
 
+            // il y a aussi des erreurs avec la FFI
+
             let isPassiveSymbol (s: string) (term: CoreTerm) =
                 match passiveSymbolsCache.TryGetValue s with
                 | true, value -> value
@@ -865,7 +867,10 @@ module Interpreter =
                     let computedValue =
                         not (Array.contains s builtinFunctions)
                         && Array.isEmpty (globalEnv.GetRelevantRules term)
-                        && Array.isEmpty (fst (globalEnv.GetRelevantHandlers s))
+                        && Array.isEmpty (fst (globalEnv.GetRelevantHandlers s)) // c'est pas bon, ça prend comme
+                                                                                 // argument le nom du handler générale
+                                                                                 // pas un symbole. Donc par exemple ça
+                                                                                 // prend `Counter`. Il faut modifier ça
                     passiveSymbolsCache.[s] <- computedValue
                     computedValue
 
@@ -906,16 +911,16 @@ module Interpreter =
 
             // --- debug purpose --- //
 
-            let key = symbol.Symbol, symbol.Children.Length
-            match ruleCallCounts.TryGetValue key with
-            | false, _ -> ruleCallCounts.Add(key, 1)
-            | true, count -> ruleCallCounts.[key] <- count + 1
+            //let key = symbol.Symbol, symbol.Children.Length
+            //match ruleCallCounts.TryGetValue key with
+            //| false, _ -> ruleCallCounts.Add(key, 1)
+            //| true, count -> ruleCallCounts.[key] <- count + 1
 
             // -- -- //
 
-            match processSymbolFast state symbol with
-            | Some result -> result
-            | None ->
+          //  match processSymbolFast state symbol with
+          //  | Some result -> result
+          //  | None ->
 
                 if symbol.IsVariable then
                     match Environment.lookupVariable symbol.Symbol state with
@@ -941,7 +946,7 @@ module Interpreter =
                     | None ->
                         match tryHandlers state term with
                         | None -> tryRules state symbol term
-                      //| None -> tryRulesWithDecisionTree state symbol term
+                        //| None -> tryRulesWithDecisionTree state symbol term
                         | Some result -> result
 
         and applyClosure (closure: Closure) (args: CoreTerm list) (state: RunningState) =
