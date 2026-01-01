@@ -217,38 +217,105 @@ module Parser =
             }
 
         let private parseStringInterpolation parseExpr =
-            let escapedChar =
-                pchar '\\' <?> "" >>.
-                    choice [
-                        pchar '{' >>% "{"
-                        pchar '}' >>% "}"
-                        pchar '"' >>% "\""
-                        pchar '\\' >>% "\\"
-                        pchar 'n' >>% "\n"
-                        pchar 't' >>% "\t" ]
+            let parseSingleLine =
+                let escapedChar =
+                    pchar '\\' <?> "" >>.
+                        choice [
+                            pchar '{' >>% "{"
+                            pchar '}' >>% "}"
+                            pchar '"' >>% "\""
+                            pchar '\\' >>% "\\"
+                            pchar 'n' >>% "\n"
+                            pchar 't' >>% "\t" ]
 
-            let normalChar = satisfy (fun c -> c <> '{' && c <> '"' && c <> '\\') |>> string
-            let textFragment =
-                many1 (attempt escapedChar <|> normalChar)
-                |>> fun strs -> InterpolatedPart.Str (String.concat "" strs)
+                let normalChar =
+                    satisfy (fun c -> c <> '{' && c <> '"' && c <> '\\' && c <> '\n' && c <> '\r')
+                    |>> string
 
-            let interpolationFragment =
-                between (pchar '{' <?> "") (pchar '}' <?> "") (parseExpr |>> InterpolatedPart.Interpolation)
+                let interpolationFragment =
+                    between
+                        (pchar '{' <?> "")
+                        (pchar '}' <?> "")
+                        (parseExpr |>> InterpolatedPart.Interpolation)
 
-            let fragment = choice [ attempt interpolationFragment; textFragment ]
+                let textFragment =
+                    many1 (attempt escapedChar <|> normalChar)
+                    |>> fun strs -> InterpolatedPart.Str (String.concat "" strs)
 
-            parse {
-                let! content = between (skipChar '"') (skipChar '"' <?> "closing string or valid string or valid interpolated string") (many fragment)
-                match content |> List.tryFind _.IsInterpolation with
-                | Some _ -> return Literal.InterpolatedString content
-                | None ->
-                    let strContent =
-                        content |> List.fold (fun acc frag ->
-                            match frag with
-                            | InterpolatedPart.Str s -> acc + s
-                            | _ -> acc) ""
-                    return Literal.String strContent
-            }
+                let fragment =
+                    choice [ attempt interpolationFragment; textFragment ]
+
+                parse {
+                    let! content = between (pchar '"') (pchar '"') (many fragment)
+                    match content |> List.tryFind _.IsInterpolation with
+                    | Some _ -> return Literal.InterpolatedString content
+                    | None ->
+                        let strContent =
+                            content |> List.fold (fun acc frag ->
+                                match frag with
+                                | InterpolatedPart.Str s -> acc + s
+                                | _ -> acc) ""
+                        return Literal.String strContent
+                }
+
+            let parseMultiLine =
+                parse {
+                    let! startPos = getPosition
+                    let! _ = pstring "\"\"\""
+                    let indentCol = int startPos.Column - 1
+
+                    do! many (satisfy (fun c -> c = ' ' || c = '\t')) >>% ()
+                    do! optional (pstring "//" >>. restOfLine false)
+                    do! skipNewline <?> "un saut de ligne après \"\"\""
+
+                    let rec readBlock acc =
+                        parse {
+                            do! many (satisfy (fun c -> c = ' ' || c = '\t')) >>% ()
+                            let! afterIndentPos = getPosition
+                            let currentIndent = int afterIndentPos.Column - 1
+
+                            if currentIndent >= indentCol then
+                                if currentIndent = indentCol then
+                                    let! isCloser = choice [ attempt (pstring "\"\"\"") >>% true; preturn false ]
+                                    if isCloser then return List.rev acc
+                                    else return! readLineContent acc
+                                else
+                                    let extraSpaces = String.replicate (currentIndent - indentCol) " "
+                                    return! readLineContent (InterpolatedPart.Str extraSpaces :: acc)
+                            else
+                                let! isLineEmpty = (skipNewline >>% true) <|> (eof >>% true) <|> preturn false
+                                if isLineEmpty then return! readBlock (InterpolatedPart.Str "\n" :: acc)
+                                else return! fail "Invalid indentation for multiline string."
+                        }
+
+                    and readLineContent acc =
+                        choice [
+                            skipNewline >>. readBlock (InterpolatedPart.Str "\n" :: acc)
+
+                            (pchar '{' >>. parseExpr .>> pchar '}') >>= fun expr ->
+                                readLineContent (InterpolatedPart.Interpolation expr :: acc)
+
+                            many1Satisfy (fun c -> c <> '\n' && c <> '\r' && c <> '{') >>= fun text ->
+                                readLineContent (InterpolatedPart.Str text :: acc)
+                        ]
+
+                    let! content = readBlock []
+                    match content |> List.tryFind _.IsInterpolation with
+                    | Some _ -> return Literal.InterpolatedString content
+                    | None ->
+                        let strContent =
+                            content |> List.fold (fun acc frag ->
+                                match frag with
+                                | InterpolatedPart.Str s -> acc + s
+                                | _ -> acc) ""
+                            |> _.TrimEnd()
+                        return Literal.String strContent
+                }
+
+            choice [
+                attempt parseMultiLine
+                parseSingleLine
+            ]
 
         let private parseChar =
             let octalDigit = satisfy (fun c -> c >= '0' && c <= '7')
