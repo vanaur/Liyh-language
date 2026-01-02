@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <math.h>
+#include <float.h>
 #include <time.h>
 
 // We use Boehm GC for the automatic memory management. It is assumed that the user or
@@ -692,7 +693,7 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
             APPEND("%s", (char *)header->children[0]);
 
         else if (header->id == SYM_FLOAT)
-            APPEND("%g", get_float(term));
+            APPEND("%.*g", DBL_DIG, get_float(term));
 
         else if (header->id == SYM_RECORD)
         {
