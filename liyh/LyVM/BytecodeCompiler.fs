@@ -13,7 +13,7 @@ module public BytecodeCompiler =
     type private CompilationContext =
         { Global: GlobalContext
           Env: Map<string, Reg>
-          PathCache: Dictionary<Path, Reg>
+          mutable PathCache: Map<Path, Reg>
           Args: Reg[] }
 
     let private runtimeError (msg: string) =
@@ -112,19 +112,23 @@ module public BytecodeCompiler =
             match context.PathCache.TryGetValue path with
             | true, reg -> reg
             | false, _ ->
-                match path with
-                | Root ->
-                    failwith "Unresolved root path"
+                let reg = 
+                    match path with
+                    | Root ->
+                        failwith "Unresolved root path" // Doit être pré-rempli par compileTerm
 
-                | Child(Root, idx) when not (context.PathCache.ContainsKey Root) ->
-                    if idx >= 0 && idx < context.Args.Length then
-                        context.Args.[idx]
-                    else
-                        failwithf "Index out of bounds: %d (arity %d)" idx context.Args.Length
-                
-                | Child(parent, idx) ->
-                    let parentReg = compilePath context parent
-                    builder.Deconstruct(parentReg, idx)
+                    | Child(Root, idx) when not (context.PathCache.ContainsKey Root) ->
+                        if idx >= 0 && idx < context.Args.Length then
+                            context.Args.[idx]
+                        else
+                            failwithf "Index out of bounds: %d (arity %d)" idx context.Args.Length
+                    
+                    | Child(parent, idx) ->
+                        let parentReg = compilePath context parent
+                        builder.Deconstruct(parentReg, idx)
+
+                context.PathCache <- Map.add path reg context.PathCache
+                reg
 
         // Utility function to convert a Boolean result (0/1) to Atom (true/false).
         let convertBoolToAtom (boolReg: Reg) =
@@ -285,7 +289,7 @@ module public BytecodeCompiler =
                         { context with
                             Env = bodyEnv
                             Args = Array.ofList argRegs
-                            PathCache = Dictionary() }
+                            PathCache = Map.empty }
 
                     let resReg = compileTerm bodyContext true body
                     builder.Ret(resReg)
@@ -344,8 +348,7 @@ module public BytecodeCompiler =
                                 Reg 0
 
                             builder.Scope(fun () ->
-                                let letContext = { seqContext with PathCache = Dictionary() }
-                                letContext.PathCache.[Root] <- rootReg
+                                let letContext = { seqContext with PathCache = Map.ofList [(Root, rootReg)] }
                                 compileTree letContext tree onMatch onMismatch
                             )
 
@@ -410,8 +413,7 @@ module public BytecodeCompiler =
                     Reg 0
 
                 builder.Scope(fun () ->
-                    let letContext = { context with PathCache = Dictionary() }
-                    letContext.PathCache.[Root] <- rootReg
+                    let letContext = { context with PathCache = Map.ofList [(Root, rootReg)] }
                     compileTree letContext tree onMatch onMismatch
                 )
 
@@ -439,8 +441,7 @@ module public BytecodeCompiler =
                     Reg 0
 
                 builder.Scope(fun () ->
-                    let matchContext = { context with PathCache = Dictionary() }
-                    matchContext.PathCache.[Root] <- toMatchReg
+                    let matchContext = { context with PathCache = Map.ofList [(Root, toMatchReg)] }
                     compileTree matchContext tree onMatch onMismatch
                 )
 
@@ -452,7 +453,10 @@ module public BytecodeCompiler =
             (onMatch: int -> CompilationContext -> Reg) 
             (fallback: unit -> Reg) 
             : Reg =
-            
+
+            let inline branchContext (ctx': CompilationContext) =
+                { ctx' with PathCache = ctx'.PathCache }
+
             match tree with
             | Fail -> fallback()
 
@@ -469,21 +473,23 @@ module public BytecodeCompiler =
             | Switch(path, cases, defaultCase) ->
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
-                
+
                 builder.Scope(fun () ->
                     let phiReg = builder.Alloc() 
 
                     for KeyValue((tag, _), subTree) in cases do
                         let nextLbl = freshLabel()
                         builder.TestTag(pathReg, tag, nextLbl)
-                        let res = compileTree ctx subTree onMatch fallback
+                        let ctxBranch = branchContext ctx
+                        let res = compileTree ctxBranch subTree onMatch fallback
                         builder.Mov(phiReg, res)
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
                     
                     match defaultCase with
-                    | Some def -> 
-                        let res = compileTree ctx def onMatch fallback
+                    | Some def ->
+                        let ctxDefault = branchContext ctx
+                        let res = compileTree ctxDefault def onMatch fallback
                         builder.Mov(phiReg, res)
                     | None -> 
                         let res = fallback()
@@ -492,7 +498,7 @@ module public BytecodeCompiler =
                     builder.SetLabel(endLabel)
                     phiReg
                 )
-            
+
             | SwitchLiteral(path, cases, defaultCase) ->
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
@@ -511,15 +517,17 @@ module public BytecodeCompiler =
                         
                         let eq = builder.Eq(pathReg, litReg)
                         builder.JumpFalse(eq, nextLbl)
-                        
-                        let res = compileTree ctx subTree onMatch fallback
+
+                        let ctxBranch = branchContext ctx
+                        let res = compileTree ctxBranch subTree onMatch fallback
                         builder.Mov(phiReg, res)
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
 
                     match defaultCase with
-                    | Some def -> 
-                        let res = compileTree ctx def onMatch fallback
+                    | Some def ->
+                        let ctxDefault = branchContext ctx
+                        let res = compileTree ctxDefault def onMatch fallback
                         builder.Mov(phiReg, res)
 
                     | None -> 
@@ -548,17 +556,29 @@ module public BytecodeCompiler =
 
                     builder.JumpFalse(isTrue, failLabel)
 
-                    let res = compileTree ctx successTree onMatch fallback
+                    let ctxBranch = branchContext ctx
+                    let res = compileTree ctxBranch successTree onMatch fallback
                     builder.Mov(phiReg, res)
                     builder.Jump(endLabel)
 
                     builder.SetLabel(failLabel)
                     match failureTreeOpt with
                     | Some failTree ->
-                        let res = compileTree ctx failTree onMatch fallback
+                        let ctxDefault = branchContext ctx
+                        let res = compileTree ctxDefault failTree onMatch fallback
                         builder.Mov(phiReg, res)
 
                     | None ->
+                        let res = fallback()
+                        builder.Mov(phiReg, res)
+
+                    builder.SetLabel(endLabel)
+                    phiReg
+                )
+
+                        builder.Mov(phiReg, res)
+
+                    | None -> 
                         let res = fallback()
                         builder.Mov(phiReg, res)
 
@@ -587,7 +607,7 @@ module public BytecodeCompiler =
             let context =
                 { Global = globalContext
                   Env = Map.empty
-                  PathCache = Dictionary()
+                  PathCache = Map.empty
                   Args = argRegs }
 
             let fallback () =
