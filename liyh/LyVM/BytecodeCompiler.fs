@@ -374,12 +374,14 @@ module public BytecodeCompiler =
                                 compileSeq leaftContext.Env xs
 
                             let onMismatch () =
-                                let pp = PrettyPrinter.prettyPrintExpr x
-                                let pp' = PrettyPrinter.prettyPrintExpr pattern
-                                let msg = runtimeError $"The `let` case was incomplete. Expected {pp} but got `{pp'}`."
-                                builder.Print(builder.LoadString msg)
-                                builder.Halt ()
-                                Reg 0
+                                let gotReg = builder.PPShow valReg
+                                let expected = PrettyPrinter.prettyPrintExpr pattern
+
+                                let msg1 = builder.LoadString $"The `let` case was incomplete. Expected pattern `{expected}`, but got `"
+                                let msg2 = builder.LoadString "` instead."
+
+                                let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
+                                builder.RuntimeError finalMsg
 
                             builder.Scope(fun () ->
                                 let letContext = { seqContext with PathCache = Map.ofList [(Root, rootReg)] }
@@ -439,12 +441,14 @@ module public BytecodeCompiler =
                     builder.LoadAtom("unit")
 
                 let onMismatch () =
-                    let pp = PrettyPrinter.prettyPrintExpr pattern
-                    let pp' = PrettyPrinter.prettyPrintExpr value
-                    let msg = runtimeError $"The `let` case was incomplete. Expected {pp} but got `{pp'}`."
-                    builder.Print(builder.LoadString msg)
-                    builder.Halt ()
-                    Reg 0
+                    let gotReg = builder.PPShow valReg
+                    let expected = PrettyPrinter.prettyPrintExpr pattern
+
+                    let msg1 = builder.LoadString $"The `let` case was incomplete. Expected pattern `{expected}`, but got `"
+                    let msg2 = builder.LoadString "` instead."
+
+                    let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
+                    builder.RuntimeError finalMsg
 
                 builder.Scope(fun () ->
                     let letContext = { context with PathCache = Map.ofList [(Root, rootReg)] }
@@ -468,11 +472,30 @@ module public BytecodeCompiler =
                     compileTerm leafContext isTail bodies.[ruleIndex]
 
                 let onMismatch () =
-                    let pp = PrettyPrinter.prettyPrintExpr toMatch
-                    let msg = runtimeError $"The `match` case was incomplete: `{pp}`."
-                    builder.Print(builder.LoadString msg)
-                    builder.Halt ()
-                    Reg 0
+                    let gotReg = builder.PPShow toMatchReg
+                    let allPatterns = cases |> List.map (fst >> PrettyPrinter.prettyPrintExpr)
+
+                    let displayedPatterns, remaining =
+                        if allPatterns.Length > 5 then
+                            List.take 5 allPatterns, Some(allPatterns.Length - 5)
+                        else
+                            allPatterns, None
+
+                    let patternsList = 
+                        displayedPatterns
+                        |> List.map (sprintf " - `%s`")
+                        |> String.concat "\n"
+
+                    let extraMsg = 
+                        match remaining with
+                        | Some n -> $"\n ... and {n} other pattern(s)"
+                        | None -> ""
+
+                    let msg1 = builder.LoadString $"The `match` case was incomplete. Expected one of the following patterns:\n{patternsList}{extraMsg}\n\nbut got `"
+                    let msg2 = builder.LoadString "` instead."
+
+                    let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
+                    builder.RuntimeError finalMsg
 
                 builder.Scope(fun () ->
                     let matchContext = { context with PathCache = Map.ofList [(Root, toMatchReg)] }

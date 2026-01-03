@@ -1,3 +1,4 @@
+#nowarn "20"
 namespace Liyh.LyVM
 
 open BindingRCL
@@ -346,6 +347,46 @@ type public ByteCodeBuilder() =
 
     member public __.Print (Reg r) =
         instructions.Add(Instr(OpCode.Print, r, 0, 0, 0))
+
+    /// Assuming registers containing strings, return the register containing their concatenation.
+    /// This method is mainly used for runtime error message generation.
+    member public this.ConcatMany (regs: Reg list) =
+        match regs with
+        | [] -> this.LoadString ""
+        | [ x ] -> x
+        | head :: tail -> List.fold (fun acc next -> this.StrCat(acc, next)) head tail
+
+    /// Handle a runtime error printting and halt the VM.
+    member public this.RuntimeError (msg: string) =
+        let sb = new Text.StringBuilder()
+
+        sb.Append(Liyh.Utils.ColorTerm.colorize (Liyh.Utils.ColorTerm.Color.Basic "red") "Runtime Error: ")
+        sb.AppendLine($"{msg}")
+        sb.AppendLine($"\nStopped the programme's execution.")
+
+        let formatMsg = sb.ToString()
+
+        this.Print(this.LoadString $"{formatMsg}")
+        this.Halt()
+
+        this.LoadInt(-1) // dummy
+
+    member public this.RuntimeError (messageReg: Reg) =
+        let sbPrefix = new Text.StringBuilder()
+        sbPrefix.Append(Liyh.Utils.ColorTerm.colorize (Liyh.Utils.ColorTerm.Color.Basic "red") "Runtime Error: ") |> ignore
+        let prefixReg = this.LoadString(sbPrefix.ToString())
+
+        let sbSuffix = new Text.StringBuilder()
+        sbSuffix.AppendLine()
+        sbSuffix.AppendLine("Stopped the programme's execution.")
+        let suffixReg = this.LoadString(sbSuffix.ToString())
+
+        let finalMsg = this.ConcatMany([prefixReg; messageReg; suffixReg])
+
+        this.Print(finalMsg)
+        this.Halt()
+
+        this.LoadInt(-1) // dummy
 
     member public this.PPShow (Reg src) =
         let dst = this.Alloc()
