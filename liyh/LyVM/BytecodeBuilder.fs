@@ -335,6 +335,9 @@ type public ByteCodeBuilder() =
         let tagId = InternTable.AtomTable.Intern tagName
         instructions.Add(Instr(OpCode.TestTag, term, tagId, failLabel, 0))
 
+    member public __.TestRecord (Reg term, failLabel: int) =
+        instructions.Add(Instr(OpCode.TestTag, term, SYM_RECORD, failLabel, 0))
+
     member public this.Deconstruct (Reg term, childIndex: int) =
         let dst = this.Alloc()
         let (Reg dstIdx) = dst
@@ -495,6 +498,9 @@ module public PrettyPrinter =
             | Instr(OpCode.GetUpvalue, dst, index, _, _) ->
                 sb.AppendLine($"    {reg dst} = upvalue[{index}]")
 
+            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
+                sb.AppendLine($"    testtype {reg term} is record or {lbl failLabel}")
+
             | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
                 let tag = InternTable.AtomTable.Get(tagId)
                 sb.AppendLine($"    testtag {reg term} is {tag} or {lbl failLabel}")
@@ -579,6 +585,9 @@ type public VM() =
                 let tag = InternTable.AtomTable.Get(tagId)
                 let sym = intern_symbol (env, tag)
                 emit (env, int OpCode.Alloc, dst, int sym, count, childrenStart)
+
+            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
+                emit (env, int OpCode.TestTag, term, tagId, failLabel, 0)
 
             | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
                 let tag = InternTable.AtomTable.Get(tagId)
@@ -767,6 +776,9 @@ module public AOT =
             | Instr(OpCode.Alloc, dst, tagId, count, childrenStart) ->
                 let tag = InternTable.AtomTable.Get(tagId)
                 appendLine $"emit(env_ptr, {int OpCode.Alloc}, {dst}, (int)intern_symbol(env_ptr, \"{tag}\"), {count}, {childrenStart})"
+
+            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
+                appendLine $"emit(env_ptr, {int OpCode.TestTag}, {term}, {SYM_RECORD}, {failLabel}, 0)"
 
             | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
                 let tag = InternTable.AtomTable.Get(tagId)

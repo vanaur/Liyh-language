@@ -30,9 +30,19 @@ module DecisionTreeCompiler =
     let rec private safeAccess (path: Path) (term: CoreTerm) =
         match path with
         | Root -> term
+
         | Child(parent, idx) ->
             match safeAccess parent term with
             | Symbol { Children = children } when idx >= 0 && idx < children.Length -> children.[idx]
+            | Variable _ | Wildcard -> Wildcard
+            | _ -> Wildcard
+
+        | Field(parent, name) ->
+            match safeAccess parent term with
+            | RecordExtend { Extension = fields } ->
+                match List.tryFind (fun (k, _) -> k = name) fields with
+                | Some (_, v) -> v
+                | None -> Wildcard
             | Variable _ | Wildcard -> Wildcard
             | _ -> Wildcard
 
@@ -134,6 +144,7 @@ module DecisionTreeCompiler =
     let private partitionByConstructor (path: Path) (occurrences: PatternOccurrence list) =
         let mutable byConstructor = Map.empty<(string * int), PatternOccurrence list>
         let mutable byLiteral = Map.empty<CoreLiteral, PatternOccurrence list>
+        let mutable byRecord = List.empty
         let mutable defaults = List.empty 
         let mutable others = List.empty
 
@@ -149,16 +160,18 @@ module DecisionTreeCompiler =
                 let existing = Map.tryFind lit byLiteral |> Option.defaultValue []
                 byLiteral <- Map.add lit (occ :: existing) byLiteral
 
+            | RecordExtend _ -> byRecord <- occ :: byRecord
             | Wildcard -> defaults <- occ :: defaults
             | Variable _ -> defaults <- occ :: defaults
             | _ -> others <- occ :: others
 
         let byConstructor = byConstructor |> Map.map (fun _ l -> List.rev l)
         let byLiteral = byLiteral |> Map.map (fun _ l -> List.rev l)
+        let byRecord = List.rev byRecord
         let defaults = List.rev defaults
         let others = List.rev others
 
-        (byConstructor, byLiteral, defaults, others)
+        (byConstructor, byLiteral, byRecord, defaults, others)
 
     let private specializeOccurrence (path: Path) (symbolName: string) (occ: PatternOccurrence) =
         match safeAccess path occ.Pattern with
@@ -234,9 +247,9 @@ module DecisionTreeCompiler =
             match selectBestPath { matrix with Occurrences = uniqueOccurrences } with
             | None -> compileWhenClauses uniqueOccurrences
             | Some path ->
-                let (bySymbol, byLiteral, defaults, others) =
+                let (bySymbol, byLiteral, byRecord, defaults, others) =
                     partitionByConstructor path uniqueOccurrences
-                
+
                 let allDefaults = defaults @ others
 
                 if not (Map.isEmpty bySymbol)
@@ -244,7 +257,10 @@ module DecisionTreeCompiler =
                 else
                     if not (Map.isEmpty byLiteral)
                     then compileSwitchLiteral path byLiteral allDefaults matrix.RemainingPaths
-                    else compileBindings path allDefaults matrix.RemainingPaths
+                    else
+                        if not (List.isEmpty byRecord)
+                        then compileRecordAccess path (byRecord @ defaults) matrix.RemainingPaths
+                        else compileBindings path allDefaults matrix.RemainingPaths
 
     and private compileSwitch
             (path: Path) 
@@ -303,6 +319,41 @@ module DecisionTreeCompiler =
             else Some (compileBindings path defaults remainingPaths)
 
         DecisionTree.SwitchLiteral(path, cases, defaultCase)
+
+    and private compileRecordAccess (path: Path) (occurrences: PatternOccurrence list) (remainingPaths: Path list) =
+
+        let allFields =
+            occurrences
+            |> List.collect (fun occ ->
+                match safeAccess path occ.Pattern with
+                | RecordExtend { Extension = fields } -> List.map fst fields
+                | _ -> [])
+            |> Set.ofList
+            |> Set.toList
+
+        let specializedOccurrences =
+            occurrences
+            |> List.map (fun occ ->
+                match safeAccess path occ.Pattern with
+                | Variable v ->
+                    match Map.tryFind v occ.Bindings with
+                    | None -> { occ with Bindings = Map.add v path occ.Bindings }
+                    | Some _ ->
+                        let tempVar = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
+                        let newGuard = mergeGuards occ.WhenClause (mkEqualityGuard v tempVar)
+                        { occ with Bindings = Map.add tempVar path occ.Bindings; WhenClause = Some newGuard }
+                | _ -> occ
+            )
+
+        let fieldPaths = allFields |> List.map (fun f -> path.Access f)
+        let newRemainingPaths = fieldPaths @ (List.filter ((<>) path) remainingPaths)
+
+        let successTree =
+            compileRec
+                { Occurrences = specializedOccurrences
+                  RemainingPaths = newRemainingPaths }
+
+        DecisionTree.TypeCheck(path, Map.ofList [ (TRecord, successTree) ], Some DecisionTree.Fail)
 
     and private compileWhenClauses (occurrences: PatternOccurrence list) =
         match occurrences with

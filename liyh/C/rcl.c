@@ -1515,6 +1515,128 @@ int run_vm(vm_t *vm_ptr, const int entry)
             break;
         }
 
+        case INSTR_MK_RECORD:
+        {
+            // instr.b = count
+            // instr.c = start
+
+            const int total_regs = instr.b;
+            const int start_reg = instr.c;
+            const int pair_count = total_regs / 2;
+
+            record_field_t pairs[pair_count]; // VLA not to allocate memory onto the stack.
+
+            for (int i = 0; i < pair_count; i++)
+            {
+                const term_t key_term = resolve_indirection(regs[start_reg + (i * 2)]);
+                const term_t val_term = regs[start_reg + (i * 2) + 1];
+
+                if (!IS_PTR(key_term))
+                {
+                    fprintf(stderr, "Fatal error: Record key must be an atom.\n");
+                    return_value = EXIT_FAILURE;
+                    run = false;
+                    break;
+                }
+
+                pairs[i].key = AS_HEADER(key_term)->id;
+                pairs[i].value = val_term;
+            }
+
+            regs[instr.a] = make_record_from_pairs(pairs, pair_count);
+            break;
+        }
+
+        case INSTR_EXTEND_RECORD:
+        {
+            // instr.a = dst
+            // instr.b = base record reg
+            // instr.c = count (extension)
+            // instr.d = extension start reg
+
+            const term_t base = resolve_indirection(regs[instr.b]);
+
+            if (!IS_PTR(base) || AS_HEADER(base)->id != SYM_RECORD)
+            {
+                fprintf(stderr, "Fatal error: expected a base record.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            term_header_t *base_header = AS_HEADER(base);
+            const int base_arity = base_header->arity;
+            const int base_pair_count = base_arity / 2;
+
+            const int ext_total_regs = instr.c;
+            const int ext_pair_count = ext_total_regs / 2;
+            const int ext_start = instr.d;
+
+            const int total_pairs = base_pair_count + ext_pair_count;
+
+            record_field_t pairs[total_pairs];
+
+            for (int i = 0; i < base_pair_count; i++)
+            {
+                pairs[i].key = (sym_id_t)GET_INT(base_header->children[i * 2]);
+                pairs[i].value = base_header->children[i * 2 + 1];
+            }
+
+            for (int i = 0; i < ext_pair_count; i++)
+            {
+                const term_t key_term = resolve_indirection(regs[ext_start + (i * 2)]);
+                const term_t val_term = regs[ext_start + (i * 2) + 1];
+
+                if (!IS_PTR(key_term))
+                {
+                    fprintf(stderr, "Fatal error: Extension key must be an atom.\n");
+                    return_value = EXIT_FAILURE;
+                    run = false;
+                    break;
+                }
+
+                pairs[base_pair_count + i].key = AS_HEADER(key_term)->id;
+                pairs[base_pair_count + i].value = val_term;
+            }
+
+            regs[instr.a] = make_record_from_pairs(pairs, total_pairs);
+            break;
+        }
+
+        case INSTR_GET_FIELD:
+        {
+            // instr.b = record reg
+            // instr.c = field id
+            // instr.d = fail label
+
+            const term_t t = resolve_indirection(regs[instr.b]);
+            const sym_id_t needle = (sym_id_t)instr.c;
+            bool found = false;
+
+            if (IS_PTR(t))
+            {
+                term_header_t *h = AS_HEADER(t);
+                if (h->id == SYM_RECORD)
+                {
+                    const int count = h->arity / 2;
+                    for (int i = 0; i < count; i++)
+                    {
+                        const sym_id_t key = (sym_id_t)GET_INT(h->children[i * 2]);
+                        if (key == needle)
+                        {
+                            regs[instr.a] = h->children[(i * 2) + 1];
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (!found)
+                pc = labels[instr.d];
+            break;
+        }
+
         /// Optimized `strcat` for string concatenation. Mainly used for string interpolation.
         case INSTR_STR_CAT:
         {

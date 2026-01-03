@@ -127,6 +127,26 @@ module public BytecodeCompiler =
                         let parentReg = compilePath context parent
                         builder.Deconstruct(parentReg, idx)
 
+                    | Field(parent, name) ->
+                        let parentReg = compilePath context parent
+
+                        let failLabel = freshLabel()
+                        let successLabel = freshLabel()
+
+                        let res = builder.GetField(parentReg, name, failLabel)
+
+                        builder.Jump(successLabel)
+
+                        builder.Scope(fun _ ->
+                            builder.SetLabel(failLabel)
+                            let msg = runtimeError $"Field '{name}' not found."
+                            builder.Print(builder.LoadString msg)
+                            builder.Halt()
+                        )
+                        
+                        builder.SetLabel(successLabel)
+                        res
+
                 context.PathCache <- Map.add path reg context.PathCache
                 reg
 
@@ -183,6 +203,20 @@ module public BytecodeCompiler =
                 | Float f -> builder.LoadFloat f
                 | String s -> builder.LoadString s
                 | Char c -> builder.LoadChar c
+
+            | RecordExtend { BaseRecord = base'; Extension = extensions } ->
+                let extensionRegs =
+                    extensions
+                    |> List.collect (fun (name, expr) ->
+                        let rVal = compileTerm context false expr
+                        let rKey = builder.LoadAtom name
+                        [ rKey; rVal ])
+                
+                match base' with
+                | None -> builder.MkRecord(extensionRegs)
+                | Some baseTerm ->
+                    let rBase = compileTerm context false baseTerm
+                    builder.ExtendRecord(rBase, extensionRegs)
 
             // --- Intrinsics --- //
 
@@ -576,6 +610,30 @@ module public BytecodeCompiler =
                     phiReg
                 )
 
+            | TypeCheck(path, cases, defaultCase) ->
+                let pathReg = compilePath ctx path
+                let endLabel = freshLabel()
+                let phiReg = builder.Alloc()
+
+                builder.Scope(fun () ->
+                    for KeyValue(t, subTree) in cases do
+                        let nextLbl = freshLabel()
+                        
+                        match t with
+                        | TRecord -> builder.TestRecord(pathReg, nextLbl) 
+                        | _ -> builder.Jump(nextLbl)
+
+                        let ctxBranch = branchContext ctx
+                        let res = compileTree ctxBranch subTree onMatch fallback
+                        builder.Mov(phiReg, res)
+                        builder.Jump(endLabel)
+                        
+                        builder.SetLabel(nextLbl)
+
+                    match defaultCase with
+                    | Some d ->
+                        let ctxDefault = branchContext ctx
+                        let res = compileTree ctxDefault d onMatch fallback
                         builder.Mov(phiReg, res)
 
                     | None -> 

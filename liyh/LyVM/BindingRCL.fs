@@ -9,6 +9,9 @@ module public BindingRCL =
     type public EnvPtr = IntPtr
     type public VMPtr = IntPtr
 
+    [<Literal>]
+    let public SYM_RECORD = -4
+
     /// This have to be found in the compilation path of the compiler.
     [<Literal>]
     let private librcl = "librcl"
