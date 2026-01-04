@@ -409,156 +409,158 @@ module public PrettyPrinter =
     let private reg r = $"r{r}"
     let private lbl l = $".L{l}"
 
+    let public prettyPrintInstr (last: ByteCodeInstr option) (instr: ByteCodeInstr) =
+        match instr with
+        | Comment (comment, true) ->
+            $"\n; {comment}"
+
+        | Comment (comment, false) ->
+            $"; {comment}"
+
+        | Label(l) ->
+            match last with
+            | Some(Comment _) -> $"{lbl l}:"
+            | _ -> $"\n{lbl l}:"
+
+        | Instr(OpCode.Halt, _, _, _, _) ->
+            "    halt"
+
+        | Instr(OpCode.Jump, target, _, _, _) ->
+            $"    jump {lbl target}"
+
+        | Instr(OpCode.JumpFalse, cond, target, _, _) ->
+            $"    jf {reg cond}, {lbl target}"
+
+        | Instr(OpCode.JumpTrue, cond, target, _, _) ->
+            $"    jt {reg cond}, {lbl target}"
+
+        | Instr(OpCode.Reserve, s, _, _, _) ->
+            $"    reserve {s}"
+
+        | Instr(OpCode.Ret, r, _, _, _) ->
+            $"    ret {reg r}"
+
+        | Instr(OpCode.Call, label, argsStart, argCount, dst) ->
+            $"    {reg dst} = call {lbl label}({reg argsStart}..+{argCount})"
+
+        | Instr(OpCode.Tailcall, label, argsStart, argCount, _) ->
+            $"    tailcall {lbl label}({reg argsStart}..+{argCount})"
+
+        | Instr(OpCode.Apply, fn, argsStart, argCount, dst) ->
+            $"    {reg dst} = apply {reg fn}({reg argsStart}..+{argCount})"
+
+        | Instr(OpCode.Mov, dst, src, _, _) ->
+            $"    {reg dst} = mov {reg src}"
+
+        | Instr(OpCode.LoadInt, dst, value, _, _) ->
+            $"    {reg dst} = int {value}"
+
+        | Instr(OpCode.LoadChar, dst, value, _, _) ->
+            $"    {reg dst} = char '{char value}'"
+
+        | Instr(OpCode.LoadFloat, dst, lo, hi, _) ->
+            let bits = (int64 lo) ||| ((int64 hi) <<< 32)
+            let value = System.BitConverter.Int64BitsToDouble(bits)
+            $"    {reg dst} = float {value}"
+
+        | Instr(OpCode.LoadString, dst, strId, _, _) ->
+            let str = InternTable.StringTable.Get(strId)
+            $"    {reg dst} = string \"{str}\""
+
+        | Instr(OpCode.LoadAtom, dst, atomId, _, _) ->
+            let atom = InternTable.AtomTable.Get(atomId)
+            $"    {reg dst} = atom :{atom}"
+
+        | Instr(OpCode.Add, dst, l, r, _) ->
+            $"    {reg dst} = add {reg l}, {reg r}"
+
+        | Instr(OpCode.Sub, dst, l, r, _) ->
+            $"    {reg dst} = sub {reg l}, {reg r}"
+
+        | Instr(OpCode.Mul, dst, l, r, _) ->
+            $"    {reg dst} = mul {reg l}, {reg r}"
+
+        | Instr(OpCode.Div, dst, l, r, _) ->
+            $"    {reg dst} = div {reg l}, {reg r}"
+
+        | Instr(OpCode.Mod, dst, l, r, _) ->
+            $"    {reg dst} = mod {reg l}, {reg r}"
+
+        | Instr(OpCode.Neg, dst, src, _, _) ->
+            $"    {reg dst} = neg {reg src}"
+
+        | Instr(OpCode.Equal, dst, l, r, _) ->
+            $"    {reg dst} = eq {reg l}, {reg r}"
+
+        | Instr(OpCode.NotEqual, dst, l, r, _) ->
+            $"    {reg dst} = neq {reg l}, {reg r}"
+
+        | Instr(OpCode.Leq, dst, l, r, _) ->
+            $"    {reg dst} = leq {reg l}, {reg r}"
+
+        | Instr(OpCode.Le, dst, l, r, _) ->
+            $"    {reg dst} = le {reg l}, {reg r}"
+
+        | Instr(OpCode.Geq, dst, l, r, _) ->
+            $"    {reg dst} = geq {reg l}, {reg r}"
+
+        | Instr(OpCode.Ge, dst, l, r, _) ->
+            $"    {reg dst} = ge {reg l}, {reg r}"
+
+        | Instr(OpCode.Not, dst, src, _, _) ->
+            $"    {reg dst} = not {reg src}"
+
+        | Instr(OpCode.StrCat, dst, l, r, _) ->
+            $"    {reg dst} = strcat {reg l}, {reg r}"
+
+        | Instr(OpCode.MkRecord, dst, count, fieldsStart, _) ->
+            $"    {reg dst} = mkrecord({reg fieldsStart}..+{count})"
+
+        | Instr(OpCode.ExtendRecord, dst, base', count, fieldsStart) ->
+            $"    {reg dst} = extend {reg base'} with ({reg fieldsStart}..+{count})"
+
+        | Instr(OpCode.GetField, dst, record, fieldId, failLabel) ->
+            let field = InternTable.AtomTable.Get(fieldId)
+            $"    {reg dst} = getfield {reg record}.{field} or {lbl failLabel}"
+
+        | Instr(OpCode.Alloc, dst, tagId, count, childrenStart) ->
+            let tag = InternTable.AtomTable.Get(tagId)
+            $"    {reg dst} = alloc :{tag}({reg childrenStart}..+{count})"
+
+        | Instr(OpCode.Closure, dst, label, count, capturesStart) ->
+            $"    {reg dst} = closure {lbl label}[{reg capturesStart}..+{count}]"
+
+        | Instr(OpCode.CallClosure, closure, argsStart, argCount, dst) ->
+            $"    {reg dst} = callclosure {reg closure}({reg argsStart}..+{argCount})"
+
+        | Instr(OpCode.GetUpvalue, dst, index, _, _) ->
+            $"    {reg dst} = upvalue[{index}]"
+
+        | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
+            $"    testtype {reg term} is record or {lbl failLabel}"
+
+        | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
+            let tag = InternTable.AtomTable.Get(tagId)
+            $"    testtag {reg term} is {tag} or {lbl failLabel}"
+
+        | Instr(OpCode.Deconstruct, dst, term, index, _) ->
+            $"    {reg dst} = deconstruct {reg term}[{index}]"
+
+        | Instr(OpCode.PPShow, dst, src, _, _) ->
+            $"    {reg dst} = ppshow {reg src}"
+
+        | Instr(OpCode.Print, r, _, _, _) ->
+            $"    print {reg r}"
+
+        | _ -> failwith "??"
+
     /// Generate a textual representation of the given compiled program.
     let public prettyPrint { Program = instructions } =
         let sb = StringBuilder()
-        
         let mutable last = None
 
         for instr in instructions do
-            match instr with
-            | Comment (comment, true) -> sb.AppendLine($"\n; {comment}")
-            | Comment (comment, false) -> sb.AppendLine($"; {comment}")
-
-            | Label(l) ->
-                match last with
-                | Some(Comment _) -> sb.AppendLine($"{lbl l}:")
-                | _ -> sb.AppendLine($"\n{lbl l}:")
-
-            | Instr(OpCode.Halt, _, _, _, _) ->
-                sb.AppendLine("    halt")
-
-            | Instr(OpCode.Jump, target, _, _, _) ->
-                sb.AppendLine($"    jump {lbl target}")
-
-            | Instr(OpCode.JumpFalse, cond, target, _, _) ->
-                sb.AppendLine($"    jf {reg cond}, {lbl target}")
-
-            | Instr(OpCode.JumpTrue, cond, target, _, _) ->
-                sb.AppendLine($"    jt {reg cond}, {lbl target}")
-
-            | Instr(OpCode.Reserve, s, _, _, _) ->
-                sb.AppendLine($"    reserve {s}")
-
-            | Instr(OpCode.Ret, r, _, _, _) ->
-                sb.AppendLine($"    ret {reg r}")
-
-            | Instr(OpCode.Call, label, argsStart, argCount, dst) ->
-                sb.AppendLine($"    {reg dst} = call {lbl label}({reg argsStart}..+{argCount})")
-
-            | Instr(OpCode.Tailcall, label, argsStart, argCount, _) ->
-                sb.AppendLine($"    tailcall {lbl label}({reg argsStart}..+{argCount})")
-
-            | Instr(OpCode.Apply, fn, argsStart, argCount, dst) ->
-                sb.AppendLine($"    {reg dst} = apply {reg fn}({reg argsStart}..+{argCount})")
-
-            | Instr(OpCode.Mov, dst, src, _, _) ->
-                sb.AppendLine($"    {reg dst} = mov {reg src}")
-
-            | Instr(OpCode.LoadInt, dst, value, _, _) ->
-                sb.AppendLine($"    {reg dst} = int {value}")
-
-            | Instr(OpCode.LoadChar, dst, value, _, _) ->
-                sb.AppendLine($"    {reg dst} = char '{char value}'")
-
-            | Instr(OpCode.LoadFloat, dst, lo, hi, _) ->
-                let bits = (int64 lo) ||| ((int64 hi) <<< 32)
-                let value = System.BitConverter.Int64BitsToDouble(bits)
-                sb.AppendLine($"    {reg dst} = float {value}")
-
-            | Instr(OpCode.LoadString, dst, strId, _, _) ->
-                let str = InternTable.StringTable.Get(strId)
-                sb.AppendLine($"    {reg dst} = string \"{str}\"")
-
-            | Instr(OpCode.LoadAtom, dst, atomId, _, _) ->
-                let atom = InternTable.AtomTable.Get(atomId)
-                sb.AppendLine($"    {reg dst} = atom :{atom}")
-
-            | Instr(OpCode.Add, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = add {reg l}, {reg r}")
-
-            | Instr(OpCode.Sub, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = sub {reg l}, {reg r}")
-
-            | Instr(OpCode.Mul, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = mul {reg l}, {reg r}")
-
-            | Instr(OpCode.Div, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = div {reg l}, {reg r}")
-
-            | Instr(OpCode.Mod, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = mod {reg l}, {reg r}")
-
-            | Instr(OpCode.Neg, dst, src, _, _) ->
-                sb.AppendLine($"    {reg dst} = neg {reg src}")
-
-            | Instr(OpCode.Equal, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = eq {reg l}, {reg r}")
-
-            | Instr(OpCode.NotEqual, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = neq {reg l}, {reg r}")
-
-            | Instr(OpCode.Leq, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = leq {reg l}, {reg r}")
-
-            | Instr(OpCode.Le, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = le {reg l}, {reg r}")
-
-            | Instr(OpCode.Geq, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = geq {reg l}, {reg r}")
-
-            | Instr(OpCode.Ge, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = ge {reg l}, {reg r}")
-
-            | Instr(OpCode.Not, dst, src, _, _) ->
-                sb.AppendLine($"    {reg dst} = not {reg src}")
-
-            | Instr(OpCode.StrCat, dst, l, r, _) ->
-                sb.AppendLine($"    {reg dst} = strcat {reg l}, {reg r}")
-
-            | Instr(OpCode.MkRecord, dst, count, fieldsStart, _) ->
-                sb.AppendLine($"    {reg dst} = mkrecord({reg fieldsStart}..+{count})")
-
-            | Instr(OpCode.ExtendRecord, dst, base', count, fieldsStart) ->
-                sb.AppendLine($"    {reg dst} = extend {reg base'} with ({reg fieldsStart}..+{count})")
-
-            | Instr(OpCode.GetField, dst, record, fieldId, failLabel) ->
-                let field = InternTable.AtomTable.Get(fieldId)
-                sb.AppendLine($"    {reg dst} = getfield {reg record}.{field} or {lbl failLabel}")
-
-            | Instr(OpCode.Alloc, dst, tagId, count, childrenStart) ->
-                let tag = InternTable.AtomTable.Get(tagId)
-                sb.AppendLine($"    {reg dst} = alloc :{tag}({reg childrenStart}..+{count})")
-
-            | Instr(OpCode.Closure, dst, label, count, capturesStart) ->
-                sb.AppendLine($"    {reg dst} = closure {lbl label}[{reg capturesStart}..+{count}]")
-
-            | Instr(OpCode.CallClosure, closure, argsStart, argCount, dst) ->
-                sb.AppendLine($"    {reg dst} = callclosure {reg closure}({reg argsStart}..+{argCount})")
-
-            | Instr(OpCode.GetUpvalue, dst, index, _, _) ->
-                sb.AppendLine($"    {reg dst} = upvalue[{index}]")
-
-            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
-                sb.AppendLine($"    testtype {reg term} is record or {lbl failLabel}")
-
-            | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
-                let tag = InternTable.AtomTable.Get(tagId)
-                sb.AppendLine($"    testtag {reg term} is {tag} or {lbl failLabel}")
-
-            | Instr(OpCode.Deconstruct, dst, term, index, _) ->
-                sb.AppendLine($"    {reg dst} = deconstruct {reg term}[{index}]")
-
-            | Instr(OpCode.PPShow, dst, src, _, _) ->
-                sb.AppendLine($"    {reg dst} = ppshow {reg src}")
-
-            | Instr(OpCode.Print, r, _, _, _) ->
-                sb.AppendLine($"    print {reg r}")
-
-            | _ -> failwith "??"
-
-            |> ignore
-
+            sb.AppendLine(prettyPrintInstr last instr)
             last <- Some instr
 
         sb.ToString()
