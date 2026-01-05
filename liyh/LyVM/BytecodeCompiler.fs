@@ -5,7 +5,6 @@ module public BytecodeCompiler =
     open Liyh.Core
     open Liyh.Core.DecisionTree
     open Liyh.Core.DecisionTree.DecisionTreeCompiler
-    open System.Collections.Generic
 
     type private GlobalContext =
         { SymbolLabels: Map<string * int, int> }    // (symbol/arity, label)
@@ -77,7 +76,10 @@ module public BytecodeCompiler =
             Set.empty
 
     /// Compiles a LiyhCore program into a LyVM's bytecode equivalent program.
-    let public compile (program: CoreProgram) =
+    /// The `optimize: bool` parameter applys very basic optimization onto the bytecode if set to `true`.
+    /// The effects of optimizations are not noticeable in practice, but they mainly include the elimination
+    /// of dead code and basic peephole optimization. It is mainly useful for AOT compilation to reduce the size.
+    let public compile (program: CoreProgram) (optimize: bool) =
         let builder = new ByteCodeBuilder()
         let mutable nextLabelId = 1000 // For aesthetic reasons, labels are generated from the index ‘1000’ in
                                        // order to have a continuous 4-digit representation. This is purely aesthetic.
@@ -726,4 +728,4 @@ module public BytecodeCompiler =
         let dispatchTable = globalLabels
 
         builder.Compile(entryPointLabel, dispatchTable)
-        |> Peephole.apply // Sprinkle with a very tiny peephole
+        |> if optimize then Optimize.apply else id

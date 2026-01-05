@@ -657,102 +657,363 @@ type public VM() =
         finally
             destroy_vm vm
 
-/// A ridiculous peephole optimizer for the bytecode.
-[<RequireQualifiedAccess>]
-module public Peephole =
+/// A ridiculous set of optimizations for the bytecode.
+module public Optimize =
+    open System.Collections.Generic
 
-    /// Attempts to consume a sequence of Movs that correspond to a contiguous block.
-    let private tryCollapseBlock 
-        (targetStart: int)              // The register expected for the start of the block
-        (count: int)                    // The size of the actual block
-        (instrs: ByteCodeInstr list) =
+    module private Peephole =
 
-        // Search for Movs by counting up from (count-1) to 0.
-        let rec scan currentIdx currentStream =
-            if currentIdx < 0 then
-                None 
-            else
-                match currentStream with
-                | Instr(OpCode.Mov, dst, src, _, _) :: rest ->
-                    if dst = targetStart + currentIdx then
+        /// Attempts to consume a sequence of Movs that correspond to a contiguous block.
+        let private tryCollapseBlock 
+            (targetStart: int)              // The register expected for the start of the block
+            (count: int)                    // The size of the actual block
+            (instrs: ByteCodeInstr list) =
 
-                        // The Mov writes to the expected slot (base + offset)
+            // Search for Movs by counting up from (count-1) to 0.
+            let rec scan currentIdx currentStream =
+                if currentIdx < 0 then
+                    None 
+                else
+                    match currentStream with
+                    | Instr(OpCode.Mov, dst, src, _, _) :: rest ->
+                        if dst = targetStart + currentIdx then
 
-                        let baseReg = src - currentIdx
+                            // The Mov writes to the expected slot (base + offset)
 
-                        match scan (currentIdx - 1) rest with
-                        | Some (foundBase, finalStream) ->
-                            if foundBase = baseReg then Some (baseReg, finalStream)
-                            else None
+                            let baseReg = src - currentIdx
 
-                        | None ->
-                            if currentIdx = 0 then Some (baseReg, rest)
-                            else None
-                    else
+                            match scan (currentIdx - 1) rest with
+                            | Some (foundBase, finalStream) ->
+                                if foundBase = baseReg then Some (baseReg, finalStream)
+                                else None
+
+                            | None ->
+                                if currentIdx = 0 then Some (baseReg, rest)
+                                else None
+                        else
+                            None
+                    | _ ->
                         None
+
+            if count <= 0 then None
+            else scan (count - 1) instrs
+
+        let private peepholeReversePass (instrs: ByteCodeInstr list) =
+            let rec loop input =
+                match input with
+
+                // --- Mov redundancies --- //
+
+                | Instr(op, dst, a, count, start) :: rest 
+                    when (op = OpCode.Alloc || op = OpCode.Closure || op = OpCode.ExtendRecord) ->
+
+                    match tryCollapseBlock start count rest with
+                    | Some (newBase, newRest) -> Instr(op, dst, a, count, newBase) :: loop newRest
+                    | None -> Instr(op, dst, a, count, start) :: loop rest
+
+                | Instr(op, a, start, count, dst) :: rest 
+                    when (op = OpCode.Call || op = OpCode.Tailcall || op = OpCode.Apply || op = OpCode.CallClosure) ->
+                    
+                    match tryCollapseBlock start count rest with
+                    | Some (newBase, newRest) -> Instr(op, a, newBase, count, dst) :: loop newRest
+                    | None -> Instr(op, a, start, count, dst) :: loop rest
+
+                | Instr(OpCode.MkRecord, dst, count, start, ignored) :: rest ->
+                    
+                    match tryCollapseBlock start count rest with
+                    | Some (newBase, newRest) -> Instr(OpCode.MkRecord, dst, count, newBase, ignored) :: loop newRest
+                    | None -> Instr(OpCode.MkRecord, dst, count, start, ignored) :: loop rest
+
+                | Instr(OpCode.Mov, rA, rB, _, _) :: Instr(OpCode.Mov, rB_dup, rC, _, _) :: rest 
+                    when rB = rB_dup ->
+
+                    loop (Instr(OpCode.Mov, rA, rC, 0, 0) :: Instr(OpCode.Mov, rB, rC, 0, 0) :: rest)
+
+                // --- Standard peephole optimisations --- //
+
+                | Instr(OpCode.Mov, dst, src, _, _) :: rest
+                    when dst = src ->
+                        loop rest
+
+                | Instr(OpCode.Ret, retReg, _, _, _) :: Instr(OpCode.Mov, dst, src, _, _) :: rest 
+                    when retReg = dst ->
+                        loop (Instr(OpCode.Ret, src, 0, 0, 0) :: rest)
+
+                | (Label l1 as lbl) :: Instr(OpCode.Jump, target, _, _, _) :: rest 
+                    when l1 = target ->
+
+                    lbl :: loop rest
+
+                | Instr(OpCode.JumpFalse, cond, lbl, _, _) :: Instr(OpCode.Not, dst, src, _, _) :: rest 
+                    when cond = dst ->
+
+                    loop (Instr(OpCode.JumpTrue, src, lbl, 0, 0) :: rest)
+
+                | Instr(OpCode.JumpTrue, cond, lbl, _, _) :: Instr(OpCode.Not, dst, src, _, _) :: rest 
+                    when cond = dst ->
+
+                    loop (Instr(OpCode.JumpFalse, src, lbl, 0, 0) :: rest)
+
+                | (Label _ as lbl) :: rest -> lbl :: loop rest
+                | head :: rest -> head :: loop rest
+                | [] -> []
+
+            loop instrs
+
+        let public apply (cp: CompiledProgram) =
+            { cp with
+                Program =
+                    cp.Program
+                    |> List.ofArray
+                    |> List.rev
+                    |> peepholeReversePass
+                    |> List.rev
+                    |> Array.ofList }
+
+    module private DeadCodeElimination =
+
+        /// Checks whether the instruction contains indirections in the bytecode.
+        let private hasControlFlowSideEffects (instr: ByteCodeInstr) =
+            match instr with
+            | Label _ -> true
+            | Comment _ -> false
+            | Instr(op, _, _, _, d) ->
+                match op with
+                | OpCode.Reserve
+                | OpCode.Halt 
+                | OpCode.Ret 
+                | OpCode.Print 
+                | OpCode.Jump 
+                | OpCode.JumpTrue 
+                | OpCode.JumpFalse 
+                | OpCode.Call 
+                | OpCode.Tailcall 
+                | OpCode.CallClosure 
+                | OpCode.Apply
+                | OpCode.TestTag -> true 
+                | OpCode.GetField when d <> 0 -> true
+                | _ -> false
+
+        /// Performs a dead code elimination onto the unused instructions.
+        let private removeDeadInstructions (cp: CompiledProgram) =
+            let program = cp.Program
+            let n = program.Length
+            let keep = Array.create n false
+
+            // Map: Label ID -> Set of registers alive at the start of this label
+            // This allows information to be transmitted through Jumps
+            let mutable labelLiveIn = Map.empty<int, Set<int>>
+
+            // Fixed point iteration
+            let mutable changed = true
+
+            while changed do
+                let mutable currentLive = Set.empty
+                changed <- false
+
+                for i = n - 1 downto 0 do
+                    let instr = program.[i]
+
+                    match instr with
+                    | Label l ->
+
+                        // We arrive at the beginning of a block.
+                        // `currentLive` now contains the registers needed to enter this block.
+                        // We save this information for jumps that target this label.
+
+                        let knownLive =
+                            labelLiveIn
+                            |> Map.tryFind l
+                            |> Option.defaultValue Set.empty
+
+                        if currentLive <> knownLive then
+                            labelLiveIn <- labelLiveIn |> Map.add l currentLive
+                            changed <- true
+
+                    | Instr(OpCode.Jump, target, _, _, _) ->
+
+                        // Unconditional jump: what follows physically is ignored.
+
+                        currentLive <-
+                            labelLiveIn
+                            |> Map.tryFind target
+                            |> Option.defaultValue Set.empty
+
+                    | Instr(OpCode.JumpTrue, _, target, _, _)
+                    | Instr(OpCode.JumpFalse, _, target, _, _)
+                    | Instr(OpCode.TestTag, _, _, target, _) ->
+
+                        // Conditional jump: Vivacity = (Rest of block) U (Jump target)
+
+                        let targetLive =
+                            labelLiveIn
+                            |> Map.tryFind target
+                            |> Option.defaultValue Set.empty
+
+                        currentLive <- Set.union currentLive targetLive
+
+                    | Instr(OpCode.GetField, _, _, _, failLabel) when failLabel <> 0 ->
+
+                        // GetField may jump if it fails
+
+                        let targetLive =
+                            labelLiveIn
+                            |> Map.tryFind failLabel
+                            |> Option.defaultValue Set.empty
+
+                        currentLive <- Set.union currentLive targetLive
+
+                    | _ -> ()
+
+                    /// Decides whether to keep or delete the instruction.
+                    let isNeeded =
+                        if hasControlFlowSideEffects instr then 
+                            true
+                        else
+                            match classifyRegisterUsage instr with
+                            | Some { Dest = d } when d >= 0 -> 
+                                // The instruction is useful if it defines a register that is alive (expected later).
+                                Set.contains d currentLive
+                            | _ -> false
+
+                    if isNeeded then
+                        keep.[i] <- true
+
+                        // Standard backward pass:
+                        // - Remove what the 'Define' statement defines (because it is produced here, so it is not needed before)
+                        // - Add what the 'Use' statement uses (because it is consumed here, so it is needed before)
+
+                        classifyRegisterUsage instr
+                        |> Option.iter (fun { Dest = d; Used = used } ->
+                            if d >= 0 then
+                                currentLive <- Set.remove d currentLive
+
+                            for u in used do
+                                currentLive <- Set.add u currentLive)
+
+                    else
+                        // Dead instruction
+                        ()
+
+            { cp with
+                Program =
+                    program 
+                    |> Array.mapi (fun i instr -> if keep.[i] then Some instr else None)
+                    |> Array.choose id }
+
+        let private removeUnreachableCode (cp: CompiledProgram) =
+            let root = [| cp.EntryPointLabel |] // Could there be other elements here in the future?
+
+            let labelIndices = Dictionary<int, int>()
+            for i = 0 to cp.Program.Length - 1 do
+                match cp.Program.[i] with
+                | Label l -> labelIndices.[l] <- i
+                | _ -> ()
+
+            let visited = HashSet<int>()
+            let queue = Queue<int>()
+
+            // Initialisation
+            for root in root do
+                if labelIndices.ContainsKey root && visited.Add root then
+                    queue.Enqueue root
+
+            while queue.Count > 0 do
+                let label = queue.Dequeue()
+                let idx = labelIndices.[label]
+                let mutable i = idx
+                let mutable running = true
+                
+                while running && i < cp.Program.Length do
+                    let instr = cp.Program.[i]
+
+                    if i > idx then 
+                        match instr with 
+                        | Label nextLabel -> 
+                            running <- false 
+                            let prevInstr = cp.Program.[i - 1]
+                            let isTerminator = 
+                                match prevInstr with
+                                | Instr(OpCode.Jump, _, _, _, _)
+                                | Instr(OpCode.Ret, _, _, _, _)
+                                | Instr(OpCode.Halt, _, _, _, _) -> true
+                                | _ -> false
+
+                            if not isTerminator then
+                                if labelIndices.ContainsKey nextLabel && visited.Add nextLabel then
+                                    queue.Enqueue nextLabel
+
+                        | _ -> ()
+                    
+                    if running then
+                        i <- i + 1
+                        match instr with
+                        | Instr(OpCode.Jump, target, _, _, _) 
+                        | Instr(OpCode.JumpTrue, _, target, _, _)
+                        | Instr(OpCode.JumpFalse, _, target, _, _)
+                        | Instr(OpCode.TestTag, _, _, target, _)
+                        | Instr(OpCode.Call, target, _, _, _)
+                        | Instr(OpCode.Tailcall, target, _, _, _)
+                        | Instr(OpCode.Closure, _, target, _, _) ->
+                            if labelIndices.ContainsKey target && visited.Add target then
+                                queue.Enqueue target
+
+                        | Instr(OpCode.GetField, _, _, _, failLabel) when failLabel <> 0 ->
+                            if labelIndices.ContainsKey failLabel && visited.Add failLabel then
+                                queue.Enqueue failLabel
+
+                        | _ -> ()
+            
+            // Reconstruct the compild program
+
+            let result = ResizeArray<ByteCodeInstr>()
+            let mutable keeping = false
+
+            for instr in cp.Program do
+                match instr with
+                | Label l ->
+                    if visited.Contains l then
+                        keeping <- true
+                        result.Add instr
+                    else
+                        keeping <- false
                 | _ ->
-                    None
+                    if keeping then
+                        result.Add instr
 
-        if count <= 0 then None
-        else scan (count - 1) instrs
+            let newDispatchTable =
+                cp.DispatchTable
+                |> Map.filter (fun _ label -> visited.Contains label)
 
-    let private peepholeReversePass (instrs: ByteCodeInstr list) =
-        let rec loop input =
-            match input with
+            { cp with
+                Program = result.ToArray()
+                DispatchTable = newDispatchTable }
 
-            // --- Mov redundancies --- //
+        /// Performs a dead code elimination.
+        /// (https://en.wikipedia.org/wiki/Dead-code_elimination#Dynamic_dead-code_elimination).
+        let public apply (cp: CompiledProgram) =
 
-            | Instr(op, dst, a, count, start) :: rest 
-                when (op = OpCode.Alloc || op = OpCode.Closure || op = OpCode.ExtendRecord) ->
+            let cpClean =
+                { cp with
+                    Program =
+                        cp.Program
+                        |> Array.filter (not << _.IsComment) }
 
-                match tryCollapseBlock start count rest with
-                | Some (newBase, newRest) -> Instr(op, dst, a, count, newBase) :: loop newRest
-                | None -> Instr(op, dst, a, count, start) :: loop rest
+            let rec applyUntilFixpoint cp =
+                let cpDead = removeDeadInstructions cpClean
+                let cpReachable = removeUnreachableCode cpDead
 
-            | Instr(op, a, start, count, dst) :: rest 
-                when (op = OpCode.Call || op = OpCode.Tailcall || op = OpCode.Apply || op = OpCode.CallClosure) ->
-                
-                match tryCollapseBlock start count rest with
-                | Some (newBase, newRest) -> Instr(op, a, newBase, count, dst) :: loop newRest
-                | None -> Instr(op, a, start, count, dst) :: loop rest
+                if cpReachable = cp then cpReachable
+                else applyUntilFixpoint cpReachable
 
-            | Instr(OpCode.MkRecord, dst, count, start, ignored) :: rest ->
-                
-                match tryCollapseBlock start count rest with
-                | Some (newBase, newRest) -> Instr(OpCode.MkRecord, dst, count, newBase, ignored) :: loop newRest
-                | None -> Instr(OpCode.MkRecord, dst, count, start, ignored) :: loop rest
+            applyUntilFixpoint cpClean
 
-            // --- Standard peephole optimisations --- //
-
-            // MOV rX, rX -> /
-            | Instr(OpCode.Mov, dst, src, _, _) :: rest
-                when dst = src ->
-                    loop rest
-
-            // Mov rA, rB ; Ret rA -> Ret rB
-            | Instr(OpCode.Ret, retReg, _, _, _) :: Instr(OpCode.Mov, dst, src, _, _) :: rest 
-                when retReg = dst ->
-                    loop (Instr(OpCode.Ret, src, 0, 0, 0) :: rest)
-
-            | (Label _ as lbl) :: rest -> lbl :: loop rest
-            | head :: rest -> head :: loop rest
-            | [] -> []
-
-        loop instrs
-
-    /// Apply a (very) basic pass of peephole optimization onto the program.
+    /// Apply a (very) basic pass of optimization onto the program.
     /// 
     /// This does not have a measurable impact on performance, but it slightly
     /// cleans up the generated bytecode and very slightly improves certain patterns.
-    let public apply (cp: CompiledProgram) =
-        { cp with
-            Program =
-                cp.Program
-                |> List.ofArray
-                |> List.rev
-                |> peepholeReversePass
-                |> List.rev
-                |> Array.ofList }
+    let public apply =
+        Peephole.apply >> DeadCodeElimination.apply
 
 [<RequireQualifiedAccess>]
 module public AOT =
