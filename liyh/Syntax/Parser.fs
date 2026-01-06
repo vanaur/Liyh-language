@@ -1597,6 +1597,35 @@ module Parser =
         { Module: Module
           MixfixOperators: MixfixOperator list }
 
+    let private handleNotationShadowingWarning (notations: MixfixOperator list) (text: string) (errorQueue: ErrorQueue) =
+        let inline showPos (pos: Position) = $"line {pos.Line}"
+
+        let ambiguities = findAmbiguities notations
+        let lines = NodeInfo.getLines text
+
+        for (shortOp, longOp) in ambiguities do
+            let posShort = fst shortOp.Position 
+            let posLong = fst longOp.Position
+
+            let msg = 
+                $"The user-defined notation '{shortOp.Name}' (defined at {showPos posShort}) is a prefix of the notation '{longOp.Name}' (defined at {showPos posLong})."
+
+            let infoMsg = 
+                $"Since the pattern of '{shortOp.Name}' is included in '{longOp.Name}', an ambiguity exists.\n" +
+                $"To resolve this, Liyh applies the 'Longest Match' rule: it will attempt to parse '{longOp.Name}' first.\n" +
+                $"If parsing '{longOp.Name}' fails mid-way, it will backtrack to '{shortOp.Name}'."
+
+            let report =
+                { ErrorType = Warning Syntax
+                  ErrorCode = null
+                  EnclosingPosition = (Some posShort, None)
+                  Description = msg
+                  AllLines = lines
+                  Informations = [ infoMsg ]
+                  Hint = "This is allowed, but ensure that any syntax error in the longer notation doesn't accidentally trigger the shorter one." }
+
+            errorQueue.AddError report
+
     /// Syntactically analyses the given text (which is supposed to be Liyh code) from the given stream name
     /// and reports parsing errors (which are always fatal) in `errorQueue`, returns the AST otherwise.
     let public parse (text: string) (streamName: string) (notations: MixfixOperator list) (errorQueue: ErrorQueue) =
@@ -1607,10 +1636,12 @@ module Parser =
 
         match runParser (finalParser streamName parseModule) notationState text with
         | Success(Some result, userState, _) ->
+            handleNotationShadowingWarning userState.UserState.MixfixOperators text errorQueue
             Some { Module = result
                    MixfixOperators = userState.UserState.MixfixOperators }
 
-        | Failure(debugMsg, err, _) ->
+        | Failure(debugMsg, err, userState) ->
+            handleNotationShadowingWarning userState.UserState.MixfixOperators text errorQueue
             //printfn "FParsec debug message:\n%A" debugMsg
             let report = handleParseFailure text err err.Position
             errorQueue.AddError report

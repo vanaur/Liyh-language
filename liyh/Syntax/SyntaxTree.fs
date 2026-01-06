@@ -24,7 +24,8 @@ module SyntaxTree =
           BindingPatterns: NotationPattern list
           Precedence: uint
           Associativity: Associativity
-          RewritesTo: ExpressionWithPos }
+          RewritesTo: ExpressionWithPos
+          Position: Position * Position }
 
     and public IdentifierWithPos = Identifier WithPos
     and public ExpressionWithPos = Expression WithPos
@@ -304,7 +305,8 @@ module SyntaxTree =
           BindingPatterns = removePos notation.NotationPattern
           Precedence = removePos notation.NotationPrecedence
           Associativity = removePos notation.NotationAssociativity
-          RewritesTo = notation.NotationIs }
+          RewritesTo = notation.NotationIs
+          Position = notation.NotationPattern.PosTuple }
 
 module Replace =
     open SyntaxTree
