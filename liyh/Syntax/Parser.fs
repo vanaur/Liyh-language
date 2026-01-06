@@ -66,7 +66,7 @@ module Parser =
 
     /// Reserved names and symbols for the language.
     let private reserved =
-        [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "is"; "as"; "_"; "->"; "["; "|>";
+        [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "as"; "_"; "->"; "["; "|>";
           "if"; "then"; "else"; "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "=";
           "notation"; "using"; "use"; "innermost"; "outermost"; "invalid"; "--"; "to"; "downto"; "type";
           "type-alias"; "."; "extern" ]
@@ -1238,7 +1238,7 @@ module Parser =
                 ] "hole or fixed part"
 
             let parseTerminator =
-                attempt (spaces >>. (skipString "is" <|> skipString "->"))
+                attempt (spaces >>. skipString "->")
 
             pipe2
                 (spaces >>? validatedPatternPart) // Parse la première partie (pour simuler many1)
@@ -1301,7 +1301,7 @@ module Parser =
 
             do! spaces >>. skipString "notation"
             let! pattern = spaces >>. parseMixfixPattern
-            do! spaces >>. ((skipString "is" <|> skipString "->") <?> "rewriting the notation (`is/->`)")
+            do! spaces >>. (skipString "->") <?> "rewriting the notation (`is/->`)"
             let! is = spaces >>. parseExpressionRef
             let! name, assoc, prec = greater pos parseFields
 
