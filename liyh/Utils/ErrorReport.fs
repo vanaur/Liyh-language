@@ -7,13 +7,38 @@ module ErrorReporter =
     open System.IO
     open FParsec
 
+    type private SeverityPalette =
+        { Primary   : ColorTerm.Color
+          Accent    : ColorTerm.Color
+          Secondary : ColorTerm.Color
+          Muted     : ColorTerm.Color
+          Code      : ColorTerm.Color
+          Location  : ColorTerm.Color }
+
+    let private errorPalette =
+        { Primary   = ColorTerm.Indexed 203
+          Accent    = ColorTerm.Indexed 203
+          Secondary = ColorTerm.Indexed 167
+          Muted     = ColorTerm.Indexed 131
+          Code      = ColorTerm.Indexed 102
+          Location  = ColorTerm.Indexed 131 }
+
+    let private warningPalette =
+        { Primary   = ColorTerm.Indexed 214
+          Accent    = ColorTerm.Indexed 214
+          Secondary = ColorTerm.Indexed 179
+          Muted     = ColorTerm.Indexed 136
+          Code      = ColorTerm.Indexed 102
+          Location  = ColorTerm.Indexed 136 }
+
     type public ErrorType =
         | Syntax
         | Type
         | Semantic
-        | Package // file and import system
-        | RuntimeInternal // bugs that should not occur
-        | Runtime // invalid rules during runtime, can be raised by the user
+        | Package
+        | RuntimeInternal
+        | Runtime
+        | Warning of ErrorType
 
         override this.ToString() =
             match this with
@@ -23,6 +48,12 @@ module ErrorReporter =
             | Package -> "Package"
             | RuntimeInternal -> "Runtime internal"
             | Runtime -> "User triggered runtime"
+            | Warning kind -> string kind
+
+    let inline private paletteOfErrorType errorType =
+        match errorType with
+        | Warning _ -> warningPalette
+        | _         -> errorPalette
 
     type public ErrorReport =
         { ErrorType: ErrorType
@@ -45,6 +76,7 @@ module ErrorReporter =
         (errorLine: int64)
         (errorCol: int64)
         (enclosingEnd: Position option)
+        (mutedColor: ColorTerm.Color)
         =
 
         let getLine l =
@@ -61,7 +93,7 @@ module ErrorReporter =
             let len = max 1 (endCol - start)
 
             let cursor =
-                ColorTerm.colorize (ColorTerm.Indexed 131) (if len <= 1 then "^" else "𜰉")
+                ColorTerm.colorize mutedColor (if len <= 1 then "^" else "𜰉")
 
             String.replicate 9 " "
             + "𜰊"
@@ -171,50 +203,59 @@ module ErrorReporter =
         |> String.concat "\n"
 
     let public formatError (error: ErrorReport) =
+        let palette = paletteOfErrorType error.ErrorType
+
         let (startPos, endPosOpt) = error.EnclosingPosition
         let linesArray = Seq.toArray error.AllLines
 
         let codeSnippet =
-            if startPos.IsNone then
-                None
-            else
-                Some(formatCodeSnippet linesArray startPos.Value.Line startPos.Value.Column endPosOpt)
+            startPos
+            |> Option.map (fun pos ->
+                formatCodeSnippet
+                    linesArray
+                    pos.Line
+                    pos.Column
+                    endPosOpt
+                    palette.Muted)
 
         let infoText =
-            let informations = Seq.filter (not << String.IsNullOrEmpty) error.Informations
-
-            if Seq.isEmpty informations then
-                None
-            else
-                Some(formatListItems informations)
+            error.Informations
+            |> Seq.filter (not << String.IsNullOrEmpty)
+            |> Seq.tryHead
+            |> Option.map (fun _ ->
+                formatListItems error.Informations)
 
         let hintText =
-            if String.IsNullOrEmpty error.Hint then
-                None
+            if String.IsNullOrEmpty error.Hint then None
             else
-                let wrapped = simpleWrap error.Hint (Console.WindowWidth - 4 * 5) 4
-                Some wrapped
+                Some (simpleWrap error.Hint (Console.WindowWidth - 4 * 5) 4)
 
-        let description = simpleWrap error.Description (Console.WindowWidth - 4 * 5) 4
+        let description =
+            simpleWrap error.Description (Console.WindowWidth - 4 * 5) 4
+
+        let errorTypeText =
+            let label =
+                match error.ErrorType with
+                | Warning _ -> " warning"
+                | _         -> " error"
+
+            let main =
+                ColorTerm.colorize palette.Primary (string error.ErrorType + label)
+
+            if String.IsNullOrEmpty error.ErrorCode then
+                main
+            else
+                main
+                + " "
+                + ColorTerm.colorize palette.Code (sprintf "[%s]" error.ErrorCode)
 
         let positionHeader =
-            let errorTypeText =
-                ColorTerm.colorize
-                    (ColorTerm.Indexed 203)
-                    (string error.ErrorType + " error")
-                    + if String.IsNullOrEmpty error.ErrorCode then ""
-                      else ColorTerm.colorize (ColorTerm.Indexed 102) (sprintf " [%s]" error.ErrorCode)
-
             match startPos with
             | None -> errorTypeText
             | Some pos ->
-                let clr = ColorTerm.colorize (ColorTerm.Indexed 131)
-
                 let filePart =
-                    if String.IsNullOrWhiteSpace pos.StreamName then
-                        ""
-                    else
-                        sprintf "file %s, " (clr pos.StreamName)
+                    if String.IsNullOrWhiteSpace pos.StreamName then ""
+                    else sprintf "file %s, " (ColorTerm.colorize palette.Location pos.StreamName)
 
                 sprintf "%s (%sln %d):" errorTypeText filePart pos.Line
 
@@ -224,22 +265,31 @@ module ErrorReporter =
           yield! Option.toList codeSnippet
           yield! Option.toList infoText
           yield! Option.toList hintText ]
-        |> List.map (fun s -> s.TrimEnd())
-        |> String.concat "\n\n"
-        |> fun s -> s + "\n"
+          |> List.map (fun s -> s.TrimEnd())
+          |> String.concat "\n\n"
+          |> fun s -> s + "\n"
 
-    /// A thread-safe error report queue.
+
     type public ErrorQueue() =
         let queue = ConcurrentQueue<ErrorReport>()
 
-        /// Appends an error reports to the queue.
         member public __.AddError(error: ErrorReport) = queue.Enqueue error
 
-        /// Retrieves the current number of error reports in the queue.
-        member public __.Count() = queue.Count
+        /// Returns the number of errors and warnings.
+        member public __.Count() =
+            queue
+            |> Seq.countBy _.ErrorType.IsWarning
+            |> Seq.fold (fun acc (isWarn, count) ->
+                if isWarn then (fst acc, snd acc + count)
+                else (fst acc + count, snd acc)) (0, 0)
 
-        /// Writes all errors from the queue to the write destination. If `cleanAfter` is `true`, clears the error cache.
-        member public __.ReportAll(writer: TextWriter) (cleanAfter: bool) =
+        member public this.HasErrors() =
+            fst (this.Count()) <> 0
+
+        member public this.HasWarnings() =
+            snd (this.Count()) <> 0
+
+        member public this.ReportAll(writer: TextWriter) (cleanAfter: bool) =
             let errors = ResizeArray<ErrorReport>()
             let enumerator = queue.GetEnumerator()
 
@@ -247,12 +297,24 @@ module ErrorReporter =
                 if not (errors.Contains enumerator.Current) then
                     errors.Add enumerator.Current
 
-            let count = errors.Count
-            if count = 0 then ()
+            let (nError, nWarning) = this.Count()
+            if nError = 0 && nWarning = 0 then ()
             else
-                match count with
-                | 1 -> writer.WriteLine("Compilation failed with an error. Please fix it to proceed.\n")
-                | n -> writer.WriteLine(sprintf "Compilation failed with %d errors. Please fix them to proceed.\n" n)
+                let parts = [
+                    if nError > 0 then
+                        match nError with
+                        | 1 -> "an error"
+                        | n -> sprintf "%d errors" n
+                    if nWarning > 0 then
+                        match nWarning with
+                        | 1 -> "a warning"
+                        | n -> sprintf "%d warnings" n
+                ]
+                
+                let message = String.concat " and " parts
+                writer.WriteLine(sprintf "Compilation failed with %s. Please fix %s to proceed.\n" 
+                    message 
+                    (if nError > 0 then "them" else "it"))
 
                 for error in errors do
                     writer.WriteLine("└ " + formatError error)

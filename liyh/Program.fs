@@ -26,13 +26,13 @@ module Program =
         | Some(pgraph, rootModule) ->
             let pgraph, rootModule = fillProjectGraph rootModule pgraph errorQueue
 
-            if errorQueue.Count() > 0 then
+            if errorQueue.HasErrors() then
                 errorQueue.ReportAll Console.Error true
                 exit -1
 
-            for layer in ProjectGraph.topologicalLayers pgraph do
-                let typechecked = TypeCheck.run layer errorQueue
-                ()
+            if errorQueue.HasWarnings() then
+                errorQueue.ReportAll Console.Error true
+
 
             errorQueue.ReportAll Console.Error true
 
