@@ -465,3 +465,9 @@ BenchmarkDotNet.Artifacts/*
 
 # Other stuff
 libtestlib.*
+
+# Garbage for testing stuff
+*.so
+*.lvm
+output
+testlib.c
