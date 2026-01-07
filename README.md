@@ -77,4 +77,4 @@ Persons:
 
  - [FParsec](https://github.com/stephan-tolksdorf/fparsec) — A parser combinator library for F#.
  - [BenchShark](https://github.com/JamesMenetrey/BenchShark) —  A lightweight library for benchmarking performance of your .NET applications.
-
+ - [bdwgc](https://github.com/bdwgc/bdwgc) —  The Boehm-Demers-Weiser conservative C/C++ Garbage Collector (bdwgc, also known as bdw-gc, boehm-gc, libgc).
