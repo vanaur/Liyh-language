@@ -19,7 +19,7 @@ module Repl =
  /_____/_/\__, /_/ /_/      
          /____/             https://github.com/vanaur/Liyh-language/
 
- Type ENTER to execute and ALT+ENTER to add lines. Use arrows to navigate
+ Type [ENTER] to execute and [ALT+ENTER] to add lines. Use arrows to navigate
  within a block of Liyh code.
 
     """
@@ -63,8 +63,24 @@ module Repl =
 
         let headerLines = header.Split('\n').Length
 
+        let mutable startLine = 0
+        let mutable isFirstDraw = true
+
         let redraw () =
-            Console.Clear()
+            if isFirstDraw then
+                startLine <- Console.CursorTop
+                printfn "%s" header
+                isFirstDraw <- false
+
+            let mutable totalLines = headerLines
+            
+            for block in finishedBlocks do
+                match block with
+                | CodeBlock lines -> totalLines <- totalLines + lines.Count + 1
+                | ResultBlock result -> totalLines <- totalLines + result.Split('\n').Length + 1
+            
+            totalLines <- totalLines + currentBlockLines.Count
+            Console.SetCursorPosition(0, startLine)
             printfn "%s" header
 
             for block in finishedBlocks do
@@ -72,13 +88,17 @@ module Repl =
                 | CodeBlock lines ->
                     for i = 0 to lines.Count - 1 do
                         let content = System.String(lines[i].ToArray())
+                        Console.Write("\r" + String(' ', Console.WindowWidth - 1) + "\r")
                         printfn " %*d ┃  %s" lineCountWidth (i + 1) content
+                    Console.Write("\r" + String(' ', Console.WindowWidth - 1) + "\r")
                     printfn ""
-                    
+
                 | ResultBlock result ->
                     let resultLines = result.Split('\n')
                     for line in resultLines do
-                        printfn " %s %s" (colorize (Indexed 115) "  🮥") line
+                        Console.Write("\r" + String(' ', Console.WindowWidth - 1) + "\r")
+                        printfn " %s %s" (colorize (Indexed 115) "  :") line
+                    Console.Write("\r" + String(' ', Console.WindowWidth - 1) + "\r")
                     printfn ""
 
             lineCountWidth <- (currentBlockLines.Count).ToString().Length
@@ -88,6 +108,7 @@ module Repl =
                     if i = currentLine then colorize (Indexed 120) "┣"
                     else colorize (Indexed 240) "┃"
                 let content = System.String(currentBlockLines[i].ToArray())
+                Console.Write("\r" + String(' ', Console.WindowWidth - 1) + "\r")
                 printfn " %*d %s  %s" lineCountWidth (i + 1) prefix content
 
             let prefixLen = 5 + lineCountWidth  // " n ┣  "
@@ -98,12 +119,10 @@ module Repl =
                 | CodeBlock lines -> finishedLinesCount <- finishedLinesCount + lines.Count + 1
                 | ResultBlock result -> finishedLinesCount <- finishedLinesCount + result.Split('\n').Length + 1
             
-            let cursorY = headerLines + finishedLinesCount + currentLine
+            let cursorY = startLine + headerLines + finishedLinesCount + currentLine
             Console.SetCursorPosition(prefixLen + cursorX, cursorY)
 
         member __.Run() =
-            Console.Clear()
-            printfn "%s" header
             redraw()
 
             while running do
