@@ -437,8 +437,8 @@ module CoreCompiler =
             initialValue
             endValue
             body
-            (if isDownTo then "minus" else "plus")
-            (if isDownTo then "geq" else "leq")
+            (if isDownTo then "__internal_sub" else "__internal_add")
+            (if isDownTo then "__internal_geq" else "__internal_leq")
             None
 
     and private compileForIn (cstate: State) (loop: ForIn) =
