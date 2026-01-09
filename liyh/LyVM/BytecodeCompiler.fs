@@ -364,7 +364,7 @@ module public BytecodeCompiler =
                                 let gotReg = builder.PPShow valReg
                                 let expected = PrettyPrinter.prettyPrintExpr pattern
 
-                                let msg1 = builder.LoadString $"The `let` case was incomplete. Expected pattern `{expected}`, but got `"
+                                let msg1 = builder.LoadString $"The case was incomplete. Expected pattern `{expected}`, but got `"
                                 let msg2 = builder.LoadString "` instead."
 
                                 let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
@@ -437,7 +437,7 @@ module public BytecodeCompiler =
                     let gotReg = builder.PPShow valReg
                     let expected = PrettyPrinter.prettyPrintExpr pattern
 
-                    let msg1 = builder.LoadString $"The `let` case was incomplete. Expected pattern `{expected}`, but got `"
+                    let msg1 = builder.LoadString $"The case was incomplete. Expected pattern `{expected}`, but got `"
                     let msg2 = builder.LoadString "` instead."
 
                     let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
@@ -484,7 +484,7 @@ module public BytecodeCompiler =
                         | Some n -> $"\n ... and {n} other pattern(s)"
                         | None -> ""
 
-                    let msg1 = builder.LoadString $"The `match` case was incomplete. Expected one of the following patterns:\n{patternsList}{extraMsg}\n\nbut got `"
+                    let msg1 = builder.LoadString $"The case was incomplete. Expected one of the following patterns:\n{patternsList}{extraMsg}\n\nbut got `"
                     let msg2 = builder.LoadString "` instead."
 
                     let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
