@@ -3,6 +3,9 @@ namespace rec Liyh.Core
 
 module public Helper =
 
+    let private trueSymbol = simpleSymbol "true"
+    let private falseSymbol = simpleSymbol "false"
+
     /// Reprsent the if-then-else operation.
     let public ifte (if': CoreTerm) (then': CoreTerm) (else': CoreTerm) =
         Match
@@ -185,41 +188,3 @@ module public Helper =
 
         loop term, asDefined
 
-
-    // --- Builtin symbol definitions --- //
-
-
-    let public tupleSymbol (xs: CoreTerm list) =
-        symbol "tuple" xs
-
-    let public listSymbol (xs: CoreTerm list) =
-        let cons h t = symbol "cons" [ h; t ]
-        let nil = simpleSymbol "nil"
-
-        let loop lst =
-            let rec loopAcc acc =
-                function
-                | [] -> acc
-                | x :: xs -> loopAcc (cons x acc) xs
-
-            loopAcc nil (List.rev lst)
-
-        loop xs
-
-    let public collectionAccessSymbol (expr: CoreTerm) (indices: CoreTerm list) =
-        symbol "collection_access" [ expr; tupleSymbol indices ]
-
-    let public trueSymbol =
-        simpleSymbol "true"
-
-    let public falseSymbol =
-        simpleSymbol "false"
-
-    let public showSymbol (arg: CoreTerm) =
-        symbol "printing_show" [ arg ]
-
-    let public concatSymbol (a: CoreTerm) (b: CoreTerm) =
-        symbol "concat" [ a; b ]
-
-    let public containsSymbol (lst: CoreTerm) (arg: CoreTerm) =
-        symbol "contains" [ lst; arg ]

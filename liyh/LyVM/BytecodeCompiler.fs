@@ -159,11 +159,11 @@ module public BytecodeCompiler =
             let lblEnd = freshLabel()
             
             builder.JumpFalse(boolReg, lblFalse)
-            builder.Mov(resReg, builder.LoadAtom("true"))
+            builder.Mov(resReg, builder.LoadAtom(Builtin.True))
             builder.Jump(lblEnd)
             
             builder.SetLabel(lblFalse)
-            builder.Mov(resReg, builder.LoadAtom("false"))
+            builder.Mov(resReg, builder.LoadAtom(Builtin.False))
             
             builder.SetLabel(lblEnd)
             resReg
@@ -171,26 +171,11 @@ module public BytecodeCompiler =
         // Utility function to convert an Atom (true/false) to a Boolean (0/1).
         let convertAtomToBool (atomReg: Reg) =
             let resReg = builder.Alloc()
-            let trueAtom = builder.LoadAtom("true")
+            let trueAtom = builder.LoadAtom(Builtin.True)
             let cmpRes = builder.Eq(atomReg, trueAtom)
 
             builder.Mov(resReg, cmpRes)
             resReg
-
-        let arithmeticIntrinsics =
-            [| "__internal_add"
-               "__internal_sub"
-               "__internal_mul"
-               "__internal_div"
-               "__internal_mod" |]
-
-        let booleanIntrinsics =
-            [| "__internal_eq"
-               "__internal_neq"
-               "__internal_le"
-               "__internal_leq"
-               "__internal_ge"
-               "__internal_geq" |]
 
         let rec compileTerm (context: CompilationContext) (isTail: bool) (term: CoreTerm) =
             match term with
@@ -220,51 +205,51 @@ module public BytecodeCompiler =
                     let rBase = compileTerm context false baseTerm
                     builder.ExtendRecord(rBase, extensionRegs)
 
-            // --- Intrinsics --- //
+            // --- Internals --- //
 
             | Symbol { Symbol = op; Children = [left; right] } 
-                when Set.contains op (Set.ofArray arithmeticIntrinsics) ->
+                when Set.contains op (Set.ofArray Internals.arithmeticInternals) ->
 
                 let rLeft = compileTerm context false left
                 let rRight = compileTerm context false right
 
                 match op with
-                | "__internal_add" -> builder.Add(rLeft, rRight)
-                | "__internal_sub" -> builder.Sub(rLeft, rRight)
-                | "__internal_mul" -> builder.Mul(rLeft, rRight)
-                | "__internal_div" -> builder.Div(rLeft, rRight)
-                | "__internal_mod" -> builder.Mod(rLeft, rRight)
+                | Internals.Add -> builder.Add(rLeft, rRight)
+                | Internals.Sub -> builder.Sub(rLeft, rRight)
+                | Internals.Mul -> builder.Mul(rLeft, rRight)
+                | Internals.Div -> builder.Div(rLeft, rRight)
+                | Internals.Mod -> builder.Mod(rLeft, rRight)
                 | _ -> failwith "??" // This may not happens
 
             | Symbol { Symbol = op; Children = [left; right] } 
-                when Set.contains op (Set.ofArray booleanIntrinsics) ->
+                when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
                 let rLeft = compileTerm context false left
                 let rRight = compileTerm context false right
 
                 let cmpRes = 
                     match op with
-                    | "__internal_eq"  -> builder.Eq(rLeft, rRight)
-                    | "__internal_neq" -> builder.NotEqual(rLeft, rRight)
-                    | "__internal_le"  -> builder.Le(rLeft, rRight)
-                    | "__internal_leq" -> builder.Leq(rLeft, rRight)
-                    | "__internal_ge"  -> builder.Ge(rLeft, rRight)
-                    | "__internal_geq" -> builder.Geq(rLeft, rRight)
+                    | Internals.Eq  -> builder.Eq(rLeft, rRight)
+                    | Internals.Neq -> builder.NotEqual(rLeft, rRight)
+                    | Internals.Le  -> builder.Le(rLeft, rRight)
+                    | Internals.Leq -> builder.Leq(rLeft, rRight)
+                    | Internals.Ge  -> builder.Ge(rLeft, rRight)
+                    | Internals.Geq -> builder.Geq(rLeft, rRight)
                     | _ -> failwith "??" // This may not happens
 
                 convertBoolToAtom cmpRes
 
-            | Symbol { Symbol = "__internal_print"; Children = [x] } ->
+            | Internals.Internal_print(x) ->
                 let xReg = compileTerm context false x
                 builder.Print(xReg)
-                builder.LoadAtom("unit")
+                builder.LoadAtom(Builtin.Unit)
 
-            | Symbol { Symbol = "__internal_strcat"; Children = [left; right] } ->
+            | Internals.Internal_strcat(left, right) ->
                 let rLeft = compileTerm context false left
                 let rRight = compileTerm context false right
                 builder.StrCat(rLeft, rRight)
 
-            | Symbol { Symbol = "__internal_ppshow"; Children = [term] } ->
+            | Internals.Internal_ppshow(term) ->
                 let r = compileTerm context false term
                 builder.PPShow(r)
 
@@ -340,7 +325,7 @@ module public BytecodeCompiler =
                     let seqContext = { context with Env = currentEnv }
 
                     match remaining with
-                    | [] -> builder.LoadAtom("unit") // dummy
+                    | [] -> builder.LoadAtom(Builtin.Unit) // dummy
                     | [ x ] -> compileTerm seqContext isTail x
                     | x :: xs ->
                         match x with
@@ -403,7 +388,7 @@ module public BytecodeCompiler =
                 | None -> failwithf "Cannot compile the variable update '%s'." name
                 | Some targetReg ->
                     builder.Mov(targetReg, valReg)
-                    builder.LoadAtom("unit")
+                    builder.LoadAtom(Builtin.Unit)
 
             | WhileLoop { Predicate = pred; Body = body } ->
                 let startLabel = freshLabel()
@@ -424,11 +409,11 @@ module public BytecodeCompiler =
                 builder.Scope(fun () -> compileTerm context false body |> ignore)
                 builder.Jump(startLabel)
                 builder.SetLabel(endLabel)
-                builder.LoadAtom("unit")
+                builder.LoadAtom(Builtin.Unit)
 
             | CoreLet { Pattern = Variable _; Value = value } ->
                 compileTerm context false value |> ignore
-                builder.LoadAtom("unit") // dummy
+                builder.LoadAtom(Builtin.Unit) // dummy
 
             | CoreLet { Pattern = pattern; Value = value; IsVariable = isVar } ->
                 let valReg = compileTerm context false value
@@ -446,7 +431,7 @@ module public BytecodeCompiler =
                 let tree = DecisionTreeCompiler.compile matrix
 
                 let onMatch _ _ =
-                    builder.LoadAtom("unit")
+                    builder.LoadAtom(Builtin.Unit)
 
                 let onMismatch () =
                     let gotReg = builder.PPShow valReg
@@ -515,19 +500,19 @@ module public BytecodeCompiler =
         and tryCompileIntrinsicBool (context: CompilationContext) (term: CoreTerm) =
             match term with
             | Symbol { Symbol = op; Children = [left; right] }
-                when Set.contains op (Set.ofArray booleanIntrinsics) ->
+                when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
                 let rLeft = compileTerm context false left
                 let rRight = compileTerm context false right
 
                 let rawResult = 
                     match op with
-                    | "__internal_eq"  -> builder.Eq(rLeft, rRight)
-                    | "__internal_neq" -> builder.NotEqual(rLeft, rRight)
-                    | "__internal_le"  -> builder.Le(rLeft, rRight)
-                    | "__internal_leq" -> builder.Leq(rLeft, rRight)
-                    | "__internal_ge"  -> builder.Ge(rLeft, rRight)
-                    | "__internal_geq" -> builder.Geq(rLeft, rRight)
+                    | Internals.Eq  -> builder.Eq(rLeft, rRight)
+                    | Internals.Neq -> builder.NotEqual(rLeft, rRight)
+                    | Internals.Le  -> builder.Le(rLeft, rRight)
+                    | Internals.Leq -> builder.Leq(rLeft, rRight)
+                    | Internals.Ge  -> builder.Ge(rLeft, rRight)
+                    | Internals.Geq -> builder.Geq(rLeft, rRight)
                     | _ -> failwith "??" // should not happen
 
                 Some rawResult
@@ -633,7 +618,7 @@ module public BytecodeCompiler =
                     let guardCtx = { ctx with Env = guardEnv }
                     
                     let guardReg = compileTerm guardCtx false guardExpr
-                    let trueAtom = builder.LoadAtom("true") 
+                    let trueAtom = builder.LoadAtom(Builtin.True) 
                     let isTrue = builder.Eq(guardReg, trueAtom)
                     
                     let failLabel = freshLabel()

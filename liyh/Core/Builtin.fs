@@ -1,223 +1,365 @@
 namespace Liyh.Core
 
-module Builtin =
+/// The "internals" are native instructions in the runtime.
+[<RequireQualifiedAccess>]
+module Internals =
+    open Liyh.Core
+
+    // --- Arithmetic internals --- //
+
+    let [<Literal>] public Add = "__internal_add"
+    let [<Literal>] public Sub = "__internal_sub"
+    let [<Literal>] public Mul = "__internal_mul"
+    let [<Literal>] public Div = "__internal_div"
+    let [<Literal>] public Mod = "__internal_mod"
+
+    /// Internal arithmetic operation (+, -, *, /, %).
+    let public arithmeticInternals =
+        [| Add
+           Sub
+           Mul
+           Div
+           Mod |]
+
+    let public (|Internal_add|_|) = function
+        | Symbol { Symbol = Add; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_sub|_|) = function
+        | Symbol { Symbol = Sub; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_mul|_|) = function
+        | Symbol { Symbol = Mul; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_div|_|) = function
+        | Symbol { Symbol = Div; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_mod|_|) = function
+        | Symbol { Symbol = Mod; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    // --- Boolean internals --- //
+
+    let [<Literal>] public Eq = "__internal_eq"
+    let [<Literal>] public Neq = "__internal_neq"
+    let [<Literal>] public Le = "__internal_le"
+    let [<Literal>] public Leq = "__internal_leq"
+    let [<Literal>] public Ge = "__internal_ge"
+    let [<Literal>] public Geq = "__internal_geq"
+
+    /// Internal boolean operations for comparison (eq, neq, le, leq, ge, geq).
+    let public booleanInternals =
+        [| Eq
+           Neq
+           Le
+           Leq
+           Ge
+           Geq |]
+
+    let public (|Internal_eq|_|) = function
+        | Symbol { Symbol = Eq; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_neq|_|) = function
+        | Symbol { Symbol = Neq; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_le|_|) = function
+        | Symbol { Symbol = Le; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_leq|_|) = function
+        | Symbol { Symbol = Leq; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_ge|_|) = function
+        | Symbol { Symbol = Ge; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_geq|_|) = function
+        | Symbol { Symbol = Geq; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    // --- Pretty printing --- //
+
+    let [<Literal>] public Print = "__internal_print"
+    let [<Literal>] public Strcat = "__internal_strcat"
+    let [<Literal>] public Ppshow = "__internal_ppshow"
+
+    let public (|Internal_print|_|) = function
+        | Symbol { Symbol = Print; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+    let public (|Internal_strcat|_|) = function
+        | Symbol { Symbol = Strcat; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_ppshow|_|) = function
+        | Symbol { Symbol = Ppshow; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+/// The "builtins" are built-in functions of symbols for the runtime.
+[<RequireQualifiedAccess>]
+module rec Builtin =
     open Liyh.Core
 
     // --- Lists --- //
 
-    let rec public (|Nil|_|) =
-        function
-        | Symbol { Symbol = "nil"; Children = [] } -> true
-        | _ -> false
+    let [<Literal>] public Cons = "cons"
+    let [<Literal>] public Nil = "nil"
+    let [<Literal>] public Reverse = "reverse"
+    let [<Literal>] public Range = "range"
+    let [<Literal>] public Contains = "contains"
+    let [<Literal>] public Access = "collection_access"
 
-    and public (|Cons|_|) =
+    let public symbolCons a b = symbol Cons [ a; b ]
+    let public symbolNil = simpleSymbol Nil
+    let public symbolReverse x = symbol Reverse [ x ]
+    let public symbolRange a b c = symbol Range [ a; b; c ]
+    let public symbolContains a b = symbol Contains [ a; b ]
+
+    let public symbolList (xs: CoreTerm list) =
+        let loop lst =
+            let rec loopAcc acc =
+                function
+                | [] -> acc
+                | x :: xs -> loopAcc (symbolCons x acc) xs
+
+            loopAcc symbolNil (List.rev lst)
+
+        loop xs
+
+    let public symbolCollectionAccess (expr: CoreTerm) (indices: CoreTerm list) =
+        symbol "collection_access" [ expr; symbolTuple indices ]
+
+    let public (|Nil|_|) =
         function
-        | Symbol { Symbol = "cons"; Children = [ x; xs ] } -> Some(x, xs)
+        | Symbol { Symbol = Nil; Children = [] } -> Some()
         | _ -> None
 
-    and public (|Range|_|) =
+    let public (|Cons|_|) =
         function
-        | Symbol { Symbol = "range"; Children = [ start; step; stop ] } -> Some(start, step, stop)
+        | Symbol { Symbol = Cons; Children = [ x; xs ] } -> Some(x, xs)
         | _ -> None
 
-    and public (|Concat|_|) =
+    let public (|Reverse|_|) =
         function
-        | Symbol { Symbol = "concat"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Reverse; Children = [ x ] } -> Some x
         | _ -> None
 
-    and public (|Contains|_|) =
+    let public (|Range|_|) =
         function
-        | Symbol { Symbol = "contains"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Range; Children = [ a; b; c ] } -> Some(a, b, c)
         | _ -> None
 
-    // -- Tuples --
-
-    and public (|TupleN|_|) (n: int) =
+    let public (|Contains|_|) =
         function
-        | Symbol { Symbol = s; Children = xs } ->
-            if xs.Length = n && s.StartsWith "tuple" && s.EndsWith(string n)
-            then Some xs else None
+        | Symbol { Symbol = Contains; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Tuple|_|) =
+    let public (|Access|_|) =
         function
-        | Symbol { Symbol = s; Children = xs } ->
-            if s.StartsWith "tuple" then
-                match s.Remove("tuple".Length - 1) |> System.Int32.TryParse with
-                | true, n when xs.Length = n -> Some(n, xs)
-                | _ -> None
-            else None
+        | Symbol { Symbol = Access; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    // -- Options --
+    // --- Boolean --- //
 
-    and public (|Some'|_|) =
+    let [<Literal>] public True = "true"
+    let [<Literal>] public False = "false"
+    let [<Literal>] public And = "and"
+    let [<Literal>] public Or = "or"
+    let [<Literal>] public Not = "not"
+
+    let public symbolTrue = simpleSymbol True
+    let public symbolFalse = simpleSymbol False
+    let public symbolAnd a b = symbol And [ a; b ]
+    let public symbolOr a b = symbol Or [ a; b ]
+    let public symbolNot a = symbol Not [ a ]
+
+    let public (|True|_|) =
         function
-        | Symbol { Symbol = "some"; Children = [ some ] } -> Some some
+        | Symbol { Symbol = True; Children = [] } -> Some()
         | _ -> None
 
-    and public (|None'|_|) =
+    let public (|False|_|) =
         function
-        | Symbol { Symbol = "none"; Children = [] } -> true
-        | _ -> false
-
-    // -- Arithmetic --
-
-    and public (|Plus|_|) =
-        function
-        | Symbol { Symbol = "plus"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = False; Children = [] } -> Some()
         | _ -> None
 
-    and public (|Minus|_|) =
+    let public (|And|_|) =
         function
-        | Symbol { Symbol = "minus"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = And; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Asterisk|_|) =
+    let public (|Or|_|) =
         function
-        | Symbol { Symbol = "asterisk"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Or; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Slash|_|) =
+    let public (|Not|_|) =
         function
-        | Symbol { Symbol = "slash"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Not; Children = [ a ] } -> Some a
         | _ -> None
 
-    and public (|Percent|_|) =
+    // --- Option --- //
+
+    let [<Literal>] public Some' = "some"
+    let [<Literal>] public None' = "none"
+
+    let public symbolSome x = symbol Some' [ x ]
+    let public symbolNone = simpleSymbol None'
+
+    let public (|None'|_|) =
         function
-        | Symbol { Symbol = "percent"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = None'; Children = [] } -> Some()
         | _ -> None
 
-    and public (|DoubleAsterisk|_|) =
+    let public (|Some'|_|) =
         function
-        | Symbol { Symbol = "double_asterisk"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Some'; Children = [ x ] } -> Some x
         | _ -> None
 
-    // -- Comparison --
+    // --- Misc --- //
 
-    and public (|Ge|_|) =
+    let [<Literal>] public Unit = "unit"
+    let [<Literal>] public Tuple = "tuple"
+    let [<Literal>] public Ptr = "ptr"
+    let [<Literal>] public Cast = "cast"
+    let [<Literal>] public Show = "show"
+
+    let public symbolUnit = simpleSymbol Unit
+    let public symbolTuple xs = symbol Tuple xs
+    let public symbolPtr ptr = symbol Ptr [ Literal (Integer ptr) ]
+    let public symbolCast a b = symbol Cast [ a; b ]
+    let public symbolShow x = symbol Show [ x ]
+
+    let public (|Unit|_|) =
         function
-        | Symbol { Symbol = "ge"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Unit; Children = [] } -> Some()
         | _ -> None
 
-    and public (|Geq|_|) =
+    let public (|Tuple|_|) =
         function
-        | Symbol { Symbol = "geq"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Tuple; Children = xs } -> Some xs
         | _ -> None
 
-    and public (|Le|_|) =
+    let public (|Ptr|_|) =
         function
-        | Symbol { Symbol = "le"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Ptr; Children = [ Literal (Integer ptr) ] } -> Some (nativeint ptr)
         | _ -> None
 
-    and public (|Leq|_|) =
+    let public (|Cast|_|) =
         function
-        | Symbol { Symbol = "leq"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Cast; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Eq|_|) =
+    let public (|Show|_|) =
         function
-        | Symbol { Symbol = "eq"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Show; Children = [ x ] } -> Some x
         | _ -> None
 
-    and public (|Neq|_|) =
+    // --- Arithmetic symbolics --- //
+
+    let [<Literal>] public Plus = "plus"
+    let [<Literal>] public Minus = "minus"
+    let [<Literal>] public Asterisk = "asterisk"
+    let [<Literal>] public Slash = "slash"
+    let [<Literal>] public Percent = "percent"
+    let [<Literal>] public DoubleAsterisk = "double_asterisk"
+
+    let public symbolPlus a b = symbol Plus [ a; b ]
+    let public symbolMinus a b = symbol Minus [ a; b ]
+    let public symbolAsterisk a b = symbol Asterisk [ a; b ]
+    let public symbolSlash a b = symbol Slash [ a; b ]
+    let public symbolPercent a b = symbol Percent [ a; b ]
+    let public symbolDoubleAsterisk a b = symbol DoubleAsterisk [ a; b ]
+
+    let public (|Plus|_|) =
         function
-        | Symbol { Symbol = "neq"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Plus; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    // -- Boolean --
-
-    and public (|And|_|) =
+    let public (|Minus|_|) =
         function
-        | Symbol { Symbol = "and"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Minus; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Or|_|) =
+    let public (|Asterisk|_|) =
         function
-        | Symbol { Symbol = "or"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Asterisk; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Not|_|) =
+    let public (|Slash|_|) =
         function
-        | Symbol { Symbol = "not"; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Slash; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|SymbolTrue|_|) =
+    let public (|Percent|_|) =
         function
-        | Symbol { Symbol = "true"; Children = [] } -> true
-        | _ -> false
-
-    and public (|SymbolFalse|_|) =
-        function
-        | Symbol { Symbol = "false"; Children = [] } -> true
-        | _ -> false
-
-    // -- Types --
-
-    and public (|IsType|_|) =
-        function
-        | Symbol { Symbol = "is_type"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Percent; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Cast|_|) =
+    let public (|DoubleAsterisk|_|) =
         function
-        | Symbol { Symbol = "cast"; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = DoubleAsterisk; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    // -- Misc --
+    // --- Boolean symbolics --- //
 
-    and public (|Show|_|) =
+    let [<Literal>] public Ge = "ge"
+    let [<Literal>] public Geq = "geq"
+    let [<Literal>] public Le = "le"
+    let [<Literal>] public Leq = "leq"
+    let [<Literal>] public Eq = "eq"
+    let [<Literal>] public Neq = "neq"
+
+    let public symbolGe a b = symbol Ge [ a; b ]
+    let public symbolGeq a b = symbol Geq [ a; b ]
+    let public symbolLe a b = symbol Le [ a; b ]
+    let public symbolLeq a b = symbol Leq [ a; b ]
+    let public symbolEq a b = symbol Eq [ a; b ]
+    let public symbolNeq a b = symbol Neq [ a; b ]
+
+    let public (|Ge|_|) =
         function
-        | Symbol { Symbol = "show"; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Ge; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|PrintingShow|_|) =
+    let public (|Geq|_|) =
         function
-        | Symbol { Symbol = "printing_show"; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Geq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|DebugBench|_|) =
+    let public (|Le|_|) =
         function
-        | Symbol { Symbol = "debug_bench"; Children = [ a; b ] } -> Some (a, b)
+        | Symbol { Symbol = Le; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|DebugPrint|_|) =
+    let public (|Leq|_|) =
         function
-        | Symbol { Symbol = "debug_print"; Children = [ value ] } -> Some value
+        | Symbol { Symbol = Leq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    and public (|Ptr|_|) =
+    let public (|Eq|_|) =
         function
-        | Symbol { Symbol = "ptr"; Children = [ Literal (Integer ptr) ] } -> Some (nativeint ptr)
+        | Symbol { Symbol = Eq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
-    let public builtinFunctions = [|
-        "range"
-        "concat"
-        "contains"
-        "plus"
-        "minus"
-        "asterisk"
-        "slash"
-        "percent"
-        "double_asterisk"
-        "ge"
-        "geq"
-        "le"
-        "leq"
-        "eq"
-        "neq"
-        "and"
-        "or"
-        "not"
-        "is_type"
-        "cast"
-        "show"
-        "printing_show"
-        "debug_bench"
-        "debug_print"
-        "ptr"
-        "show_decision_tree"
-        "dot_decision_tree"
-    |]
+    let public (|Neq|_|) =
+        function
+        | Symbol { Symbol = Neq; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
 
+    // --- Debug --- //
+
+    let [<Literal>] public BuiltinDebugBench = "debugbench"
+
+    let public symbolDebugBench a b = symbol BuiltinDebugBench [ a; b ]
+
+    let public (|DebugBench|_|) =
+        function
+        | Symbol { Symbol = BuiltinDebugBench; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None

@@ -36,7 +36,6 @@ module Interpreter =
     open Liyh.Core
     open Liyh.Core.DecisionTree
     open Liyh.Core.Helper
-    open Liyh.Core.Builtin
     open Liyh.Utils.ErrorReporter
 
     exception private InvalidRuleException of string
@@ -178,7 +177,7 @@ module Interpreter =
             (action: RunningState -> CoreTerm -> RunningState * CoreTerm)
             (term: CoreTerm option)
             =
-            let term = Option.defaultValue (simpleSymbol "unit") term
+            let term = Option.defaultValue (Builtin.symbolUnit) term
             let scopedState = pushVariableScope state
             let boundState = Option.map (fun a -> addBindings a scopedState) subst |> Option.defaultValue scopedState
             let newState, result = action boundState term
@@ -390,8 +389,8 @@ module Interpreter =
             let _, result = Environment.withinScope state (Some bindings) normalize (Some guard)
 
             match result with
-            | SymbolTrue -> true
-            | SymbolFalse -> false
+            | Builtin.True -> true
+            | Builtin.False -> false
             | other -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr other))
 
     /// Substitution for outermost rules.
@@ -565,8 +564,8 @@ module Interpreter =
         | None -> true
         | Some wc ->
             match Environment.withinScope state (Some subst) (fun s _ -> s, normalize s globalEnv wc) None with
-            | _, SymbolTrue -> true
-            | _, SymbolFalse -> false
+            | _, Builtin.True -> true
+            | _, Builtin.False -> false
             | _, other -> raise (WhenClauseException(PrettyPrinter.prettyPrintExpr other))
 
     and private normalize (state: RunningState) (globalEnv: GlobalEnvironment) (term: CoreTerm) =
@@ -627,12 +626,12 @@ module Interpreter =
 
                     | Some bindings ->
                         let newState = Environment.addBindings bindings state'
-                        (newState, simpleSymbol "unit")
+                        (newState, Builtin.symbolUnit)
 
                 | TermSequence terms ->
                     Environment.withinScope state None (fun scopedState _ ->
                         let mutable currentState = scopedState
-                        let mutable lastResult = simpleSymbol "unit"
+                        let mutable lastResult = Builtin.symbolUnit
 
                         for term in terms do
                             let newState, result = loop currentState term
@@ -685,18 +684,18 @@ module Interpreter =
 
                 | UpdateVariable(variable, value) ->
                     let _, evaluatedValue = loop state value
-                    (Environment.updateVariable variable evaluatedValue state, simpleSymbol "unit")
+                    (Environment.updateVariable variable evaluatedValue state, Builtin.symbolUnit)
 
                 | WhileLoop whileLoop ->
 
                     let rec loopExecution currentState =
                         let newState, predResult = loop currentState whileLoop.Predicate
                         match predResult with
-                        | SymbolTrue ->
+                        | Builtin.True ->
                             let bodyState, _ = loop newState whileLoop.Body
                             loopExecution bodyState
 
-                        | SymbolFalse -> (newState, simpleSymbol "unit")
+                        | Builtin.False -> (newState, Builtin.symbolUnit)
                         | other -> raise (WhileLoopPredicateException (PrettyPrinter.prettyPrintExpr other))
 
                     loopExecution state
@@ -852,6 +851,8 @@ module Interpreter =
                 handlerEnvironment.Handlers
                 |> Array.tryPick (tryHandler state term handlerName handlerEnvironment))
 
+(*
+
         /// Function optimised for symbol processing that returns None if not applicable. The purpose of this
         /// function is to note that certain symbols do not have rewriting rules, thereby avoiding running the
         /// interpreter in vain. This function therefore typically speeds up the management of recursive data
@@ -895,6 +896,8 @@ module Interpreter =
                 if LanguagePrimitives.PhysicalEquality newChildren symbol.Children
                 then Some (state, Symbol symbol)
                 else Some (state, copySymbolWithNewChildren symbol newChildren)
+
+*)
 
         and processSymbol (state: RunningState) (symbol: CoreSymbol) =
 
@@ -1162,14 +1165,14 @@ module Interpreter =
 
                 let symbolToBool =
                     function
-                    | SymbolTrue -> Some true
-                    | SymbolFalse -> Some false
+                    | Builtin.True -> Some true
+                    | Builtin.False -> Some false
                     | _ -> None
 
                 let boolToSymbol =
                     function
-                    | true -> trueSymbol
-                    | false -> falseSymbol
+                    | true -> Builtin.symbolTrue
+                    | false -> Builtin.symbolFalse
 
                 let _, evalA = loop state a
 
@@ -1191,9 +1194,9 @@ module Interpreter =
                     | Literal (Integer i) ->
                         let rec findNth n term =
                             match term with
-                            | Nil -> raise (InvalidRuleException $"index out of range, {i}.")
-                            | Cons(x, _) when n = 0 -> Some x
-                            | Cons(_, xs) -> findNth (n - 1) xs
+                            | Builtin.Nil -> raise (InvalidRuleException $"index out of range, {i}.")
+                            | Builtin.Cons(x, _) when n = 0 -> Some x
+                            | Builtin.Cons(_, xs) -> findNth (n - 1) xs
                             | other -> raise (InvalidRuleException $"invalid list structure, {PrettyPrinter.prettyPrintExpr other}.")
 
                         let idx = int i
@@ -1204,26 +1207,26 @@ module Interpreter =
 
             match term with
             | Symbol { Symbol = "collection_access"; Children = [ lst; tuple ] } -> collectionAccess lst tuple
-            | Plus(a, b) -> literalBinaryOperation a b ( + ) ( + )
-            | Minus(a, b) -> literalBinaryOperation a b ( - ) ( - )
-            | Asterisk(a, b) -> literalBinaryOperation a b ( * ) ( * )
-            | Slash(a, b) -> literalBinaryOperation a b ( / ) ( / )
-            | Percent(a, b) -> literalBinaryOperation a b ( % ) ( % )
-            | DoubleAsterisk(a, b) -> exponentiationOperation a b
+            | Builtin.Plus(a, b) -> literalBinaryOperation a b ( + ) ( + )
+            | Builtin.Minus(a, b) -> literalBinaryOperation a b ( - ) ( - )
+            | Builtin.Asterisk(a, b) -> literalBinaryOperation a b ( * ) ( * )
+            | Builtin.Slash(a, b) -> literalBinaryOperation a b ( / ) ( / )
+            | Builtin.Percent(a, b) -> literalBinaryOperation a b ( % ) ( % )
+            | Builtin.DoubleAsterisk(a, b) -> exponentiationOperation a b
 
-            | Eq(a, b) -> literalBinaryComparison a b ( = ) ( = )
-            | Neq(a, b) -> literalBinaryComparison a b ( <> ) ( <> )
-            | Le(a, b) -> literalBinaryComparison a b ( < ) ( < )
-            | Leq(a, b) -> literalBinaryComparison a b ( <= ) ( <= )
-            | Ge(a, b) -> literalBinaryComparison a b ( > ) ( > )
-            | Geq(a, b) -> literalBinaryComparison a b ( >= ) ( >= )
+            | Builtin.Eq(a, b) -> literalBinaryComparison a b ( = ) ( = )
+            | Builtin.Neq(a, b) -> literalBinaryComparison a b ( <> ) ( <> )
+            | Builtin.Le(a, b) -> literalBinaryComparison a b ( < ) ( < )
+            | Builtin.Leq(a, b) -> literalBinaryComparison a b ( <= ) ( <= )
+            | Builtin.Ge(a, b) -> literalBinaryComparison a b ( > ) ( > )
+            | Builtin.Geq(a, b) -> literalBinaryComparison a b ( >= ) ( >= )
 
-            | And(a, b) -> booleanAlgebra a b ( && ) (fun a -> if not a then Some false else None)
-            | Or(a, b) -> booleanAlgebra a b ( || ) (fun a -> if a then Some true else None)
-            | Not a ->
+            | Builtin.And(a, b) -> booleanAlgebra a b ( && ) (fun a -> if not a then Some false else None)
+            | Builtin.Or(a, b) -> booleanAlgebra a b ( || ) (fun a -> if a then Some true else None)
+            | Builtin.Not a ->
                 match snd (loop state a) with
-                | SymbolTrue -> Some falseSymbol
-                | SymbolFalse -> Some trueSymbol
+                | Builtin.True -> Some Builtin.symbolFalse
+                | Builtin.False -> Some Builtin.symbolTrue
                 | _ -> None
 
             (* // --- under consideration --- //
@@ -1244,7 +1247,7 @@ module Interpreter =
 
             *)
 
-            | Cast(a, t) ->
+            | Builtin.Cast(a, t) ->
                 let _, a = loop state a
                 let _, t = loop state t
 
@@ -1273,17 +1276,17 @@ module Interpreter =
                 | Literal lit, Symbol { Symbol = s } when s = "Int" || s = "Float" || s = "Char" ->
                     Some (Literal (convertLiteral lit s))
 
-                | Ptr ptr, Symbol { Symbol = "String" } ->
+                | Builtin.Ptr ptr, Symbol { Symbol = "String" } ->
                     Some (Literal (String (Marshal.PtrToStringUTF8 ptr)))
 
                 | _ -> None
 
-            | Show value ->
+            | Builtin.Show value ->
                 let _, value = loop state value
                 let text = PrettyPrinter.prettyPrintExpr value
                 Some (Literal (String text))
 
-            | PrintingShow value ->
+            | Internals.Internal_ppshow value ->
                 let text =
                     match snd (loop state value) with
                     | Literal (String s) -> s
@@ -1291,7 +1294,7 @@ module Interpreter =
 
                 Some (Literal (String text))
 
-            | Concat(a, b) ->
+            | Internals.Internal_strcat(a, b) ->
                 let _, a = loop state a
                 let _, b = loop state b
 
@@ -1299,13 +1302,13 @@ module Interpreter =
                 | Literal (String s1), Literal (String s2) -> Some (Literal (String (s1 + s2)))
                 | _ -> None
 
-            | Range(start, step, stop) ->
+            | Builtin.Range(start, step, stop) ->
                 let start = snd (loop state start)
                 let stop = snd (loop state stop)
                 let step =
                     match step with
-                    | None' -> simpleSymbol "none"
-                    | Some' expr -> symbol "some" [ snd (loop state expr) ]
+                    | Builtin.None' -> Builtin.symbolNone
+                    | Builtin.Some' expr -> Builtin.symbolSome (snd (loop state expr))
                     | _ -> raise (InvalidRuleException(sprintf "The `range` function does not consider `%s` to be a valid step." (PrettyPrinter.prettyPrintExpr step)))
 
                 let inline generateRange (makeLiteral: 'a -> CoreLiteral) (rangeFn: 'a -> 'a -> 'a -> seq<'a>) (start: 'a) (step: 'a option) (stop: 'a) =
@@ -1314,33 +1317,33 @@ module Interpreter =
                     | Some s -> rangeFn start s stop
                     |> Seq.map (makeLiteral >> Literal)
                     |> Seq.toList
-                    |> listSymbol
+                    |> Builtin.symbolList
                     |> Some
 
                 match start, step, stop with
-                | Literal (Integer start), None', Literal (Integer stop) ->
+                | Literal (Integer start), Builtin.None', Literal (Integer stop) ->
                     generateRange Integer (fun a _ b -> seq { a .. b }) start None stop
 
-                | Literal (Integer start), Some' (Literal (Integer step)), Literal (Integer stop) ->
+                | Literal (Integer start), Builtin.Some' (Literal (Integer step)), Literal (Integer stop) ->
                     generateRange Integer (fun a s b -> seq { a .. s .. b }) start (Some step) stop
 
-                | Literal (Float start), None', Literal (Float stop) ->
+                | Literal (Float start), Builtin.None', Literal (Float stop) ->
                     generateRange Float (fun a _ b -> seq { a .. b }) start None stop
 
-                | Literal (Float start), Some' (Literal (Float step)), Literal (Float stop) ->
+                | Literal (Float start), Builtin.Some' (Literal (Float step)), Literal (Float stop) ->
                     generateRange Float (fun a s b -> seq { a .. s .. b }) start (Some step) stop
 
                 | _ -> None
 
-            | DebugPrint value ->
+            | Internals.Internal_print value ->
                 let _, value = loop state value
                 match value with
                 | Literal (String s) -> printfn "%s" s
                 | _ -> printfn "%s" (PrettyPrinter.prettyPrintExpr value)
 
-                Some(simpleSymbol "unit")
+                Some(Builtin.symbolUnit)
 
-            | DebugBench(a, b) ->
+            | Builtin.DebugBench(a, b) ->
                 let _, a = loop state a
                 let _, b = loop state b
 

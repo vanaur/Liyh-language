@@ -186,8 +186,8 @@ module CoreCompiler =
         | Literal { Node = InterpolatedString lstr } -> compileInterpolatedString cstate lstr
         | Literal l -> compileLiteral l
         | MixfixOperator mixfix -> compileMixFix cstate mixfix
-        | Tuple xs -> tupleSymbol (List.map (compileExpression cstate) xs)
-        | List xs -> listSymbol (List.map (compileExpression cstate) xs)
+        | Tuple xs -> Builtin.symbolTuple (List.map (compileExpression cstate) xs)
+        | List xs -> Builtin.symbolList (List.map (compileExpression cstate) xs)
         | ListComprehension listComprehension -> compileListComprehension cstate listComprehension
         | Range range -> compileRange cstate range
         | Let(patt, value) -> compileLetVar cstate patt value false
@@ -230,7 +230,7 @@ module CoreCompiler =
 
     and private compileCollectionAccess (cstate: State) { LHS = expr; Indices = indices } =
         let indices = List.map (compileExpression cstate) indices
-        collectionAccessSymbol (compileExpression cstate expr) (List.rev indices)
+        Builtin.symbolCollectionAccess (compileExpression cstate expr) (List.rev indices)
 
     and private compileListComprehension (cstate: State) (lc: ListComprehension) =
 
@@ -256,20 +256,20 @@ module CoreCompiler =
             let nilVar = Variable nilVarName
 
             let bindCursor = CoreLet { Pattern = cursorVar; Value = compiledList; IsVariable = true }
-            let bindResult = CoreLet { Pattern = resultVar; Value = symbol "nil" []; IsVariable = true }
-            let bindNil = CoreLet { Pattern = nilVar; Value = symbol "nil" []; IsVariable = false }
+            let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsVariable = true }
+            let bindNil = CoreLet { Pattern = nilVar; Value = Builtin.symbolNil; IsVariable = false }
 
-            let appendExpr = symbol "cons" [ compiledItem; resultVar ]
-            
+            let appendExpr = Builtin.symbolCons compiledItem resultVar
+
             let updateResult =
                 match compiledCond with
-                | Some cond -> ifte cond (UpdateVariable(resultVarName, appendExpr)) (simpleSymbol "unit")
+                | Some cond -> ifte cond (UpdateVariable(resultVarName, appendExpr)) (Builtin.symbolUnit)
                 | None -> UpdateVariable(resultVarName, appendExpr)
 
             let loopBody =
                 TermSequence [
                     CoreLet { 
-                        Pattern = symbol "cons" [ compiledPattern; tailVar ]
+                        Pattern = Builtin.symbolCons compiledPattern tailVar
                         Value = cursorVar
                         IsVariable = false 
                     }
@@ -279,7 +279,7 @@ module CoreCompiler =
 
             let whileLoop =
                 WhileLoop {
-                    Predicate = symbol "__internal_neq" [ cursorVar; nilVar ]
+                    Predicate = symbol Internals.Neq [ cursorVar; nilVar ]
                     Body = loopBody
                 }
 
@@ -288,7 +288,7 @@ module CoreCompiler =
                 bindResult
                 bindNil
                 whileLoop
-                symbol "reverse" [ resultVar ]
+                Builtin.symbolReverse resultVar
             ]
 
     /// Specific optimized `for-in` loops over syntactic ranges.
@@ -304,7 +304,7 @@ module CoreCompiler =
         
         let _, startVar, bindStart = bind "lc_start" startExpr false
         let _, stopVar, bindStop   = bind "lc_stop"  stopExpr false
-        let resultName, resultVar, bindResult = bind "lc_result" (symbol "nil" []) true
+        let resultName, resultVar, bindResult = bind "lc_result" Builtin.symbolNil true
         
         let loopName = UniqueName.get "lc_i"
         let loopCounterVar = Variable loopName
@@ -313,13 +313,13 @@ module CoreCompiler =
             let compiledPattern = compilePattern cstate lc.Pattern
             let compiledItem = compileExpression cstate lc.ItemValue
             
-            let appendExpr = symbol "cons" [ compiledItem; resultVar ]
+            let appendExpr = Builtin.symbolCons compiledItem resultVar
             let updateLogic = 
                 match lc.IfPred with
                 | Some pred -> 
                     ifte (compileExpression cstate pred) 
                         (UpdateVariable(resultName, appendExpr)) 
-                        (simpleSymbol "unit")
+                        (Builtin.symbolUnit)
                 | None -> UpdateVariable(resultName, appendExpr)
 
             TermSequence [
@@ -332,10 +332,10 @@ module CoreCompiler =
 
         match range.RangeStep with
         | None ->
-            let loopBackwardsFromStop = makeLoop stopVar startVar "__internal_sub" "__internal_geq" None
-            let loopForwardsFromStop = makeLoop stopVar startVar "__internal_add" "__internal_leq" None
+            let loopBackwardsFromStop = makeLoop stopVar startVar Internals.Sub Internals.Geq None
+            let loopForwardsFromStop = makeLoop stopVar startVar Internals.Add Internals.Leq None
 
-            let dirCondition = symbol "__internal_leq" [ startVar; stopVar ]
+            let dirCondition = symbol Internals.Leq [ startVar; stopVar ]
 
             TermSequence [
                 bindStart; bindStop; bindResult
@@ -347,15 +347,15 @@ module CoreCompiler =
             let stepCompiled = compileExpression cstate stepExpr
             let _, stepVar, bindStep = bind "lc_step" stepCompiled false
 
-            let loopUp = makeLoop startVar stopVar "__internal_add" "__internal_leq" (Some stepVar)
-            let loopDown = makeLoop startVar stopVar "__internal_add" "__internal_geq" (Some stepVar)
+            let loopUp = makeLoop startVar stopVar Internals.Add Internals.Leq (Some stepVar)
+            let loopDown = makeLoop startVar stopVar Internals.Add Internals.Geq (Some stepVar)
 
-            let stepIsPositive = symbol "__internal_geq" [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
+            let stepIsPositive = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
 
             TermSequence [
                 bindStart; bindStop; bindStep; bindResult
                 ifte stepIsPositive loopUp loopDown
-                symbol "reverse" [ resultVar ]
+                Builtin.symbolReverse resultVar
             ]
 
     and private compileApply (cstate: State) { LHS = lhs; Arguments = args } =
@@ -381,12 +381,11 @@ module CoreCompiler =
 
             | Interpolation e :: rest ->
                 let e = compileExpression cstate e
-                let spart = symbol "__internal_ppshow" [ e ] //showSymbol e
+                let spart = symbol Internals.Ppshow [ e ] //showSymbol e
                 compileInterpolationPart cstate (spart :: result) rest
 
         let parts = compileInterpolationPart cstate [] (List.rev lstr)
-        //List.reduce concatSymbol parts
-        List.reduce (fun acc a -> symbol "__internal_strcat" [ acc; a ]) parts
+        List.reduce (fun acc a -> symbol Internals.Strcat [ acc; a ]) parts
 
     and private compileLiteral (lit: LiteralWithPos) =
         match removePos lit with
@@ -394,7 +393,7 @@ module CoreCompiler =
         | Literal.Float f -> CoreTerm.Literal (CoreLiteral.Float f)
         | Literal.Integer i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
         | Literal.String s -> CoreTerm.Literal (CoreLiteral.String s)
-        | Literal.Unit -> simpleSymbol "unit"
+        | Literal.Unit -> Builtin.symbolUnit
 
     and private compileMixFix (cstate: State) (mixfix: ApplyOperator) =
         match cstate.Notations |> List.tryFind (fun x -> removePos x.NotationName = mixfix.Name) with
@@ -408,9 +407,9 @@ module CoreCompiler =
         let step = Option.map (compileExpression cstate) step
         let stop = compileExpression cstate stop
 
-        let step = Option.defaultValue (simpleSymbol "none") (Option.map (fun s -> symbol "some" [ s ]) step)
+        let step = Option.defaultValue Builtin.symbolNone (Option.map Builtin.symbolSome step)
 
-        symbol "range" [ start; step; stop ]
+        Builtin.symbolRange start step stop
 
     and private compileLetVar (cstate: State) (patt: PatternWithPos) (value: ExpressionWithPos) (isVar: bool) =
         let patt = compilePattern cstate patt
@@ -437,8 +436,8 @@ module CoreCompiler =
             initialValue
             endValue
             body
-            (if isDownTo then "__internal_sub" else "__internal_add")
-            (if isDownTo then "__internal_geq" else "__internal_leq")
+            (if isDownTo then Internals.Sub else Internals.Add)
+            (if isDownTo then Internals.Geq else Internals.Leq)
             None
 
     and private compileForIn (cstate: State) (loop: ForIn) =
@@ -473,10 +472,10 @@ module CoreCompiler =
             let bindNil =
                 CoreLet {
                     Pattern = nilVar
-                    Value = symbol "nil" []
+                    Value = Builtin.symbolNil
                     IsVariable = false }
 
-            let consPattern = symbol "cons" [ compiledPattern; tailVar ]
+            let consPattern = Builtin.symbolCons compiledPattern tailVar
 
             let loopBody =
                 TermSequence [
@@ -489,7 +488,7 @@ module CoreCompiler =
 
             let whileLoop = 
                 WhileLoop {
-                    Predicate = symbol "__internal_neq" [ cursorVar; nilVar ]
+                    Predicate = symbol Internals.Neq [ cursorVar; nilVar ]
                     Body = loopBody }
 
             TermSequence [
@@ -523,10 +522,10 @@ module CoreCompiler =
         let stepBindings, loopLogic =
             match range.RangeStep with
             | None ->
-                let loopUp = makeLoop "__internal_add" "__internal_leq" None
-                let loopDown = makeLoop "__internal_sub" "__internal_geq" None
+                let loopUp = makeLoop Internals.Add Internals.Leq None
+                let loopDown = makeLoop Internals.Sub Internals.Geq None
 
-                let condition = symbol "__internal_leq" [ startVar; stopVar ]
+                let condition = symbol Internals.Leq [ startVar; stopVar ]
                 
                 ([], ifte condition loopUp loopDown)
 
@@ -534,10 +533,10 @@ module CoreCompiler =
                 let stepCompiled = compileExpression cstate stepExpr
                 let stepVar, bindStep = bind "range_step" stepCompiled
 
-                let loopUp = makeLoop "__internal_add" "__internal_leq" (Some stepVar)
-                let loopDown = makeLoop "__internal_add" "__internal_geq" (Some stepVar)
+                let loopUp = makeLoop Internals.Add Internals.Leq (Some stepVar)
+                let loopDown = makeLoop Internals.Add Internals.Geq (Some stepVar)
                 
-                let condition = symbol "__internal_geq" [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
+                let condition = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
 
                 ([bindStep], ifte condition loopUp loopDown)
 
@@ -587,7 +586,9 @@ module CoreCompiler =
         let elseBranch = Option.map (compileExpression cstate) ifte.ElseBranch
 
         let toMatch = condition
-        let cases = [ (trueSymbol, thenBranch); (falseSymbol, Option.defaultValue (simpleSymbol "unit") elseBranch) ]
+        let cases =
+            [ (Builtin.symbolTrue, thenBranch)
+              (Builtin.symbolFalse, Option.defaultValue (Builtin.symbolUnit) elseBranch) ]
 
         CoreTerm.Match
             { ToMatch = toMatch
@@ -627,8 +628,8 @@ module CoreCompiler =
         | SymbolPattern s -> simpleSymbol (string s)
         | ApplyPattern(lhs, args) -> compileApplyPattern cstate lhs args
         | LiteralPattern lit -> compileLiteral lit
-        | TuplePattern xs -> tupleSymbol (List.map (compilePattern cstate) xs)
-        | ListPattern xs -> listSymbol (List.map (compilePattern cstate) xs)
+        | TuplePattern xs -> Builtin.symbolTuple (List.map (compilePattern cstate) xs)
+        | ListPattern xs -> Builtin.symbolList (List.map (compilePattern cstate) xs)
         | AsPattern(basePatt, asPatt) -> compileAsPattern cstate basePatt asPatt
         | WhenPattern(basePatt, pred) -> compileWhenPattern cstate basePatt pred
         | Wildcard -> CoreTerm.Wildcard
@@ -670,10 +671,10 @@ module CoreCompiler =
 
     and private compileAlternativePattern (alternatives: LiteralWithPos list) =
         // (A | B | C) -> 'x when 'x ∈ { A, B, C }
-        let alternatives = listSymbol (List.map compileLiteral alternatives)
+        let alternatives = Builtin.symbolList (List.map compileLiteral alternatives)
         let uv = Variable (UniqueName.get "altp")
 
-        WhenClause(uv, containsSymbol alternatives uv)
+        WhenClause(uv, Builtin.symbolContains alternatives uv)
 
     and private compileRecordPattern (cstate: State) (fields: (string * PatternWithPos) list) =
         let fields = List.map (fun (name, value) -> name, compilePattern cstate value) fields
