@@ -106,6 +106,12 @@ module Internals =
 module rec Builtin =
     open Liyh.Core
 
+    //
+    // The runtime needs some builtin functional constructs to work properly. By nature,
+    // the "builtin symbols" are more a matter of code design, since simple symbols without
+    // arguments always exist due to the symbolic nature of the language.
+    //
+
     // --- Lists --- //
 
     let [<Literal>] public Cons = "cons"
