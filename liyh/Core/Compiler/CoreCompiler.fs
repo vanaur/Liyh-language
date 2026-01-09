@@ -543,32 +543,49 @@ module CoreCompiler =
         TermSequence ([bindStart; bindStop] @ stepBindings @ [loopLogic])
 
     and private compileLamda (cstate: State) (lambda: Lambda) =
-        let parameters = 
-            lambda.Patterns
+        let compiledPatterns = 
+            lambda.Patterns 
+            |> List.map (compilePattern cstate)
+
+        let (parameters, bindings) =
+            compiledPatterns
             |> List.map (fun patt ->
-                match compilePattern cstate patt with
-                | Variable v -> v
-                | Symbol { Symbol = s; Children = [] } -> s
-                | _ -> failwith "Only support variable pattern for now!")
+                match patt with
+                | Variable v -> (v, None)
+                | other ->
+                    let freshArgName = UniqueName.get "lam_arg"
+                    let binding =
+                        CoreLet
+                            { Pattern = other
+                              Value = Variable freshArgName
+                              IsVariable = false }
+                    freshArgName, Some binding)
+            |> List.unzip
 
-        let body = compileExpression cstate lambda.Body
+        let originalBody = compileExpression cstate lambda.Body
+        let bindingStmts = List.choose id bindings
 
-        // Calculates the free variables in the body of the lambda
+        let newBody =
+            if List.isEmpty bindingStmts then
+                originalBody
+            else
+                match originalBody with
+                | TermSequence seq -> TermSequence (bindingStmts @ seq)
+                | _ -> TermSequence (bindingStmts @ [ originalBody ])
+
         let boundParameters = Set.ofList parameters
-        let freeVariables, asDefined = freeVariables boundParameters body
-
-        // Remove 'as-defined' variables from the captured env
-        let freeVariables = freeVariables - asDefined
+        let freeVars, asDefined = freeVariables boundParameters newBody
+        let freeVars = freeVars - asDefined
 
         let capturedEnv =
-            freeVariables
+            freeVars
             |> Set.fold (fun env var -> Map.add var (Variable var) env) Map.empty
 
         Closure
             { Env = capturedEnv
               IsEvaluated = false
               Parameters = parameters
-              Value = body }
+              Value = newBody }
 
     and private compileMatch (cstate: State) (match': Match) =
         let toMatch = compileExpression cstate match'.ToMatch
