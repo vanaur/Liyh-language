@@ -411,10 +411,16 @@ module public BytecodeCompiler =
 
                 builder.SetLabel(startLabel)
 
-                let predReg = compileTerm context false pred
-                let predBool = convertAtomToBool predReg
+                // Attempts to compile the predicate as a native comparison.
+                let predBool = 
+                    match tryCompileIntrinsicBool context pred with
+                    | Some rawReg -> rawReg
+                    | None ->
+                        let predReg = compileTerm context false pred
+                        convertAtomToBool predReg
 
                 builder.JumpFalse(predBool, endLabel)
+                
                 builder.Scope(fun () -> compileTerm context false body |> ignore)
                 builder.Jump(startLabel)
                 builder.SetLabel(endLabel)
@@ -505,6 +511,27 @@ module public BytecodeCompiler =
                 )
 
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
+
+        and tryCompileIntrinsicBool (context: CompilationContext) (term: CoreTerm) =
+            match term with
+            | Symbol { Symbol = op; Children = [left; right] }
+                when Set.contains op (Set.ofArray booleanIntrinsics) ->
+
+                let rLeft = compileTerm context false left
+                let rRight = compileTerm context false right
+
+                let rawResult = 
+                    match op with
+                    | "__internal_eq"  -> builder.Eq(rLeft, rRight)
+                    | "__internal_neq" -> builder.NotEqual(rLeft, rRight)
+                    | "__internal_le"  -> builder.Le(rLeft, rRight)
+                    | "__internal_leq" -> builder.Leq(rLeft, rRight)
+                    | "__internal_ge"  -> builder.Ge(rLeft, rRight)
+                    | "__internal_geq" -> builder.Geq(rLeft, rRight)
+                    | _ -> failwith "??" // should not happen
+
+                Some rawResult
+            | _ -> None
 
         and compileTree 
             (ctx: CompilationContext) 
