@@ -1017,11 +1017,11 @@ module public Optimize =
 
 [<RequireQualifiedAccess>]
 module public AOT =
-    open System.Globalization
-    open System.Diagnostics
     open System.Text
     open System.IO
+    open System.Diagnostics
     open System.Reflection
+    open System.Collections.Generic
 
     let private readEmbeddedResource resourceName =
         let assembly = Assembly.GetExecutingAssembly()
@@ -1036,78 +1036,171 @@ module public AOT =
          .Replace("\r", "\\r")
          .Replace("\t", "\\t")
 
-    /// Produces an executable at the given path. This executable contains the whole runtime and
-    /// the compiled bytecode. This executable is standalone but is _still_ a VM running bytecode.
+    /// Produces an executable at the given path.
+    /// This executable contains the whole runtime and the compiled bytecode embedded as static arrays.
     let public compile (cp: CompiledProgram) (fileName: string) =
-        let embed = readEmbeddedResource "liyh.C.rcl.c"
-        let sb = new StringBuilder();
+        let sb = StringBuilder()
 
-        let inline appendLine s =
-            sb.AppendLine($"    {s};")
+        let inline appendLine (line: string) =
+            sb.AppendLine(line)
             |> ignore
 
-        for KeyValue((name, arity), label) in cp.DispatchTable do
-            appendLine $"intern_function(env_ptr, intern_symbol(env_ptr, \"{name}\" ), {arity}, {label})"
+        // --- Pre-calculation: Filter instructions and map labels to real indices --- //
+
+        let labelOffsets = Dictionary<int, int>()
+        let realInstructions = ResizeArray<ByteCodeInstr>()
+        let mutable instructionIndex = 0
 
         for instr in cp.Program do
             match instr with
-            | Comment (comment, true) -> 
-                appendLine $"\n// {comment} "
+            | Label id -> 
+                // A label points to the next "real" instruction index
+                if not (labelOffsets.ContainsKey id) then
+                    labelOffsets.Add(id, instructionIndex)
+            | Comment _ -> () // Comments are stripped
+            | _ -> 
+                realInstructions.Add(instr)
+                instructionIndex <- instructionIndex + 1
 
-            | Comment (comment, false) ->
-                appendLine $"// {comment} "
+        // Scan to find Max IDs for Strings and Atoms
+        // We need to know the size of the pools. We scan the used instructions to find the max ID.
 
-            | Label labelId ->  
-                appendLine $"set_label(env_ptr, {labelId})"
+        let mutable maxStringId = -1
+        let mutable maxAtomId = -1
+        let mutable maxLabelId = -1
+        
+        // Update max label from offsets
+        for k in labelOffsets.Keys do
+            if k > maxLabelId then maxLabelId <- k
 
-            | Instr(OpCode.LoadFloat, dst, lo, hi, _) ->
-                let bits = (int64 (uint32 lo)) ||| ((int64 hi) <<< 32)
-                let value = BitConverter.Int64BitsToDouble(bits)
-                appendLine $"emit_load_float(env_ptr, {dst}, {value.ToString(CultureInfo.InvariantCulture)})"
+        // Scan instructions
+        for instr in realInstructions do
+            match instr with
+            | Instr(OpCode.LoadString, _, id, _, _) -> if id > maxStringId then maxStringId <- id
+            | Instr(OpCode.LoadAtom, _, id, _, _) -> if id > maxAtomId then maxAtomId <- id
+            | Instr(OpCode.Alloc, _, id, _, _) -> if id > maxAtomId then maxAtomId <- id
+            | Instr(OpCode.GetField, _, _, id, _) -> if id > maxAtomId then maxAtomId <- id
+            | Instr(OpCode.TestTag, _, id, _, _) -> if id > maxAtomId then maxAtomId <- id
+            | _ -> ()
 
-            | Instr(OpCode.LoadString, dst, strId, _, _) ->
-                let str = InternTable.StringTable.Get(strId) |> escapeCString
-                appendLine $"emit(env_ptr, {int OpCode.LoadString}, {dst}, intern_string(env_ptr, \"{str}\"), 0, 0)"
+        // Also ensure symbols from DispatchTable are included (even if not used in bytecode)
+        for KeyValue((name, _), _) in cp.DispatchTable do
+             let id = InternTable.AtomTable.Intern name 
+             if id > maxAtomId then maxAtomId <- id
 
-            | Instr(OpCode.LoadAtom, dst, atomId, _, _) ->
-                let atom = InternTable.AtomTable.Get(atomId)
-                appendLine $"emit(env_ptr, {int OpCode.LoadAtom}, {dst}, (int)intern_symbol(env_ptr, \"{atom}\"), 0, 0)"
+        // --- Generate C Static Arrays --- //
 
-            | Instr(OpCode.GetField, dst, record, fieldId, failLabel) ->
-                let field = InternTable.AtomTable.Get(fieldId)
-                appendLine $"emit(env_ptr, {int OpCode.GetField}, {dst}, {record}, (int)intern_symbol(env_ptr, \"{field}\"), {failLabel})"
+        appendLine("    // --- Static Data Embed ---")
+        appendLine("    static const char* static_strings[] = {")
+        for i = 0 to maxStringId do
+            try 
+                let s = InternTable.StringTable.Get(i)
+                appendLine($"        \"{escapeCString s}\",")
+            with _ -> 
+                appendLine("        \"\",") // Fallback for gaps
+        appendLine("    };")
 
-            | Instr(OpCode.Alloc, dst, tagId, count, childrenStart) ->
-                let tag = InternTable.AtomTable.Get(tagId)
-                appendLine $"emit(env_ptr, {int OpCode.Alloc}, {dst}, (int)intern_symbol(env_ptr, \"{tag}\"), {count}, {childrenStart})"
+        // Symbols
+        appendLine("\n    static const char* static_symbols[] = {")
+        for i = 0 to maxAtomId do
+            try
+                let s = InternTable.AtomTable.Get(i)
+                appendLine($"        \"{escapeCString s}\",")
+            with _ ->
+                appendLine("        \"\",")
+        appendLine("    };")
 
-            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
-                appendLine $"emit(env_ptr, {int OpCode.TestTag}, {term}, {SYM_RECORD}, {failLabel}, 0)"
+        // Labels
+        appendLine("\n    static const int static_labels[] = {")
+        for i = 0 to maxLabelId do
+            if labelOffsets.ContainsKey i then
+                sb.Append($"{labelOffsets.[i]}, ")
+            else
+                sb.Append("-1, ")
 
-            | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
-                let tag = InternTable.AtomTable.Get(tagId)
-                appendLine $"emit(env_ptr, {int OpCode.TestTag}, {term}, (int)intern_symbol(env_ptr, \"{tag}\"), {failLabel}, 0)"
+            if (i + 1) % 20 = 0 then sb.AppendLine() |> ignore
+        appendLine("\n    };")
 
-            | Instr(opcode, arg1, arg2, arg3, arg4) ->
-                appendLine $"emit(env_ptr, {int opcode}, {arg1}, {arg2}, {arg3}, {arg4})"
+        // Bytecode
+        appendLine("\n    static const instr_t static_program[] = {")
+        for instr in realInstructions do
+            match instr with
+            | Instr(op, a, b, c, d) ->
+                let opInt = int op
 
+                // F# frontend for `LoadFloat` considers `b = Lo` and `c = Hi`
+                // C runtime (rcl.c) expects `b = Hi` and `c = Lo`
+                // We must swap b and c here. I don't know why we did that... We shall update.
+                if op = OpCode.LoadFloat then
+                     appendLine($"        {{ {opInt}, {a}, {c}, {b}, {d} }},")
+                else
+                     appendLine($"        {{ {opInt}, {a}, {b}, {c}, {d} }},")
+            | _ -> ()
+        appendLine("    };")
+
+
+        // --- Initialization Logic --- //
+
+        appendLine("\n    // --- Runtime Initialization ---")
+
+        // Load Strings
+        appendLine("    size_t num_strings = sizeof(static_strings) / sizeof(char*);")
+        appendLine("    for (size_t i = 0; i < num_strings; i++) {")
+        appendLine("        intern_string(env_ptr, static_strings[i]);")
+        appendLine("    }")
+
+        // Load Symbols
+        appendLine("    size_t num_symbols = sizeof(static_symbols) / sizeof(char*);")
+        appendLine("    for (size_t i = 0; i < num_symbols; i++) {")
+        appendLine("        intern_symbol(env_ptr, static_symbols[i]);")
+        appendLine("    }")
+
+        // Load Program
+        appendLine("    size_t prog_size = sizeof(static_program) / sizeof(instr_t);")
+        appendLine("    env_ptr->program = (instr_t*)GC_MALLOC_ATOMIC(prog_size * sizeof(instr_t));")
+        appendLine("    memcpy(env_ptr->program, static_program, sizeof(static_program));")
+        appendLine("    env_ptr->program_size = prog_size;")
+        appendLine("    env_ptr->program_capacity = prog_size;")
+
+        // Load Labels
+        appendLine("    size_t labels_count = sizeof(static_labels) / sizeof(int);")
+        appendLine("    env_ptr->labels = (int*)GC_MALLOC_ATOMIC(labels_count * sizeof(int));")
+        appendLine("    memcpy(env_ptr->labels, static_labels, sizeof(static_labels));")
+        appendLine("    env_ptr->labels_capacity = labels_count;")
+
+        // Init Dispatch Table
+        appendLine("\n    // --- Dispatch Table ---")
+        for KeyValue((name, arity), label) in cp.DispatchTable do
+            appendLine($"    intern_function(env_ptr, intern_symbol(env_ptr, \"{name}\"), {arity}, {label});")
+
+        // --- Final Assembly and Compilation --- //
+
+        let embed = readEmbeddedResource "liyh.C.rcl.c"
         let result =
             embed
-                .Replace($"<ENTRY-POINT>", string cp.EntryPointLabel)   // replaces the flag by the actual entry point
-                .Replace($"<FILL-PROGRAM>", string sb)                  // replaces the flag by the actual bytecode
+                .Replace("<ENTRY-POINT>", string cp.EntryPointLabel)
+                .Replace("<FILL-PROGRAM>", sb.ToString())
 
         let tempCFile = Path.GetTempFileName() + ".c"
         File.WriteAllText(tempCFile, result)
 
         let outputFile = Path.Combine(Directory.GetCurrentDirectory(), fileName)
-        let compileArgs = $"-o {outputFile} {tempCFile} -lm -lgc -O3 -DEMBEDDED -march=native"
 
-        //                                                //
-        // For now, we suppose an UNIX/LINUX environment. //
-        //                                                //
+        let flags =
+            [ "-lm"              // Link math library (libm)
+              "-lgc"             // Link Boehm garbage collector
+              "-DEMBEDDED"       // Define EMBEDDED macro for standalone executable compilation
+              "-O3"              // Aggressive optimization
+              "-flto"            // Link-time optimization (whole-program analysis)
+              "-fno-plt"         // Avoid PLT indirection for shared libraries (faster calls)
+              "-march=native" ]  // Optimize for the current CPU architecture
+
+            |> String.concat " "
+
+        let compileArgs =
+            $"-o {outputFile} {flags} {tempCFile}"
 
         let processInfo = ProcessStartInfo("cc", compileArgs)
-
         processInfo.UseShellExecute <- false
         processInfo.RedirectStandardOutput <- true
         processInfo.RedirectStandardError <- true
@@ -1120,6 +1213,5 @@ module public AOT =
             failwith $"Compilation failed: {error}"
 
         File.Delete(tempCFile)
-
         printfn $"Compiled successfully to: {outputFile}"
 
