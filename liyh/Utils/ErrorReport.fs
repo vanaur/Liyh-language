@@ -55,6 +55,8 @@ module ErrorReporter =
         | Warning _ -> warningPalette
         | _         -> errorPalette
 
+    [<CustomEquality; CustomComparison>] // We don't need this in practice, but it's to satisfy the type checker.
+                                         // Might as well do it properly, though.
     type public ErrorReport =
         { ErrorType: ErrorType
           ErrorCode: string
@@ -63,6 +65,28 @@ module ErrorReporter =
           AllLines: string seq
           Informations: string seq
           Hint: string }
+
+        override this.Equals(other) =
+            match other with
+            | :? ErrorReport as y ->
+                this.ErrorType = y.ErrorType &&
+                this.ErrorCode = y.ErrorCode &&
+                this.EnclosingPosition = y.EnclosingPosition &&
+                this.Description = y.Description &&
+                this.Hint = y.Hint
+            | _ -> false
+
+        override this.GetHashCode() =
+            hash (this.ErrorType, this.ErrorCode, this.EnclosingPosition, this.Description, this.Hint)
+
+        interface System.IComparable with
+            member this.CompareTo obj =
+                match obj with
+                | :? ErrorReport as y ->
+                    compare
+                        (this.ErrorType, this.ErrorCode, this.EnclosingPosition, this.Description, this.Hint)
+                        (y.ErrorType, y.ErrorCode, y.EnclosingPosition, y.Description, y.Hint)
+                | _ -> invalidArg "obj" "Cannot compare objects of different types"
 
     let private indent (n: int) (s: string) =
         let prefix = String.replicate n " "
@@ -82,30 +106,17 @@ module ErrorReporter =
         let getLine l =
             if l >= 0 && l < lines.Length then lines[l] else ""
 
-        let caretLine =
-            let start = int (errorCol - 1L)
-
-            let endCol =
-                match enclosingEnd with
-                | Some pos when pos.Line = errorLine -> int (pos.Column - 1L)
-                | _ -> start + 1
-
-            let len = max 1 (endCol - start)
-
-            let cursor =
-                ColorTerm.colorize mutedColor (if len <= 1 then "^" else "𜰉")
-
-            String.replicate 9 " "
-            + "𜰊"
-            + " "
-            + String.replicate (12 - (9 + 2) + start) " "
-            + String.replicate len cursor
-
-        let startLine = max 1L (errorLine - 2L)
-        let endLine = min (int64 lines.Length) (errorLine + 2L)
+        let startL, startC = errorLine, errorCol
+        let endL, endC =
+            match enclosingEnd with
+            | Some pos -> pos.Line, pos.Column
+            | None -> startL, startC + 1L
+        
+        let displayStartLine = max 1L (startL - 2L)
+        let displayEndLine = min (int64 lines.Length) (endL + 2L)
 
         let collected =
-            [ for lineNum in startLine..endLine ->
+            [ for lineNum in displayStartLine..displayEndLine ->
                   let content = getLine (int (lineNum - 1L))
                   lineNum, content ]
 
@@ -134,8 +145,28 @@ module ErrorReporter =
             let lineNumStr = sprintf "%4d" lineNum
             sb.AppendFormat("    {0} {1}  {2}\n", lineNumStr, "│", line) |> ignore
 
-            if lineNum = errorLine then
-                sb.Append(caretLine + "\n") |> ignore
+            if lineNum >= startL && lineNum <= endL then
+                
+                let shouldUnderline = 
+                    if lineNum = startL then true 
+                    else not (String.IsNullOrWhiteSpace line)
+
+                if shouldUnderline then
+                    let startIndex = 
+                        if lineNum = startL then int (startC - 1L) else 0
+                    
+                    let endIndex =
+                        if lineNum = endL then int (endC - 1L)
+                        else line.Length
+
+                    let len = max 1 (endIndex - startIndex)
+                    let cursorSymbol = if len <= 1 then "^" else "𜰉"
+                    let cursor = ColorTerm.colorize mutedColor cursorSymbol
+                    let glyph = String.replicate 9 " " + "𜰊" + " "
+                    let padding = String.replicate (1 + startIndex) " "
+                    let underline = String.replicate len cursor
+
+                    sb.Append(glyph + padding + underline + "\n") |> ignore
 
         sb.Append(indent 9 "⋮") |> ignore
         sb.ToString()
@@ -269,11 +300,14 @@ module ErrorReporter =
           |> String.concat "\n\n"
           |> fun s -> s + "\n"
 
-
     type public ErrorQueue() =
         let queue = ConcurrentQueue<ErrorReport>()
 
-        member public __.AddError(error: ErrorReport) = queue.Enqueue error
+        member public __.AddError(error: ErrorReport) =
+            queue.Enqueue error
+
+        member public this.AddErrors(errors: ErrorReport seq) =
+            Seq.iter this.AddError errors
 
         /// Returns the number of errors and warnings.
         member public __.Count() =
