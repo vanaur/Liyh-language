@@ -43,6 +43,8 @@ module SyntaxTree =
             String.concat "." (qualifiers @ [ this.Name.Node ])
 
     and public Expression =
+        | ParseError of Liyh.Utils.ErrorReporter.ErrorReport   // To be able to accumulate parsing errors and continue
+                                                               // parsing, so as not to stop at the first error encountered.
         | UFCS of UFCS
         | Identifier of IdentifierWithPos
         | BindingVariable of string
@@ -168,6 +170,8 @@ module SyntaxTree =
         | Interpolation of ExpressionWithPos
 
     and public TopLevel =
+        | ParseError of Liyh.Utils.ErrorReporter.ErrorReport   // To be able to accumulate parsing errors and continue
+                                                               // parsing, so as not to stop at the first error encountered
         | Use of Use WithPos
         | Rule of Rule
         | Handler of Handler
@@ -316,6 +320,7 @@ module Replace =
         let replacePattern pat = replacePatternVariable map pat
         
         match expwp.Node with
+        | Expression.ParseError _ -> expwp
         | BindingVariable name ->
             match Map.tryFind name map with
             | Some replacement -> replacement

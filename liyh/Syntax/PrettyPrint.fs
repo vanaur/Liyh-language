@@ -8,6 +8,7 @@ module PrettyPrint =
     let rec public prettyPrintExpression =
         removePos
         >> function
+            | Expression.ParseError error -> sprintf "Error: %A" error
             | UFCS ufcs -> sprintf "%s |> %s" (prettyPrintExpression ufcs.LHS) (prettyPrintExpression ufcs.RHS)
             | Identifier id -> (removePos id).ToString()
             | BindingVariable name -> sprintf "'%s" name

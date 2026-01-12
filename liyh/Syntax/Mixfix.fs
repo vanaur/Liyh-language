@@ -1,5 +1,5 @@
 #nowarn "25"
-namespace Liyh.Syntax
+namespace rec Liyh.Syntax
 
 //
 // An experimental mixfix parser internal library based on a Pratt parsing approach.
@@ -173,7 +173,16 @@ module private MixfixEngine =
         exprImpl.Value <- parseExprWithMinPrec 0u
         exprRef
 
-module public MixFix =
+// Notation state type that manages mixfix operators.
+type public NotationState =
+    { SourceCode: string
+      MixfixOperators: SyntaxTree.MixfixOperator list
+      MixfixExpressionEngine: MixFixExpression.MixfixExpressionParser
+      MixfixPatternEngine: MixFixPattern.MixfixPatternParser }
+
+type private UserState = Indentation.IndentState<NotationState>
+
+module public MixFixExpression =
     open FParsec
     open Liyh.Syntax.SyntaxTree
 
@@ -183,43 +192,71 @@ module public MixFix =
         { mutable Operators: MixfixOperator list
           mutable CurrentParser: Parser<'a, 'u> option }
 
-    type public MixfixParser(parserRef: MixfixParserRef<ExpressionWithPos, _>) =
+    type public MixfixExpressionParser() =
+
+        let mutable cachedOperators: MixfixOperator list = []
+        let mutable cachedParser: Parser<ExpressionWithPos, UserState> option = None
+        let mutable cachedAtomParser: Parser<ExpressionWithPos, UserState> option = None
 
         /// Create an expression parser using the given base atom parser for operands.
-        member __.CreateParser (baseAtomParser: Parser<ExpressionWithPos, _>) =
-            MixfixEngine.buildParser 
-                parserRef.Operators 
-                baseAtomParser 
-                (fun name args startPos endPos -> 
-                    { Node = MixfixOperator { Name = name; Arguments = args }
-                      Pos = startPos
-                      Pos' = endPos })
-                (fun e -> e.Pos)
+        member __.CreateParser (operators: MixfixOperator list) (baseAtomParser: Parser<ExpressionWithPos, _>) =
 
-    /// Like `createParserForwardedToRef` of FParsec but for mixfix operators.
-    let public createMixfixParserForwardedToRef () =
-        let parserRef = { Operators = []; CurrentParser = None }
-        let parser = MixfixParser(parserRef)
+            let atomParserChanged =
+                match cachedAtomParser with
+                | Some cached -> not (obj.ReferenceEquals(cached, baseAtomParser))
+                | None -> true
 
-        (parser, parserRef)
+            match cachedParser with
+            | Some p when obj.ReferenceEquals(cachedOperators, operators) && not atomParserChanged -> p
+            | _ ->
+                let newParser =
+                    MixfixEngine.buildParser 
+                        operators
+                        baseAtomParser 
+                        (fun name args startPos endPos -> 
+                            { Node = MixfixOperator { Name = name; Arguments = args }
+                              Pos = startPos
+                              Pos' = endPos })
+                        (fun e -> e.Pos)
+
+                cachedOperators <- operators
+                cachedAtomParser <- Some baseAtomParser
+                cachedParser <- Some newParser
+
+                newParser
 
 module public MixFixPattern =
     open FParsec
     open Liyh.Syntax.SyntaxTree
 
-    type public MixfixPatternParserRef<'a, 'u> =
-        { mutable Operators: MixfixOperator list
-          mutable CurrentParser: Parser<'a, 'u> option }
+    type public MixfixPatternParser() =
 
-    type public MixfixPatternParser(parserRef: MixfixPatternParserRef<PatternWithPos, _>) =
+        let mutable cachedOperators: MixfixOperator list = []
+        let mutable cachedParser: Parser<PatternWithPos, UserState> option = None
+        let mutable cachedAtomParser: Parser<PatternWithPos, UserState> option = None  // Nouvelle ligne
 
-        /// Create an expression parser using the given base atom parser for operands.
-        member __.CreateParser (baseAtomParser: Parser<PatternWithPos, _>) =
-            MixfixEngine.buildParser
-                parserRef.Operators
-                baseAtomParser
-                (fun name args startPos endPos -> 
-                    { Node = MixfixOperatorPattern (name, args)
-                      Pos = startPos; Pos' = endPos })
-                (fun p -> p.Pos)
+        member __.CreateParser (operators: MixfixOperator list) (baseAtomParser: Parser<PatternWithPos, _>) =
+            // Vérifier si le parser atomique a changé (indication que parsePatternRef a été mis à jour)
+            let atomParserChanged = 
+                match cachedAtomParser with
+                | Some cached -> not (obj.ReferenceEquals(cached, baseAtomParser))
+                | None -> true
 
+            match cachedParser with
+            | Some p when obj.ReferenceEquals(cachedOperators, operators) && not atomParserChanged -> p
+            | _ ->
+                let newParser =
+                    MixfixEngine.buildParser
+                        operators
+                        baseAtomParser
+                        (fun name args startPos endPos -> 
+                            { Node = MixfixOperatorPattern (name, args)
+                              Pos = startPos
+                              Pos' = endPos })
+                        (fun p -> p.Pos)
+
+                cachedOperators <- operators
+                cachedAtomParser <- Some baseAtomParser
+                cachedParser <- Some newParser
+
+                newParser

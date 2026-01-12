@@ -1,12 +1,364 @@
 #nowarn "25"
 namespace Liyh.Syntax
 
+module private ParsingErorr =
+    open FParsec
+    open Liyh.Utils.ErrorReporter
+    open SyntaxTree
+
+
+    // --- Building pleasant messages and reports --- //
+
+
+    let private extractErrorMessageText (errorMsg: ErrorMessage) =
+        match errorMsg.Type with
+        | ErrorMessageType.Expected ->
+            (errorMsg :?> ErrorMessage.Expected).Label
+
+        | ErrorMessageType.ExpectedString ->
+            sprintf "\"%s\"" (errorMsg :?> ErrorMessage.ExpectedString).String
+
+        | ErrorMessageType.Unexpected ->
+            (errorMsg :?> ErrorMessage.Unexpected).Label
+
+        | ErrorMessageType.UnexpectedString ->
+            sprintf "\"%s\"" (errorMsg :?> ErrorMessage.UnexpectedString).String
+
+        | ErrorMessageType.Message ->
+            (errorMsg :?> ErrorMessage.Message).String
+
+        | ErrorMessageType.NestedError ->
+            let nested = errorMsg :?> ErrorMessage.NestedError
+            sprintf "Nested error at line %d, column %d" nested.Position.Line nested.Position.Column
+
+        | ErrorMessageType.CompoundError ->
+            let compound = errorMsg :?> ErrorMessage.CompoundError
+            sprintf "Compound error: %s" compound.LabelOfCompound
+
+        | ErrorMessageType.Other ->
+            sprintf "Other error: %A" (errorMsg :?> ErrorMessage.Other).Data
+
+        | _ -> "Unknown error"
+
+    let private processErrorMessages (messages: ErrorMessage[]) =
+        let rec loop (msgs: ErrorMessage[]) =
+            msgs
+            |> Array.collect (fun msg ->
+                match msg.Type with
+                | ErrorMessageType.NestedError ->
+                    let nestedError = msg :?> ErrorMessage.NestedError
+                    ErrorMessageList.ToSortedArray nestedError.Messages |> loop
+                | _ -> [| msg |])
+        loop messages
+
+    let private formatErrorType (errorType: ErrorMessageType) (joinedMessages: string) =
+        match errorType with
+        | ErrorMessageType.Expected ->
+            sprintf "the parser expected %s" joinedMessages
+
+        | ErrorMessageType.ExpectedString ->
+            sprintf "the parser expected a %s" joinedMessages
+
+        | ErrorMessageType.ExpectedCaseInsensitiveString ->
+            sprintf "expected (case insensitive): %s" joinedMessages
+
+        | ErrorMessageType.Unexpected ->
+            sprintf "unexpected: %s" joinedMessages
+
+        | ErrorMessageType.UnexpectedString ->
+            sprintf "unexpected string: %s" joinedMessages
+
+        | ErrorMessageType.UnexpectedCaseInsensitiveString ->
+            sprintf "unexpected (case insensitive): %s" joinedMessages
+
+        | ErrorMessageType.Message ->
+            joinedMessages
+
+        | ErrorMessageType.CompoundError ->
+            sprintf "compound errors: %s" joinedMessages
+
+        | ErrorMessageType.Other ->
+            sprintf "other errors: %s" joinedMessages
+
+        | _ ->
+            sprintf "unknown syntax errors: %s" joinedMessages
+
+    let public groupAndFormatErrors (errorList: ErrorMessageList) =
+        let allMessages = 
+            ErrorMessageList.ToSortedArray errorList 
+            |> processErrorMessages
+
+        allMessages
+        |> Array.groupBy _.Type
+        |> Array.map (fun (errorType, messages) ->
+
+            let joinedMessages =
+                let alignmentPrefix = "the parser could expect alignment at column "
+                let (alignment, others) =
+                    messages
+                    |> Array.map extractErrorMessageText
+                    |> Array.distinct
+                    |> Array.partition (fun msg -> msg.StartsWith alignmentPrefix)
+
+                let alignmentColumns =
+                    alignment
+                    |> Array.collect (fun msg ->
+                        msg.Substring(alignmentPrefix.Length).Split(" or ")
+                        |> Array.map (fun part -> part.Trim().Split(' ').[0])
+                    )
+                    |> Array.distinct
+                    |> Array.sortBy int
+
+                let newAlignmentMessage =
+                    if alignmentColumns.Length = 0 then None
+                    else
+                        let columnsStr =
+                            match alignmentColumns.Length with
+                            | 1 -> alignmentColumns.[0]
+                            | 2 -> sprintf "%s or %s" alignmentColumns.[0] alignmentColumns.[1]
+                            | _ ->
+                                let allButLast = alignmentColumns.[..alignmentColumns.Length - 2]
+                                let last = alignmentColumns.[alignmentColumns.Length - 1]
+                                sprintf "%s or %s" (String.concat ", " allButLast) last
+                        Some($"the parser could expect alignment at column {columnsStr} for indentation")
+
+                Array.append (match newAlignmentMessage with Some msg -> [| msg |] | None -> [||]) others
+                |> Array.sort
+
+            let joinedMessages =  String.concat " or " joinedMessages
+            formatErrorType errorType joinedMessages)
+
+        |> Array.filter (not << System.String.IsNullOrEmpty)
+        |> Array.distinct
+        |> Array.toList
+
+    let public findRelevantPosition (errorList: ErrorMessageList) (defaultPosition: Position) =
+        let rec findNestedPosition (messages: ErrorMessage[]) =
+            messages
+            |> Array.choose (fun msg ->
+                match msg.Type with
+                | ErrorMessageType.NestedError ->
+                    let nested = msg :?> ErrorMessage.NestedError
+                    Some nested.Position
+                | _ -> None)
+            |> Array.tryLast
+
+        match ErrorMessageList.ToSortedArray errorList |> findNestedPosition with
+        | Some pos -> pos
+        | None -> defaultPosition
+
+    let public formatErrorMessage (errors: string list) =
+        let ensureDot (s: string) = 
+            if s.EndsWith "." then s else s + "."
+
+        match errors with
+        | [] -> "Invalid syntax (unknown reason)"
+        | xs ->
+            xs
+            |> List.map (fun (s: string) ->
+                if System.String.IsNullOrWhiteSpace s then s
+                else
+                    let s = s.Trim()
+                    let first = System.Char.ToUpper s.[0]
+                    let rest = s.Substring(1)
+                    string first + rest
+            )
+            |> List.map ensureDot
+            |> String.concat " "
+            //|> String.concat " Another possible error: "
+
+    let public createErrorReport str originalPosition relevantPosition errorMessage =
+        let informations =
+            if originalPosition <> relevantPosition
+            then [ "The parser backtracked several times, so the position indicated in the\nsnippet may not be at the actual source of the error." ]
+            else []
+
+        /// This hint is generic for parsing, so it is difficult to make it contextual.
+        let hint =
+            "Syntax errors may be due to syntactic ambiguity, try using parentheses if you think this is the case."
+
+        { ErrorType = Liyh.Utils.ErrorReporter.Syntax
+          ErrorCode = null // not for now, this is difficult to do
+          EnclosingPosition = (relevantPosition, None)
+          Description = errorMessage
+          AllLines = NodeInfo.getLines str
+          Informations = informations
+          Hint = hint }
+
+    let public buildErrorReport (sourceCode: string) (startPos: Position) (endPos: Position) (errors: ErrorMessageList) =
+        let formattedErrors = groupAndFormatErrors errors
+        let description = formatErrorMessage formattedErrors
+        let relevantPos = findRelevantPosition errors startPos
+
+        let informations =
+            if startPos <> relevantPos
+            then [ "The parser backtracked, the error might be earlier." ]
+            else []
+
+        let hasExplicitMessage = 
+            ErrorMessageList.ToSortedArray errors
+            |> Array.exists (fun e -> e.Type = ErrorMessageType.Message)
+
+        let hint = 
+            if hasExplicitMessage then null 
+            else "Syntax errors may be due to syntactic ambiguity, try using parentheses if you think this is the case."
+
+        { ErrorType = Liyh.Utils.ErrorReporter.Syntax
+          ErrorCode = null
+          EnclosingPosition = (Some relevantPos, Some endPos)
+          Description = description
+          AllLines = NodeInfo.getLines sourceCode |> Seq.toList
+          Informations = informations
+          Hint = hint }
+
+
+    // --- Retrieve error messages from the AST --- //
+
+
+    let rec private collectParsingErrorsFromTopLevel (topLevel: TopLevelWithPos) =
+        match topLevel.Node with
+        | TopLevel.ParseError err -> [err]
+        | Use _ -> []
+        | Rule rule ->
+            let patternErrors = List.collect collectParsingErrorsFromPattern rule.Patterns
+            let whenErrors = defaultArg (rule.WhenClause |> Option.map collectParsingErrorsFromExpression) []
+            let bodyErrors = collectParsingErrorsFromExpression rule.Body
+            patternErrors @ whenErrors @ bodyErrors
+        | Handler handler ->
+            let stateErrors = collectParsingErrorsFromPattern handler.State
+            let patternErrors = collectParsingErrorsFromPattern handler.Pattern
+            let whenErrors = defaultArg (handler.WhenClause |> Option.map collectParsingErrorsFromExpression) []
+            let bodyErrors = collectParsingErrorsFromExpression handler.Body
+            stateErrors @ patternErrors @ whenErrors @ bodyErrors
+        | Effect _ | Type _ | TypeAlias _ | Extern _ | Measure | Unit | UnitSystem | UnitConversion | ModuleExport _ -> []
+        | Notation notation -> collectParsingErrorsFromExpression notation.NotationIs
+
+    and private collectParsingErrorsFromExpression (expr: ExpressionWithPos) =
+        match expr.Node with
+        | Expression.ParseError err -> [err]
+        | UFCS ufcs ->
+            collectParsingErrorsFromExpression ufcs.LHS @ collectParsingErrorsFromExpression ufcs.RHS
+        | Identifier _ | BindingVariable _ | Literal _ -> []
+        | CollectionAccess ca ->
+            collectParsingErrorsFromExpression ca.LHS @ List.collect collectParsingErrorsFromExpression ca.Indices
+        | ExpressionSequence exprs -> List.collect collectParsingErrorsFromExpression exprs
+        | Apply apply ->
+            collectParsingErrorsFromExpression apply.LHS @ List.collect collectParsingErrorsFromExpression apply.Arguments
+        | MixfixOperator op -> List.collect collectParsingErrorsFromExpression op.Arguments
+        | Tuple exprs | List exprs -> List.collect collectParsingErrorsFromExpression exprs
+        | Record fields -> List.collect (snd >> collectParsingErrorsFromExpression) fields
+        | RecordUsing (baseExpr, fields) ->
+            collectParsingErrorsFromExpression baseExpr @ List.collect (snd >> collectParsingErrorsFromExpression) fields
+        | ListComprehension lc ->
+            collectParsingErrorsFromExpression lc.ItemValue
+            @ collectParsingErrorsFromPattern lc.Pattern
+            @ collectParsingErrorsFromExpression lc.ListExpr
+            @ defaultArg (lc.IfPred |> Option.map collectParsingErrorsFromExpression) []
+        | Range range ->
+            collectParsingErrorsFromExpression range.RangeStart
+            @ defaultArg (range.RangeStep |> Option.map collectParsingErrorsFromExpression) []
+            @ collectParsingErrorsFromExpression range.RangeStop
+        | While w ->
+            collectParsingErrorsFromExpression w.Predicate @ collectParsingErrorsFromExpression w.Body
+        | ForIn forIn ->
+            collectParsingErrorsFromPattern forIn.Pattern
+            @ collectParsingErrorsFromExpression forIn.ListExpr
+            @ collectParsingErrorsFromExpression forIn.Body
+        | ForTo forTo | ForDownTo forTo ->
+            collectParsingErrorsFromPattern forTo.Pattern
+            @ collectParsingErrorsFromExpression forTo.InitialValue
+            @ collectParsingErrorsFromExpression forTo.EndValue
+            @ collectParsingErrorsFromExpression forTo.Body
+        | ReAssign (_, expr) -> collectParsingErrorsFromExpression expr
+        | Let (pat, expr) | Var (pat, expr) ->
+            collectParsingErrorsFromPattern pat @ collectParsingErrorsFromExpression expr
+        | Match m ->
+            collectParsingErrorsFromExpression m.ToMatch
+            @ List.collect (fun (pat, expr) -> collectParsingErrorsFromPattern pat @ collectParsingErrorsFromExpression expr) m.Cases
+        | IfThenElse ifte ->
+            collectParsingErrorsFromExpression ifte.Condition
+            @ collectParsingErrorsFromExpression ifte.ThenBranch
+            @ defaultArg (ifte.ElseBranch |> Option.map collectParsingErrorsFromExpression) []
+        | Lambda lambda ->
+            List.collect collectParsingErrorsFromPattern lambda.Patterns @ collectParsingErrorsFromExpression lambda.Body
+        | HandleEffect handle ->
+            collectParsingErrorsFromExpression handle.InitialState @ collectParsingErrorsFromExpression handle.Body
+        | ResumeWith rw ->
+            collectParsingErrorsFromExpression rw.Node.Value @ collectParsingErrorsFromExpression rw.Node.HandlerState
+
+    and private collectParsingErrorsFromPattern (pat: PatternWithPos) =
+        match pat.Node with
+        | VariablePattern _ | SymbolPattern _ | LiteralPattern _ | AlternativePattern _ | Wildcard -> []
+        | ApplyPattern (head, args) ->
+            collectParsingErrorsFromPattern head @ List.collect collectParsingErrorsFromPattern args
+        | TuplePattern pats | ListPattern pats -> List.collect collectParsingErrorsFromPattern pats
+        | RecordPattern fields -> List.collect (snd >> collectParsingErrorsFromPattern) fields
+        | MixfixOperatorPattern (_, pats) -> List.collect collectParsingErrorsFromPattern pats
+        | AsPattern (pat1, pat2) ->
+            collectParsingErrorsFromPattern pat1 @ collectParsingErrorsFromPattern pat2
+        | WhenPattern (pat, expr) ->
+            collectParsingErrorsFromPattern pat @ collectParsingErrorsFromExpression expr
+        | TypedPattern (pat, _) -> collectParsingErrorsFromPattern pat
+
+    let public collectParsingErrors (program: TopLevelWithPos list) =
+        List.collect collectParsingErrorsFromTopLevel program
+
+module private Recoverable =
+    open FParsec
+    
+    let private skipIndentedBlock (stream: CharStream<_>) =
+        let rec loop () =
+            let c = stream.Peek()
+            if c = ' ' || c = '\t' || c = '\n' || c = '\r' then
+                skipRestOfLine true stream |> ignore
+                if not stream.IsEndOfStream then loop ()
+            else
+                ()
+        loop ()
+
+    /// Handle parsing error using the given error handler, so that parsing can continue accumulating errors.
+    let public recover
+        (parser: Parser<'a, 'u>)
+        (errorHandler: Position -> Position -> ErrorMessageList -> 'a)
+        : Parser<'a, 'u>
+        =
+        fun stream ->
+            let state = stream.State
+            let startPos = stream.Position
+            
+            let reply = parser stream
+
+            match reply.Status with
+            | Ok -> reply
+            | _ ->
+                let failurePos = stream.Position
+                let errorMessages = reply.Error
+
+                let (reportStart, reportEnd) =
+                    if failurePos.Index > startPos.Index then
+                        stream.Seek(failurePos.Index)
+                        skipRestOfLine true stream |> ignore
+                        (failurePos, stream.Position)
+                    else
+                        stream.BacktrackTo(state)
+                        skipRestOfLine true stream |> ignore
+                        (startPos, stream.Position)
+
+                // We return to the beginning to apply our "skip strategy"
+                // so that the parser can continue properly after this block.
+                stream.BacktrackTo(state)
+
+                skipRestOfLine true stream |> ignore
+                skipIndentedBlock stream
+
+                Reply (errorHandler reportStart reportEnd errorMessages)
+
 module Parser =
     open FParsec
     open Liyh.Utils.ErrorReporter
     open Indentation
     open SyntaxTree
-    open MixFix
+    open MixFixExpression
     open MixFixPattern
 
     let private pipe6 p1 p2 p3 p4 p5 p6 action =
@@ -34,16 +386,12 @@ module Parser =
             return action a b c d e f g
         }
 
-    // Notation state type that manages mixfix operators
-    type public NotationState = 
-        { MixfixOperators: MixfixOperator list }
-
     // Default notation state with basic operators
     let private defaultNotationState =
-        { MixfixOperators = [] }
-
-    let private emptyNotationState =
-        { MixfixOperators = [] }
+        { SourceCode = null
+          MixfixOperators = []
+          MixfixExpressionEngine = new MixfixExpressionParser()
+          MixfixPatternEngine = new MixfixPatternParser() }
 
     // Utilities to work with notation state
     let private getMixfixOperators: Parser<MixfixOperator list, NotationState IndentState> =
@@ -51,11 +399,14 @@ module Parser =
 
     let private addMixfixOperator (op: MixfixOperator): Parser<unit, NotationState IndentState> =
         fun stream ->
+            let oldState = stream.UserState.UserState
+            let newOperators = op :: oldState.MixfixOperators
+
             stream.UserState <-
                 { stream.UserState with
                     UserState =
-                        { stream.UserState.UserState with
-                            MixfixOperators = op :: stream.UserState.UserState.MixfixOperators } }
+                        { oldState with
+                            MixfixOperators = newOperators } }
 
             Reply Unchecked.defaultof<unit>
 
@@ -558,17 +909,12 @@ module Parser =
             ] <?> "atomic pattern" .>> spacesOrComment
 
         let private parsePatternWithMixfixInternal () =
-            fun stream ->
-                let currentParser = parse {
-                    let! operators = getMixfixOperators
-                    // Create a temporary mixfix parser with the current operators
-                    let tempParserRef = { MixfixPatternParserRef.Operators = operators; CurrentParser = None }
-                    let mixfixParser = MixfixPatternParser(tempParserRef)
-                    // Create the expression parser using the mixfix parser
-                    let expressionParser = mixfixParser.CreateParser parseAtomicPattern
-                    return! expressionParser
-                }
-                currentParser stream
+            fun (stream: CharStream<NotationState IndentState>) ->
+                let state = stream.UserState.UserState
+                let engine = state.MixfixPatternEngine
+                let operators = state.MixfixOperators
+
+                engine.CreateParser operators parseAtomicPattern stream
 
         let private parsePatternWithPostfixInternal () =
             parsePatternWithMixfixInternal ()
@@ -952,21 +1298,49 @@ module Parser =
                 |> linearizeUfcsChain
 
         fun (stream: CharStream<_>) ->
+            let state = stream.UserState.UserState
+            let engine = state.MixfixExpressionEngine
+            let operators = state.MixfixOperators
+
+            let singleExprParser = engine.CreateParser operators parseTerm
+
             let currentParser = parse {
-                let! operators = getMixfixOperators
-                let tempParserRef = { MixfixParserRef.Operators = operators; CurrentParser = None }
-                let mixfixParser = MixfixParser(tempParserRef)
-
-                let singleExprParser = mixfixParser.CreateParser parseTerm
-
-                // Block handler parsing line by line
                 let blockParser = parse {
                     do! spacesOrComment
                     let! pos = getPosition
-
                     let! head = singleExprParser .>>? spacesOrComment
-                    let! tail = attempt (blockOf (singleExprParser .>>? spacesOrComment) |> exact pos) <|>% []
-                    do! spacesOrComment
+
+                    let exprErrorHandler (p: Position) (endP: Position) (msgs: ErrorMessageList) =
+                        let sourceCode = stream.UserState.UserState.SourceCode
+                        let report = ParsingErorr.buildErrorReport sourceCode p endP msgs
+                        
+                        { Node = Expression.ParseError report
+                          Pos = p
+                          Pos' = endP }
+
+                    let safeExprParser = 
+                        Recoverable.recover 
+                            (singleExprParser .>>? spacesOrComment) 
+                            exprErrorHandler
+
+                    let rec loop acc = parse {
+                        match! (eof >>% true) <|>% false with
+                        | true -> return List.rev acc
+                        | false ->
+                            let! isAligned = attempt (exact pos (preturn ())) >>% true <|>% false
+                            
+                            if isAligned then
+                                let! item = safeExprParser
+                                let! endPos = getPosition
+
+                                if pos = endPos
+                                then return List.rev (item :: acc)
+                                else return! loop (item :: acc)
+                            else
+                                return List.rev acc
+                    }
+
+                    let! tail = loop []
 
                     return
                         match head :: tail with
@@ -975,7 +1349,7 @@ module Parser =
                                   Node = ExpressionSequence xs
                                   Pos' = (List.last xs).Pos' }
                 }
-                
+
                 return! blockParser
             }
             currentParser stream
@@ -1030,15 +1404,15 @@ module Parser =
                       Body = rewriting })
 
     let private parseMixfixRule =
-        fun stream ->
-            let currentParser = parse {
-                let! operators = getMixfixOperators
-                let tempParserRef = { MixfixPatternParserRef.Operators = operators; CurrentParser = None }
-                let mixfixParser = MixfixPatternParser(tempParserRef)
-                
-                let atomicPattern = PatternParser.parsePattern
-                let mixfixPatternParser = mixfixParser.CreateParser atomicPattern
+        fun (stream: CharStream<IndentState<NotationState>>) ->
+            let state = stream.UserState.UserState
+            let operators = state.MixfixOperators
+            let engine = state.MixfixPatternEngine
 
+            let atomicPattern = PatternParser.parsePattern
+            let mixfixPatternParser = engine.CreateParser operators atomicPattern
+
+            let currentParser = parse {
                 return! pipe5
                     (spaces >>. between (skipChar '(') (skipChar ')') mixfixPatternParser)
                     (spaces >>. opt (skipString "when" <?> "when-clause" >>? spaces >>. parseExpressionRef))
@@ -1350,10 +1724,67 @@ module Parser =
             parseComment
             parseWhitespace ]
 
+    let private blockOfTopLevel parser errorHandler =
+        let itemParser = Recoverable.recover parser errorHandler
+
+        parse {
+            do! spaces
+            let! pos = getPosition
+            let! head = exact pos itemParser
+
+            let rec loop acc = parse {
+                match! (eof >>% true) <|>% false with
+                | true -> return List.rev acc
+                | false ->
+                    let! isAligned = attempt (exact pos (preturn ())) >>% true <|>% false
+
+                    if isAligned then
+                        let! startPos = getPosition
+                        let! item = itemParser
+                        let! endPos = getPosition
+
+                        if startPos = endPos 
+                        then return List.rev (item :: acc)
+                        else return! loop (item :: acc)
+                    else
+                        let! currentPos = getPosition
+
+                        if currentPos.Column < pos.Column then
+                            return List.rev acc
+                        else
+                            // We still try to parse to get a more relevant error messages.
+                            let! startPos = getPosition
+                            let! item = itemParser 
+                            let! endPos = getPosition
+
+                            // Infinite loop protection (if the parser does not consume anything).
+                            if startPos = endPos then
+                                do! skipRestOfLine true
+                                return! loop acc
+                            else
+                                return! loop (item :: acc)
+            }
+
+            let! tail = loop []
+            return head :: tail
+        }
+
     let private parseTopLevelBlock =
-        // For now, let's use the original implementation but with better error handling
-        spaces >>. blockOf parseTopLevel
-        |>> List.choose id
+        fun (stream: CharStream<NotationState IndentState>) ->
+            let sourceCode = stream.UserState.UserState.SourceCode
+
+            let topLevelErrorHandler (pos: Position) (endPos: Position) (msgs: ErrorMessageList) =
+                let report = ParsingErorr.buildErrorReport sourceCode pos endPos msgs
+                Some
+                    { Node = TopLevel.ParseError report
+                      Pos = pos
+                      Pos' = endPos }
+
+            let parser =
+                spaces >>. blockOfTopLevel parseTopLevel topLevelErrorHandler
+                |>> List.choose id
+            
+            parser stream
 
     let private parseModule =
         pipe2
@@ -1382,187 +1813,12 @@ module Parser =
         withStreamName streamName (opt (spacesOrComment >>? p .>> spaces .>> (eof <?> "")))
         //withStreamName streamName (opt (p .>> spaces .>> (eof <?> "")))
 
-    let private extractErrorMessageText (errorMsg: ErrorMessage) =
-        match errorMsg.Type with
-        | ErrorMessageType.Expected ->
-            (errorMsg :?> ErrorMessage.Expected).Label
-
-        | ErrorMessageType.ExpectedString ->
-            sprintf "\"%s\"" (errorMsg :?> ErrorMessage.ExpectedString).String
-
-        | ErrorMessageType.Unexpected ->
-            (errorMsg :?> ErrorMessage.Unexpected).Label
-
-        | ErrorMessageType.UnexpectedString ->
-            sprintf "\"%s\"" (errorMsg :?> ErrorMessage.UnexpectedString).String
-
-        | ErrorMessageType.Message ->
-            (errorMsg :?> ErrorMessage.Message).String
-
-        | ErrorMessageType.NestedError ->
-            let nested = errorMsg :?> ErrorMessage.NestedError
-            sprintf "Nested error at line %d, column %d" nested.Position.Line nested.Position.Column
-
-        | ErrorMessageType.CompoundError ->
-            let compound = errorMsg :?> ErrorMessage.CompoundError
-            sprintf "Compound error: %s" compound.LabelOfCompound
-
-        | ErrorMessageType.Other ->
-            sprintf "Other error: %A" (errorMsg :?> ErrorMessage.Other).Data
-
-        | _ -> "Unknown error"
-
-    let private processErrorMessages (messages: ErrorMessage[]) =
-        let rec loop (msgs: ErrorMessage[]) =
-            msgs
-            |> Array.collect (fun msg ->
-                match msg.Type with
-                | ErrorMessageType.NestedError ->
-                    let nestedError = msg :?> ErrorMessage.NestedError
-                    ErrorMessageList.ToSortedArray nestedError.Messages |> loop
-                | _ -> [| msg |])
-        loop messages
-
-    let private formatErrorType (errorType: ErrorMessageType) (joinedMessages: string) =
-        match errorType with
-        | ErrorMessageType.Expected ->
-            sprintf "the parser expected %s" joinedMessages
-
-        | ErrorMessageType.ExpectedString ->
-            sprintf "the parser expected a %s" joinedMessages
-
-        | ErrorMessageType.ExpectedCaseInsensitiveString ->
-            sprintf "expected (case insensitive): %s" joinedMessages
-
-        | ErrorMessageType.Unexpected ->
-            sprintf "unexpected: %s" joinedMessages
-
-        | ErrorMessageType.UnexpectedString ->
-            sprintf "unexpected string: %s" joinedMessages
-
-        | ErrorMessageType.UnexpectedCaseInsensitiveString ->
-            sprintf "unexpected (case insensitive): %s" joinedMessages
-
-        | ErrorMessageType.Message ->
-            joinedMessages
-
-        | ErrorMessageType.CompoundError ->
-            sprintf "compound errors: %s" joinedMessages
-
-        | ErrorMessageType.Other ->
-            sprintf "other errors: %s" joinedMessages
-
-        | _ ->
-            sprintf "unknown errors: %s" joinedMessages
-
-    let private groupAndFormatErrors (errorList: ErrorMessageList) =
-        let allMessages = 
-            ErrorMessageList.ToSortedArray errorList 
-            |> processErrorMessages
-
-        allMessages
-        |> Array.groupBy _.Type
-        |> Array.map (fun (errorType, messages) ->
-            let joinedMessages =
-                let alignmentPrefix = "the parser could expect alignment at column "
-                let (alignment, others) =
-                    messages
-                    |> Array.map extractErrorMessageText
-                    |> Array.distinct
-                    |> Array.partition (fun msg -> msg.StartsWith alignmentPrefix)
-
-                let alignmentColumns =
-                    alignment
-                    |> Array.collect (fun msg ->
-                        msg.Substring(alignmentPrefix.Length).Split(" or ")
-                        |> Array.map (fun part -> part.Trim().Split(' ').[0])
-                    )
-                    |> Array.distinct
-                    |> Array.sortBy int
-
-                let newAlignmentMessage =
-                    if alignmentColumns.Length = 0 then None
-                    else
-                        let columnsStr =
-                            match alignmentColumns.Length with
-                            | 1 -> alignmentColumns.[0]
-                            | 2 -> sprintf "%s or %s" alignmentColumns.[0] alignmentColumns.[1]
-                            | _ ->
-                                let allButLast = alignmentColumns.[..alignmentColumns.Length - 2]
-                                let last = alignmentColumns.[alignmentColumns.Length - 1]
-                                sprintf "%s or %s" (String.concat ", " allButLast) last
-                        Some($"the parser could expect alignment at column {columnsStr} for indentation")
-
-                Array.append
-                    (match newAlignmentMessage with Some msg -> [| msg |] | None -> [||])
-                    others
-                |> Array.sort
-
-            let joinedMessages =  String.concat " or " joinedMessages
-            formatErrorType errorType joinedMessages)
-        |> Array.filter (not << System.String.IsNullOrEmpty)
-        |> Array.distinct
-        |> Array.toList
-
-    let private findRelevantPosition (errorList: ErrorMessageList) (defaultPosition: Position) =
-        let rec findNestedPosition (messages: ErrorMessage[]) =
-            messages
-            |> Array.choose (fun msg ->
-                match msg.Type with
-                | ErrorMessageType.NestedError ->
-                    let nested = msg :?> ErrorMessage.NestedError
-                    Some nested.Position
-                | _ -> None)
-            |> Array.tryLast
-
-        match ErrorMessageList.ToSortedArray errorList |> findNestedPosition with
-        | Some pos -> pos
-        | None -> defaultPosition
-
-    let private formatErrorMessage (errors: string list) =
-        let ensureDot (s: string) = 
-            if s.EndsWith "." then s else s + "."
-
-        match errors with
-        | [] -> "Invalid syntax (unknown reason)"
-        | xs ->
-            xs
-            |> List.map (fun (s: string) ->
-                if System.String.IsNullOrWhiteSpace s then s
-                else
-                    let s = s.Trim()
-                    let first = System.Char.ToUpper s.[0]
-                    let rest = s.Substring(1)
-                    string first + rest
-            )
-            |> List.map ensureDot
-            |> String.concat " "
-            //|> String.concat " Another possible error: "
-
-    let private createErrorReport str originalPosition relevantPosition errorMessage =
-        let informations =
-            if originalPosition <> relevantPosition
-            then [ "The parser backtracked several times, so the position indicated in the\nsnippet may not be at the actual source of the error." ]
-            else []
-
-        /// This hint is generic for parsing, so it is difficult to make it contextual.
-        let hint =
-            "Syntax errors may be due to syntactic ambiguity, try using parentheses if you think this is the case."
-
-        { ErrorType = Liyh.Utils.ErrorReporter.Syntax
-          ErrorCode = null // not for now, this is difficult to do
-          EnclosingPosition = (relevantPosition, None)
-          Description = errorMessage
-          AllLines = NodeInfo.getLines str
-          Informations = informations
-          Hint = hint }
-
     let private handleParseFailure (str: string) (err: ParserError) (position: Position) =
-        let relevantPosition = findRelevantPosition err.Messages position
-        let formattedErrors = groupAndFormatErrors err.Messages
-        let errorMessage = formatErrorMessage formattedErrors
+        let relevantPosition = ParsingErorr.findRelevantPosition err.Messages position
+        let formattedErrors = ParsingErorr.groupAndFormatErrors err.Messages
+        let errorMessage = ParsingErorr.formatErrorMessage formattedErrors
 
-        createErrorReport str (Some position) (Some relevantPosition) errorMessage
+        ParsingErorr.createErrorReport str (Some position) (Some relevantPosition) errorMessage
 
     /// Parses only 'use' statements from the text, ignoring everything else.
     let public parseUses (text: string) (streamName: string) (errorQueue: ErrorQueue) =
@@ -1585,7 +1841,7 @@ module Parser =
             |>> List.choose id
             |>> List.map (function TopLevel.Use use' -> use')
 
-        match runParser (finalParser streamName parseUsesOnly) emptyNotationState text with
+        match runParser (finalParser streamName parseUsesOnly) defaultNotationState text with
         | Success(r, _, _) -> r
         | Failure(debugMsg, err, _) ->
             //printfn "FParsec debug message:\n%A" debugMsg
@@ -1597,34 +1853,41 @@ module Parser =
         { Module: Module
           MixfixOperators: MixfixOperator list }
 
-    let private handleNotationShadowingWarning (notations: MixfixOperator list) (text: string) (errorQueue: ErrorQueue) =
-        let inline showPos (pos: Position) = $"line {pos.Line}"
+    let private createNotationShadowingReport (shortOp: MixfixOperator, longOp: MixfixOperator) (lines: string seq) =
+        let posShort = fst shortOp.Position 
+        let posLong = fst longOp.Position
 
+        let msg = 
+            $"The user-defined notation '{shortOp.Name}' (defined at line {posShort.Line}) is a prefix of the notation '{longOp.Name}' (defined at line {posLong.Line})."
+        
+        let infoMsg = 
+            $"Since the pattern of '{shortOp.Name}' is included in '{longOp.Name}', an ambiguity exists.\n" +
+            $"To resolve this, Liyh applies the 'Longest Match' rule: it will attempt to parse '{longOp.Name}' first.\n" +
+            $"If parsing '{longOp.Name}' fails mid-way, it will backtrack to '{shortOp.Name}'."
+
+        { ErrorType = Warning Syntax
+          ErrorCode = null
+          EnclosingPosition = (Some posShort, None)
+          Description = msg
+          AllLines = lines |> Seq.toList
+          Informations = [ infoMsg ]
+          Hint = "This is allowed, but ensure that any syntax error in the longer notation doesn't accidentally trigger the shorter one." }
+
+    let private handleNotationShadowingWarning (notations: MixfixOperator list) (text: string) (errorQueue: ErrorQueue) =
         let ambiguities = findAmbiguities notations
         let lines = NodeInfo.getLines text
 
-        for (shortOp, longOp) in ambiguities do
-            let posShort = fst shortOp.Position 
-            let posLong = fst longOp.Position
+        ambiguities
+        |> List.iter (fun ambiguity ->
+            let report = createNotationShadowingReport ambiguity lines
+            errorQueue.AddError report)
 
-            let msg = 
-                $"The user-defined notation '{shortOp.Name}' (defined at {showPos posShort}) is a prefix of the notation '{longOp.Name}' (defined at {showPos posLong})."
-
-            let infoMsg = 
-                $"Since the pattern of '{shortOp.Name}' is included in '{longOp.Name}', an ambiguity exists.\n" +
-                $"To resolve this, Liyh applies the 'Longest Match' rule: it will attempt to parse '{longOp.Name}' first.\n" +
-                $"If parsing '{longOp.Name}' fails mid-way, it will backtrack to '{shortOp.Name}'."
-
-            let report =
-                { ErrorType = Warning Syntax
-                  ErrorCode = null
-                  EnclosingPosition = (Some posShort, None)
-                  Description = msg
-                  AllLines = lines
-                  Informations = [ infoMsg ]
-                  Hint = "This is allowed, but ensure that any syntax error in the longer notation doesn't accidentally trigger the shorter one." }
-
-            errorQueue.AddError report
+    let private getNotationWarnings (notations: MixfixOperator list) (text: string) =
+        let ambiguities = findAmbiguities notations
+        let lines = NodeInfo.getLines text
+        
+        ambiguities
+        |> List.map (fun ambiguity -> createNotationShadowingReport ambiguity lines)
 
     /// Syntactically analyses the given text (which is supposed to be Liyh code) from the given stream name
     /// and reports parsing errors (which are always fatal) in `errorQueue`, returns the AST otherwise.
@@ -1632,20 +1895,55 @@ module Parser =
 
         let notationState =
             { defaultNotationState with
+                SourceCode = text
                 MixfixOperators = defaultNotationState.MixfixOperators @ notations }
 
         match runParser (finalParser streamName parseModule) notationState text with
         | Success(Some result, userState, _) ->
             handleNotationShadowingWarning userState.UserState.MixfixOperators text errorQueue
-            Some { Module = result
-                   MixfixOperators = userState.UserState.MixfixOperators }
 
+            match ParsingErorr.collectParsingErrors result.ModuleContent with
+            | [] ->
+                Some { Module = result
+                       MixfixOperators = userState.UserState.MixfixOperators }
+
+            | reports ->
+                errorQueue.AddErrors reports
+                None // we should return the AST for further analysis (typechecking etc.)
+                     // so that we are not locked only to parsing errors
+
+        // This should not happens! But we handle in case.
         | Failure(debugMsg, err, userState) ->
             handleNotationShadowingWarning userState.UserState.MixfixOperators text errorQueue
             //printfn "FParsec debug message:\n%A" debugMsg
             let report = handleParseFailure text err err.Position
             errorQueue.AddError report
             None
+
+    /// Checks if the AST contains parsing errors.
+    let public containsParsingErrors (lpr: LiyhParsingResult) =
+        ParsingErorr.collectParsingErrors lpr.Module.ModuleContent
+        |> List.isEmpty
+        |> not
+
+    let public parseForTooling (text: string) (notations: MixfixOperator list) =
+        let notationState =
+            { defaultNotationState with
+                SourceCode = text
+                MixfixOperators = defaultNotationState.MixfixOperators @ notations }
+
+        let result = runParser (finalParser null parseTopLevelBlock) notationState text
+
+        let finalOperators = 
+            match result with
+            | Success(_, state, _) -> state.UserState.MixfixOperators
+            | Failure(_, _, state) -> state.UserState.MixfixOperators
+
+        let warnings = getNotationWarnings finalOperators text
+
+        match result with
+        | Success(ast, _, _) -> Some (ast, warnings)
+        | Failure(_, err, _) -> None // This should not happens!
 
     let public testParse (text: string) =
         let tempErrorQueue = new ErrorQueue()
@@ -1655,13 +1953,16 @@ module Parser =
         | None -> tempErrorQueue.ReportAll System.Console.Error true
 
     let public testTopLevelParse (text: string) =
-        match runParser (finalParser null parseModule) defaultNotationState text with
+        let notationState = { defaultNotationState with SourceCode = text }
+
+        match runParser (finalParser null parseModule) notationState text with
         | Success(result, _, _) -> printfn "%A" result
         | Failure(debugMsg, _, _) -> printfn "%s" debugMsg
 
     let public test (text: string) =
-        match runParser (finalParser null parseExpressionRef) defaultNotationState text with
+        let notationState = { defaultNotationState with SourceCode = text }
+
+        match runParser (finalParser null parseExpressionRef) notationState text with
         | Success(result, _, _) -> printfn "%A" result
         | Failure(debugMsg, _, _) -> printfn "%s" debugMsg
-
 
