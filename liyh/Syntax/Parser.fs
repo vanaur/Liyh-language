@@ -433,8 +433,24 @@ module Parser =
             |> List.map (function Fixed s -> s), name)
         |> List.tryPick (fun (parts, opName) -> if List.contains id parts then Some opName else None)
 
+    let private inlineComment =
+        skipString "--" >>. skipRestOfLine true
+
+    let private multilineComment =
+
+        let rec commentContent (depth: int) =
+            choice [
+                skipString "{-" >>= fun _ -> commentContent (depth + 1)
+                skipString "-}" >>= fun _ -> if depth = 1 then preturn () else commentContent (depth - 1)
+                skipAnyChar     >>= fun _ -> commentContent depth ]
+
+        skipString "{-" >>. commentContent 1
+
+    let private comments =
+        choice [ inlineComment; multilineComment ] <?> ""
+
     let private spacesOrComment =
-        spaces >>. optional (skipString "--" <?> "" >>. skipRestOfLine true) >>. spaces
+        spaces >>. optional comments >>. spaces
 
     module private NameParser =
 
