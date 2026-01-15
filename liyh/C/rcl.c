@@ -256,7 +256,7 @@ vm_env_t *create_env()
 
     env->symbol_pool_count = HASH_MAP_SIZE;
     env->symbol_pool = GC_MALLOC(env->symbol_pool_count * sizeof(atom_t *));
-    env->symbol_counter = 1;
+    env->symbol_counter = 0;
 
     env->dispatch_table_capacity = INITIAL_CAPACITY;
     env->dispatch_table = GC_MALLOC(env->dispatch_table_capacity * sizeof(dispatch_entry_t*));
