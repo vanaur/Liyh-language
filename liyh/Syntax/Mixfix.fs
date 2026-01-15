@@ -276,10 +276,6 @@ module public MixFixExpression =
 
     let public pstringAligned = MixfixEngine.pstringAligned
 
-    type public MixfixParserRef<'a, 'u> =
-        { mutable Operators: MixfixOperator list
-          mutable CurrentParser: Parser<'a, 'u> option }
-
     type public MixfixExpressionParser() =
 
         let mutable cachedOperators: MixfixOperator list = []
@@ -324,7 +320,6 @@ module public MixFixPattern =
         let mutable cachedAtomParser: Parser<PatternWithPos, UserState> option = None  // Nouvelle ligne
 
         member __.CreateParser (operators: MixfixOperator list) (baseAtomParser: Parser<PatternWithPos, _>) =
-            // Vérifier si le parser atomique a changé (indication que parsePatternRef a été mis à jour)
             let atomParserChanged = 
                 match cachedAtomParser with
                 | Some cached -> not (obj.ReferenceEquals(cached, baseAtomParser))
