@@ -7,7 +7,7 @@ module public BytecodeCompiler =
     open Liyh.Core.DecisionTree.DecisionTreeCompiler
 
     type private GlobalContext =
-        { SymbolLabels: Map<string * int, int> }    // (symbol/arity, label)
+        { SymbolLabels: DispatchTable }
 
     type private CompilationContext =
         { Global: GlobalContext
@@ -93,14 +93,15 @@ module public BytecodeCompiler =
             program
             |> List.choose (function Rule r -> Some r | _ -> None)
 
-        let getHeadSymbolAndArity (rule: CoreRule) =
-            match rule.LHS with
-            | Symbol { Symbol = s; Children = children } -> (s, List.length children)
-            | _ -> failwith "??" // this may not happen
-
         let groupedRules =
             coreRules
-            |> List.groupBy getHeadSymbolAndArity
+            |> List.groupBy (fun rule ->
+                match rule.LHS with
+                | Symbol { Symbol = symb; Children = children } ->
+                    { Name = symb
+                      Arity = List.length children
+                      Strategy = Strategy.FromAST rule.Strategy }
+                | _ -> failwith "Invalid LHS")
             |> Map.ofList
 
         let globalLabels =
@@ -258,8 +259,8 @@ module public BytecodeCompiler =
             | Symbol { Symbol = name; Children = children } ->
                 let childRegs = List.map (compileTerm context false) children
 
-                match Map.tryFind (name, List.length children) context.Global.SymbolLabels with
-                | Some label ->
+                match DispatchTable.tryFindByNameArity (name, List.length children) context.Global.SymbolLabels with
+                | Some (label, _) ->
                     if isTail then
                         builder.Tailcall(label, childRegs)
                         Reg 0 // dummy
@@ -688,7 +689,7 @@ module public BytecodeCompiler =
         builder.Comment(" This textual representation is for information only and is not usable as such.  ;")
         builder.Comment("                                                                                 ;\n")
 
-        for KeyValue((symbolName, arity) as key, rules) in groupedRules do
+        for KeyValue({ Name = symbolName; Arity = arity; Strategy = strategy } as key, rules) in groupedRules do
             let label = globalLabels.[key]
             builder.CommentNewLine($"--- {symbolName}/{arity} ---\n")
             builder.SetLabel(label)
@@ -730,14 +731,12 @@ module public BytecodeCompiler =
             builder.FinalizeFunction(patchIndex, savedMaxStack)
 
         let entryPointLabel =
-            match Map.tryFind ("main", 0) globalLabels with
-            | Some l -> l
+            match DispatchTable.tryFindByNameArity ("main", 0) globalLabels with
+            | Some (label, _) -> label
             | None ->
-                match Map.tryFind ("main", 1) globalLabels with
-                | Some l -> l
+                match DispatchTable.tryFindByNameArity ("main", 1) globalLabels with
+                | Some (label, _) -> label
                 | None -> failwith "No entry point (main) found."
 
         let dispatchTable = globalLabels
-
         builder.Compile(entryPointLabel, dispatchTable)
-        |> if optimize then Optimize.apply else id

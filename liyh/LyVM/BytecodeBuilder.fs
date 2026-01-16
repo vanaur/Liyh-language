@@ -396,7 +396,7 @@ type public ByteCodeBuilder() =
         dst
 
     /// Generates F#-wise version of the final bytecode.
-    member public __.Compile(entryLabel: int, dispatchTable: Map<string * int, int>) =
+    member public __.Compile(entryLabel: int, dispatchTable: DispatchTable) =
         { Program = instructions.ToArray()
           EntryPointLabel = entryLabel
           DispatchTable = dispatchTable }
@@ -594,9 +594,9 @@ type public VM() =
 
         // we have to internate some of the heap-allocated values
 
-        for KeyValue((name, arity), label) in dispatchTable do
-            let symId = intern_symbol(env, name)
-            intern_function(env, symId, arity, label)
+        for KeyValue(ruleInfo, label) in dispatchTable do
+            let symId = intern_symbol(env, ruleInfo.Name)
+            intern_function(env, symId, ruleInfo.Arity, label)
 
         for instr in instructions do
             match instr with
@@ -656,6 +656,8 @@ type public VM() =
 
         finally
             destroy_vm vm
+(*
+
 
 /// A ridiculous set of optimizations for the bytecode.
 module public Optimize =
@@ -1015,6 +1017,8 @@ module public Optimize =
     let public apply =
         Peephole.apply >> DeadCodeElimination.apply
 
+*)
+
 [<RequireQualifiedAccess>]
 module public AOT =
     open System.Text
@@ -1084,8 +1088,8 @@ module public AOT =
             | _ -> ()
 
         // Also ensure symbols from DispatchTable are included (even if not used in bytecode)
-        for KeyValue((name, _), _) in cp.DispatchTable do
-             let id = InternTable.AtomTable.Intern name 
+        for KeyValue(ruleInfo, _) in cp.DispatchTable do
+             let id = InternTable.AtomTable.Intern ruleInfo.Name 
              if id > maxAtomId then maxAtomId <- id
 
         // --- Generate C Static Arrays --- //
@@ -1170,7 +1174,9 @@ module public AOT =
 
         // Init Dispatch Table
         appendLine("\n    // --- Dispatch Table ---")
-        for KeyValue((name, arity), label) in cp.DispatchTable do
+        for KeyValue(ruleInfo, label) in cp.DispatchTable do
+            let name = ruleInfo.Name
+            let arity = ruleInfo.Arity
             appendLine($"    intern_function(env_ptr, intern_symbol(env_ptr, \"{name}\"), {arity}, {label});")
 
         // --- Final Assembly and Compilation --- //

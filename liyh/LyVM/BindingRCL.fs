@@ -170,8 +170,43 @@ module public ByteCodeInstr =
             | _ -> None
         | _ -> None
 
+[<Struct>]
+type public Strategy =
+    | Innermost
+    | Outermost
+    | Invalid
+    | Memoize
+
+    static member FromAST (astStrat: Liyh.Syntax.SyntaxTree.RewritingStrategy) =
+        match astStrat with
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Innermost -> Innermost
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Outermost -> Outermost
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Invalid -> Invalid
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Memoize -> Memoize
+
+[<Struct>]
+type public RuleInfo =
+    { Name: string
+      Arity: int
+      Strategy: Strategy }
+
+type public LabelIndex = int
+type public DispatchTable = Map<RuleInfo, LabelIndex>  // rule info : label
+
+[<RequireQualifiedAccess>]
+module public DispatchTable =
+
+    /// Lookup an element in the dispatch table, returning a `Some(label, strategy)` value if the
+    /// element is in the domain of the map and `None` if not.
+    let public tryFindByNameArity (name: string, arity: int) (dispatchTable: DispatchTable) =
+        dispatchTable
+        |> Map.tryPick (fun ruleInfo label ->
+            if (name, arity) = (ruleInfo.Name, ruleInfo.Arity)
+            then Some (label, ruleInfo.Strategy)
+            else None)
+
 type public CompiledProgram =
-    { Program: ByteCodeInstr[]                  // the compiled program
-      EntryPointLabel: int                      // the entry point of the program (label)
-      DispatchTable: Map<string * int, int> }   // symbol/arity, label
+    { Program: ByteCodeInstr[]          // the compiled program
+      EntryPointLabel: LabelIndex       // the entry point of the program (label)
+      DispatchTable: DispatchTable }
 
