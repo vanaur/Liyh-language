@@ -104,8 +104,10 @@ type public OpCode =
     | GetUpvalue = 35
     | TestTag = 36
     | Deconstruct = 37
-    | PPShow = 38
-    | Print = 39
+    | Delay = 38
+    | Force = 39
+    | PPShow = 40
+    | Print = 41
 
 [<Struct>]
 type public ByteCodeInstr =

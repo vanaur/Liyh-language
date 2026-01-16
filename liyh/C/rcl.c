@@ -54,6 +54,7 @@ typedef uint32_t sym_id_t;
 #define SYM_FLOAT           0xFFFFFFFD
 #define SYM_CLOSURE         0xFFFFFFFE
 #define SYM_INT_NATIVE      0xFFFFFFFF
+#define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
 #define SYM_THUNK           0xFFFFFFF8
 #define SYM_INDIRECT        0xFFFFFFF9
 
@@ -136,6 +137,11 @@ typedef enum
     INSTR_TEST_TAG,
     INSTR_DECONSTRUCT,
 
+    // lazy evaluation instructions
+
+    INSTR_DELAY,
+    INSTR_FORCE,
+
     // debugging instruction
 
     INSTR_PPSHOW,
@@ -185,6 +191,8 @@ static const char* opcode_names[] = {
     [INSTR_GET_UPVALUE] =   "GET_UPVALUE",
     [INSTR_TEST_TAG] =      "TEST_TAG",
     [INSTR_DECONSTRUCT] =   "DECONSTRUCT",
+    [INSTR_DELAY] =         "DELAY",
+    [INSTR_FORCE] =         "FORCE",
     [INSTR_PRINT] =         "PRINT",
 };
 
@@ -452,6 +460,36 @@ static term_t resolve_indirection(term_t term)
     return term;
 }
 
+/// Transforms a thunk (or any other object) into an indirection to a target value.
+/// This allows for memoization to take place.
+static void overwrite_with_indirection(const term_t thunk_ptr, const term_t value)
+{
+    term_header_t *h = AS_HEADER(thunk_ptr);
+    h->id = SYM_INDIRECT;
+    h->arity = 1;
+    h->children[0] = value;
+}
+
+/// Locks a thunk by marking it as evaluated ("black hole") and detects lazy evaluation loops.
+/// This should be fairly rare in practice (for Liyh).
+static void lock_and_check_thunk(term_t term)
+{
+    term = resolve_indirection(term);
+    term_header_t *h = AS_HEADER(term);
+
+    if (h->id == SYM_BLACK_HOLE)
+    {
+        // If the thunk is already marked as `SYM_BLACK_HOLE`, then it means that a cyclic loop
+        // is present: we fall into the black hole... and we cannot exit. This is a fatal error.
+
+        fprintf(stderr, "Fatal error: cycle detected during lazy evaluation (black hole).\n");
+        exit(1);
+    }
+
+    if (h->id == SYM_THUNK)
+        h->id = SYM_BLACK_HOLE;
+}
+
 /// Creates a boxed value for a float (64 bits).
 static term_t make_float(const double value)
 {
@@ -716,6 +754,12 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
         else if (header->id == SYM_CLOSURE)
             APPEND("<closure@%lld>", (long long)GET_INT(header->children[0]));
 
+        else if (header->id == SYM_THUNK)
+            APPEND("<thunk@%lld>", (long long)GET_INT(header->children[0]));
+
+        else if (header->id == SYM_BLACK_HOLE)
+            APPEND("<cycle>");
+
         else
         {
             APPEND("%s", symbol_name(env_ptr, header->id));
@@ -771,6 +815,7 @@ typedef struct
     int prev_bp;
     int dst_reg;
     term_t closure_env;
+    term_t thunk;
 } frame_t;
 
 typedef struct
@@ -917,7 +962,7 @@ static inline void perform_call(
     }
 
     // Save the current frame.
-    (*frames)[(*fp)++] = (frame_t){ *pc, *bp, dst_reg, closure_env };
+    (*frames)[(*fp)++] = (frame_t){ *pc, *bp, dst_reg, closure_env, 0 };
 
     // Copy the arguments.
     term_t *src_args = (*stack) + (*bp) + args_src_offset;
@@ -1179,6 +1224,14 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             const frame_t *f = &frames[fp];
 
+            if (f->thunk != 0)
+            {
+                // This frame corresponds to the evaluation of a Thunk, so the original thunk is overwriten
+                // with an indirection to the result `res`. The next time this thunk is `FORCE`, the function
+                // `resolve_indirection` will leads directly to `res`, hence a lazy evaluation.
+                overwrite_with_indirection(f->thunk, res);
+            }
+
             // Clear the pointers from the current frame so that the GC no longer follows them.
             if (sp > bp)
                 memset(&stack[bp], 0, (sp - bp) * sizeof(term_t));
@@ -1276,6 +1329,76 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 instr.d,
                 cl          // closure env
             );
+
+            break;
+        }
+
+        case INSTR_DELAY:
+        {
+            // instr.a = dst register
+            // instr.b = label of the thunk
+            // instr.c = number of values to capture
+            // instr.d = initial register for the capture
+
+            vm_ptr->sp = sp;
+
+            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (instr.c + 1) * sizeof(term_t));
+            h->id = SYM_THUNK;
+            h->arity = instr.c + 1;
+            h->children[0] = MAKE_INT(instr.b); // the label to jump in
+
+            for (int i = 0; i < instr.c; i++)
+                h->children[i + 1] = regs[instr.d + i];
+
+            regs[instr.a] = (term_t)h;
+            break;
+        }
+
+        case INSTR_FORCE:
+        {
+            // instr.a = dst register
+            // instr.b = src register
+
+            term_t t = resolve_indirection(regs[instr.b]);
+
+            // If not a pointer, it is a computed value.
+            if (!IS_PTR(t))
+            {
+                regs[instr.a] = t;
+                break;
+            }
+
+            term_header_t *thunk = AS_HEADER(t);
+
+            // Is this already a computed value?
+            if (thunk->id != SYM_THUNK && thunk->id != SYM_BLACK_HOLE)
+            {
+                regs[instr.a] = t;
+                break;
+            }
+
+            // Cycle detection: mark as Black Hole or error if already marked.
+            lock_and_check_thunk(t);
+
+            // Otherwise, this is a thunk to be evaluated.
+
+            int target_label = (int)GET_INT(thunk->children[0]);
+
+            if (fp + 1 >= (int)farmes_capacity)
+                grow_frames_impl(vm_ptr, &frames, &farmes_capacity);
+            
+            int needed = STACK_FRAME_PADDING; // a thunk has no argument (0 arity)
+            if (sp + needed >= (int)stack_capacity)
+                grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
+
+            // We pass a thunk as a `closure_env` so that all operations of accessing
+            // closure env variables remains the same with both closures and thunks.
+            // The last argument 't' is the thunk pointer itself, used for memoization in RET.
+            frames[fp++] = (frame_t){ pc, bp, instr.a, (term_t)thunk, t };
+
+            bp = sp;
+            sp = sp + needed;
+            pc = labels[target_label];
 
             break;
         }

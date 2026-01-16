@@ -339,6 +339,23 @@ type public ByteCodeBuilder() =
     member public __.TestRecord (Reg term, failLabel: int) =
         instructions.Add(Instr(OpCode.TestTag, term, SYM_RECORD, failLabel, 0))
 
+    member public this.Delay (label: int, captures: Reg list) =
+        let (blockStart, count) = this.PrepareBlock captures
+        let dst = this.Alloc()
+
+        let (Reg blockIdx) = blockStart
+        let (Reg dstIdx) = dst
+
+        instructions.Add(Instr(OpCode.Delay, dstIdx, label, count, blockIdx))
+        this.CompactStack(blockStart, count, dst)
+
+    member this.Force (Reg thunkReg) =
+        let dst = this.Alloc()
+        let (Reg dstIdx) = dst
+
+        instructions.Add(Instr(OpCode.Force, dstIdx, thunkReg, 0, 0))
+        dst
+
     member public this.Deconstruct (Reg term, childIndex: int) =
         let dst = this.Alloc()
         let (Reg dstIdx) = dst
@@ -545,6 +562,12 @@ module public PrettyPrinter =
 
         | Instr(OpCode.Deconstruct, dst, term, index, _) ->
             $"    {reg dst} = deconstruct {reg term}[{index}]"
+
+        | Instr(OpCode.Delay, dst, label, count, capturesStart) ->
+            $"    {reg dst} = delay {lbl label}[{reg capturesStart}..+{count}]"
+
+        | Instr(OpCode.Force, dst, src, _, _) ->
+            $"    {reg dst} = force {reg src}"
 
         | Instr(OpCode.PPShow, dst, src, _, _) ->
             $"    {reg dst} = ppshow {reg src}"
