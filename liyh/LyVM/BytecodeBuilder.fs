@@ -239,6 +239,11 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.LoadAtom, dstIdx, atomId, 0, 0))
         dst
 
+    /// Used when the end of a computation require a register but no value. This method allows to avoid
+    /// allocating the symbol unit for nothing.
+    member public this.Unit () =
+        this.Alloc()
+
     member private this.BinOp (opcode: OpCode, Reg left, Reg right) =
         let dst = this.Alloc()
         let (Reg dstIdx) = dst

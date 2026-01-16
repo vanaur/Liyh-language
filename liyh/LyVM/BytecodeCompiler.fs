@@ -243,7 +243,7 @@ module public BytecodeCompiler =
             | Internals.Internal_print(x) ->
                 let xReg = compileTerm context false x
                 builder.Print(xReg)
-                builder.LoadAtom(Builtin.Unit)
+                builder.Unit()
 
             | Internals.Internal_strcat(left, right) ->
                 let rLeft = compileTerm context false left
@@ -326,7 +326,7 @@ module public BytecodeCompiler =
                     let seqContext = { context with Env = currentEnv }
 
                     match remaining with
-                    | [] -> builder.LoadAtom(Builtin.Unit) // dummy
+                    | [] -> builder.Unit() // dummy
                     | [ x ] -> compileTerm seqContext isTail x
                     | x :: xs ->
                         match x with
@@ -389,7 +389,7 @@ module public BytecodeCompiler =
                 | None -> failwithf "Cannot compile the variable update '%s'." name
                 | Some targetReg ->
                     builder.Mov(targetReg, valReg)
-                    builder.LoadAtom(Builtin.Unit)
+                    builder.Unit()
 
             | WhileLoop { Predicate = pred; Body = body } ->
                 let startLabel = freshLabel()
@@ -410,11 +410,11 @@ module public BytecodeCompiler =
                 builder.Scope(fun () -> compileTerm context false body |> ignore)
                 builder.Jump(startLabel)
                 builder.SetLabel(endLabel)
-                builder.LoadAtom(Builtin.Unit)
+                builder.Unit()
 
             | CoreLet { Pattern = Variable _; Value = value } ->
                 compileTerm context false value |> ignore
-                builder.LoadAtom(Builtin.Unit) // dummy
+                builder.Unit() // dummy
 
             | CoreLet { Pattern = pattern; Value = value; IsVariable = isVar } ->
                 let valReg = compileTerm context false value
@@ -432,7 +432,7 @@ module public BytecodeCompiler =
                 let tree = DecisionTreeCompiler.compile matrix
 
                 let onMatch _ _ =
-                    builder.LoadAtom(Builtin.Unit)
+                    builder.Unit()
 
                 let onMismatch () =
                     let gotReg = builder.PPShow valReg
