@@ -253,7 +253,10 @@ module SyntaxTree =
     and public RewritingStrategy =
         /// Applies the rewrite rules starting with the deepest sub-expressions (leaves) before moving
         /// up towards the root of the syntax tree.
-        | Innermost
+        | Strict
+
+        /// Applies the rewriting rules without evaluating the arguments until they are needed.
+        | Lazy
 
         /// Applies the rewriting rules starting from the root of the syntax tree before moving down
         /// to deeper sub-expressions.

@@ -172,7 +172,7 @@ module PrettyPrinter =
             let rhsStr = prettyPrintExprInternal rhs 0
 
             match strat with
-            | Liyh.Syntax.SyntaxTree.RewritingStrategy.Innermost -> sprintf "%s%s -> %s" lhsStr wcStr rhsStr
+            | Liyh.Syntax.SyntaxTree.RewritingStrategy.Strict -> sprintf "%s%s -> %s" lhsStr wcStr rhsStr
             | _ -> sprintf "%s%s %s -> %s" lhsStr wcStr ((string strat).ToLower()) rhsStr
 
         | other -> sprintf "TODO: %A" other

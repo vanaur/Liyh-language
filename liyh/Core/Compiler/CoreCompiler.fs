@@ -737,7 +737,7 @@ module CoreCompiler =
         let name = removePos rule.Name
         let patterns = List.map (compilePattern cstate) rule.Patterns
         let whenClause = Option.map (compileExpression cstate) rule.WhenClause
-        let strategy = Option.defaultValue Innermost rule.Strategy
+        let strategy = Option.defaultValue Strict rule.Strategy
 
         let lhs = symbol name patterns
 
@@ -755,7 +755,7 @@ module CoreCompiler =
         let hstate = compilePattern cstate handler.State
         let pattern = compilePattern cstate handler.Pattern
         let whenClause = Option.map (compileExpression cstate) handler.WhenClause
-        let strategy = Option.defaultValue Innermost handler.Strategy
+        let strategy = Option.defaultValue Strict handler.Strategy
 
         let lhs = pattern
 
@@ -823,10 +823,11 @@ module CoreCompiler =
         let sorter (rules: TopLevelWithPos list) =
             let strategyOrder = function
                 | Some Outermost -> 0
-                | Some Innermost -> 1
-                | Some Invalid -> 2
+                | Some Lazy -> 1
                 | Some Memoize -> 1
-                | None -> 1
+                | Some Strict -> 2
+                | Some Invalid -> 3
+                | None -> 2
 
             let compareRules (i1, { Node = Rule r1 }) (i2, { Node = Rule r2 }) =
                 let s1 = strategyOrder r1.Strategy

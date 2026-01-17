@@ -174,14 +174,16 @@ module public ByteCodeInstr =
 
 [<Struct>]
 type public Strategy =
-    | Innermost
+    | Strict
+    | Lazy
     | Outermost
     | Invalid
     | Memoize
 
     static member FromAST (astStrat: Liyh.Syntax.SyntaxTree.RewritingStrategy) =
         match astStrat with
-        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Innermost -> Innermost
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Strict -> Strict
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Lazy -> Lazy
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Outermost -> Outermost
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Invalid -> Invalid
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Memoize -> Memoize

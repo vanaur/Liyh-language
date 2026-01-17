@@ -291,7 +291,7 @@ module rec TypeCheck =
 
             let strategyOrder = function
                 | Outermost -> 0
-                | Innermost -> 1
+                | Strict -> 1
                 | Invalid -> 2
 
             List.sortBy (_.Strategy >> strategyOrder) sinfo
@@ -2399,7 +2399,7 @@ module rec TypeCheck =
                         | [] -> returnType
                         | paramTypes -> TFun(paramTypes, returnType)
 
-                    let strategy = Option.defaultValue Innermost rule.Strategy
+                    let strategy = Option.defaultValue Strict rule.Strategy
                     let arity = paramTypes.Length
 
                     let sinfo =

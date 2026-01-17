@@ -1375,10 +1375,11 @@ module Parser =
 
     let private parseStrategy =
         choice [
-            skipString "innermost" >>% Innermost
-            skipString "outermost" >>% Outermost
-            skipString "memoize" >>% Memoize
-            skipString "invalid" >>% Invalid ] <?> "rewriting strategy (innermost, outermost or invalid)"
+            (skipString "innermost" <|> skipString "strict") >>% Strict
+            (skipString "lazy") >>% Lazy
+            (skipString "outermost") >>% Outermost
+            (skipString "memoize") >>% Memoize
+            (skipString "invalid") >>% Invalid ] <?> "rewriting strategy (innermost, outermost or invalid)"
 
     let private parseUse =
         pipe3
