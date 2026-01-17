@@ -1269,10 +1269,6 @@ module Parser =
                   Node = Expression.ResumeWith { Pos = resume.Pos; Node = node; Pos' = resume.Pos' }
                   Pos' = resume.Pos' }
 
-        let badFunctionCall =
-            spaces >>? skipChar '(' <?> ""
-            >>. fail "Function calls use square brackets [args], not parentheses (args)"
-
         choice [
             // function call
             functionCall
@@ -1281,9 +1277,7 @@ module Parser =
             // Unified Function Calling Syntax (UFCS) as a pipe "operator"
             ufcs
             // resume with (semantically valid only in handlers)
-            resume
-            // detect function call with parentheses instead of brackets, error
-            // badFunctionCall // cause some errors for now
+            attempt resume
         ]
 
     /// Transforms a right-associative UFCS call chain (e.g., `a |> (b |> c)`)
