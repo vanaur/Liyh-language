@@ -1222,7 +1222,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             if (--fp < 0) // nothing else to do
                 break;
 
-            const frame_t *f = &frames[fp];
+            frame_t *f = &frames[fp];
 
             if (f->thunk != 0)
             {
@@ -1230,6 +1230,27 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 // with an indirection to the result `res`. The next time this thunk is `FORCE`, the function
                 // `resolve_indirection` will leads directly to `res`, hence a lazy evaluation.
                 overwrite_with_indirection(f->thunk, res);
+
+                // If the result itself is a thunk, then it is also evaluated.
+
+                const term_t deep_res = resolve_indirection(res);
+                if (IS_PTR(deep_res) && AS_HEADER(deep_res)->id == SYM_THUNK)
+                {
+                    // Check for cyclic thunk evaluation.
+                    lock_and_check_thunk(deep_res);
+
+                    // We reuse the current frame.
+                    fp++;
+                    f->thunk = deep_res;
+                    f->closure_env = deep_res;
+
+                    // Reinit the local stack.
+                    sp = bp + STACK_FRAME_PADDING;
+
+                    // Jump to the new thunk.
+                    pc = labels[(int)GET_INT(AS_HEADER(deep_res)->children[0])];
+                    break; 
+                }
             }
 
             // Clear the pointers from the current frame so that the GC no longer follows them.
