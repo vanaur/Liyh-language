@@ -1107,6 +1107,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
         {
         case INSTR_HALT:
         {
+            return_value = instr.a;
             run = false;
             break;
         }
@@ -1518,7 +1519,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 const int64_t denominator = GET_INT(r);
                 if (denominator == 0)
                 {
-                    fprintf(stderr, "Division by zero\n");
+                    fprintf(stderr, "Fatal error: Division by zero\n");
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
@@ -1529,7 +1530,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 const double denominator = get_float(r);
                 if (denominator == 0.0)
                 {
-                    fprintf(stderr, "Division by zero\n");
+                    fprintf(stderr, "Fatal error: Division by zero\n");
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
@@ -1546,7 +1547,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 const int64_t denominator = GET_INT(r);
                 if (denominator == 0)
                 {
-                    fprintf(stderr, "Division by zero\n");
+                    fprintf(stderr, "Fatal error: Division by zero\n");
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
@@ -1559,7 +1560,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 
                 if (denominator == 0.0)
                 {
-                    fprintf(stderr, "Division by zero\n");
+                    fprintf(stderr, "Fatal error: Division by zero\n");
                     return_value = EXIT_FAILURE;
                     run = false;
                 }

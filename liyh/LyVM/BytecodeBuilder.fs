@@ -159,8 +159,11 @@ type public ByteCodeBuilder() =
 
         instructions.Add(Label labelId)
 
-    member public __.Halt () =
-        instructions.Add(Instr(OpCode.Halt, 0, 0, 0, 0))
+    member public __.Halt (returnValue: int) =
+        instructions.Add(Instr(OpCode.Halt, returnValue, 0, 0, 0));
+
+    member public this.Halt () =
+        this.Halt(0);
 
     member public __.Jump (label: int) =
         instructions.Add(Instr(OpCode.Jump, label, 0, 0, 0))
@@ -444,8 +447,8 @@ module public PrettyPrinter =
             | Some(Comment _) -> $"{lbl l}:"
             | _ -> $"\n{lbl l}:"
 
-        | Instr(OpCode.Halt, _, _, _, _) ->
-            "    halt"
+        | Instr(OpCode.Halt, r, _, _, _) ->
+            $"    halt({r})"
 
         | Instr(OpCode.Jump, target, _, _, _) ->
             $"    jump {lbl target}"

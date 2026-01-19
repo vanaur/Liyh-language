@@ -144,7 +144,7 @@ module public BytecodeCompiler =
                             builder.SetLabel(failLabel)
                             let msg = runtimeError $"Field '{name}' not found."
                             builder.Print(builder.LoadString msg)
-                            builder.Halt()
+                            builder.Halt(1)
                         )
                         
                         builder.SetLabel(successLabel)
