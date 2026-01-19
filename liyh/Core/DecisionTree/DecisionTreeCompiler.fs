@@ -262,6 +262,63 @@ module DecisionTreeCompiler =
                         then compileRecordAccess path (byRecord @ defaults) matrix.RemainingPaths
                         else compileBindings path allDefaults matrix.RemainingPaths
 
+    /// Merges specific occurrences and compatible defects by correctly managing Shadowing
+    /// (priority by index) and Fallback (guards).
+    and private resolveDefaultsAndMerge
+        (path: Path)
+        (remainingPaths: Path list)
+        (specificOccs: PatternOccurrence list)
+        (defaults: PatternOccurrence list) =
+
+        //
+        // A default case must be kept in a specific branch if:
+        //
+        //  - Shadowing (order): The default is defined before the specific rule (its `RuleIndex` is
+        //    smaller). It must take priority.
+        // 
+        //  - Fallback (guards): The specific rule has a guard (`when`). The default (defined after)
+        //    serves as a fallback if the guard fails.
+        // 
+        //  - Progression: We are not yet at the end of the tree (newPaths is not empty), so we keep
+        //    everything to continue structural exploration.
+        //
+
+        // We have to check whether we have reached the end of the analysis for this path.
+        let filteredPaths = List.filter ((<>) path) remainingPaths
+        let isPathExhausted = List.isEmpty filteredPaths
+
+        // We check for guards (that we have to include).
+        let hasGuards = specificOccs |> List.exists _.WhenClause.IsSome
+
+        // Index of the specific rule with the highest priority (the smallest).
+        let minSpecificIndex = 
+            if List.isEmpty specificOccs then System.Int32.MaxValue  // should not happens
+            else
+                specificOccs
+                |> List.map _.RuleIndex
+                |> List.min
+
+        let compatibleDefaults =
+            defaults |> List.filter (fun occ ->
+                match safeAccess path occ.Pattern with
+                | Variable _ | Wildcard ->
+                    if not isPathExhausted then
+                        // Continue to explore the structure.
+                        // This keeps the defaults to propagate the constraints.
+                        true
+                    else
+                        // Keep the default if shadowing or a when-clause.
+                        (occ.RuleIndex < minSpecificIndex) || hasGuards
+                | _ -> false
+            )
+
+        let allOccs =
+            (specificOccs @ compatibleDefaults)
+            |> List.sortBy _.RuleIndex
+
+        // On retourne les chemins filtrés et la liste fusionnée
+        (filteredPaths, allOccs)
+
     and private compileSwitch
             (path: Path) 
             (byConstructor: Map<(string * int), PatternOccurrence list>)
@@ -271,9 +328,8 @@ module DecisionTreeCompiler =
         let cases =
             byConstructor
             |> Map.map (fun (symbolName, arity) occs ->
-                let allOccs =
-                    occs @ defaults
-                    |> List.sortBy _.RuleIndex
+                let (filteredPaths, allOccs) = 
+                    resolveDefaultsAndMerge path remainingPaths occs defaults
 
                 let specialized =
                     allOccs 
@@ -281,8 +337,8 @@ module DecisionTreeCompiler =
                     |> List.collect id
 
                 let childPaths = [0 .. arity - 1] |> List.map (fun i -> path.Extend i)
-                let newPaths = childPaths @ (List.filter (( <> ) path) remainingPaths)
-                
+                let newPaths = childPaths @ filteredPaths
+
                 compileRec { Occurrences = specialized; RemainingPaths = newPaths }
             )
 
@@ -301,17 +357,15 @@ module DecisionTreeCompiler =
         let cases =
             byLiteral
             |> Map.map (fun lit occs ->
-                let allOccs =
-                    (occs @ defaults)
-                    |> List.sortBy _.RuleIndex
+                let (filteredPaths, allOccs) = 
+                    resolveDefaultsAndMerge path remainingPaths occs defaults
 
                 let specialized =
                     allOccs
                     |> List.choose (specializeLiteral path lit)
                     |> List.collect id
-                
-                let newPaths = List.filter (( <> ) path) remainingPaths
-                compileRec { Occurrences = specialized; RemainingPaths = newPaths }
+
+                compileRec { Occurrences = specialized; RemainingPaths = filteredPaths }
             )
 
         let defaultCase =
