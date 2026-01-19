@@ -13,6 +13,7 @@
     <Compile Include="Utils/ColorTerm.fs" />
     <Compile Include="Utils/ErrorReport.fs" />
     <Compile Include="Utils/UnionFind.fs" />
+    <Compile Include="Utils/ProgressBar.fs" />
 
     <Compile Include="Syntax/Indentation.fs" />
     <Compile Include="Syntax/SyntaxTree.fs" />
