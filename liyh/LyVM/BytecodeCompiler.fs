@@ -13,7 +13,8 @@ module public BytecodeCompiler =
         { Global: GlobalContext
           Env: Map<string, Reg>
           mutable PathCache: Map<Path, Reg>
-          Args: Reg[] }
+          Arguments: Reg[]
+          Strategy: Strategy }
 
     let private runtimeError (msg: string) =
         let sb = new Text.StringBuilder()
@@ -97,11 +98,25 @@ module public BytecodeCompiler =
             coreRules
             |> List.groupBy (fun rule ->
                 match rule.LHS with
-                | Symbol { Symbol = symb; Children = children } ->
-                    { Name = symb
-                      Arity = List.length children
-                      Strategy = Strategy.FromAST rule.Strategy }
+                | Symbol { Symbol = symb; Children = children } -> (symb, List.length children)
                 | _ -> failwith "Invalid LHS")
+
+            |> List.map (fun ((name, arity), rules) ->
+                let strategyWeight = function
+                    | Outermost -> 3  // Requires unevaluated ASTs
+                    | Lazy      -> 2  // Requires thunks
+                    | Strict    -> 1  // Requires evaluated values
+                    | Memoize   -> 1  // Strict + cache (same requirement as Strict)
+                    | Invalid   -> 0  // Neutral
+
+                let unifiedStrategy =
+                    rules 
+                    |> List.map (_.Strategy >> Strategy.FromAST)
+                    |> List.maxBy strategyWeight
+
+                let ruleInfo = { Name = name; Arity = arity; Strategy = unifiedStrategy }
+                (ruleInfo, rules))
+
             |> Map.ofList
 
         let globalLabels =
@@ -118,25 +133,36 @@ module public BytecodeCompiler =
                 let reg = 
                     match path with
                     | Root ->
-                        failwith "Unresolved root path" // Doit être pré-rempli par compileTerm
+                        failwith "Unresolved root path" // this may not happens
 
                     | Child(Root, idx) when not (context.PathCache.ContainsKey Root) ->
-                        if idx >= 0 && idx < context.Args.Length then
-                            context.Args.[idx]
+                        if idx >= 0 && idx < context.Arguments.Length then
+                            context.Arguments.[idx]
                         else
-                            failwithf "Index out of bounds: %d (arity %d)" idx context.Args.Length
-                    
+                            failwithf "Index out of bounds: %d (arity %d)" idx context.Arguments.Length
+
                     | Child(parent, idx) ->
                         let parentReg = compilePath context parent
-                        builder.Deconstruct(parentReg, idx)
+
+                        let effectiveParent =
+                            match context.Strategy with
+                            | Strategy.Lazy -> builder.Force(parentReg)
+                            | _ -> parentReg
+
+                        builder.Deconstruct(effectiveParent, idx)
 
                     | Field(parent, name) ->
                         let parentReg = compilePath context parent
 
+                        let effectiveParent =
+                            match context.Strategy with
+                            | Strategy.Lazy -> builder.Force(parentReg)
+                            | _ -> parentReg
+
                         let failLabel = freshLabel()
                         let successLabel = freshLabel()
 
-                        let res = builder.GetField(parentReg, name, failLabel)
+                        let res = builder.GetField(effectiveParent, name, failLabel)
 
                         builder.Jump(successLabel)
 
@@ -211,8 +237,8 @@ module public BytecodeCompiler =
             | Symbol { Symbol = op; Children = [left; right] } 
                 when Set.contains op (Set.ofArray Internals.arithmeticInternals) ->
 
-                let rLeft = compileTerm context false left
-                let rRight = compileTerm context false right
+                let rLeft = compileTermStrict context left
+                let rRight = compileTermStrict context right
 
                 match op with
                 | Internals.Add -> builder.Add(rLeft, rRight)
@@ -225,8 +251,8 @@ module public BytecodeCompiler =
             | Symbol { Symbol = op; Children = [left; right] } 
                 when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
-                let rLeft = compileTerm context false left
-                let rRight = compileTerm context false right
+                let rLeft = compileTermStrict context left
+                let rRight = compileTermStrict context right
 
                 let cmpRes = 
                     match op with
@@ -241,33 +267,58 @@ module public BytecodeCompiler =
                 convertBoolToAtom cmpRes
 
             | Internals.Internal_print(x) ->
-                let xReg = compileTerm context false x
+                let xReg = compileTermStrict context x
                 builder.Print(xReg)
                 builder.Unit()
 
             | Internals.Internal_strcat(left, right) ->
-                let rLeft = compileTerm context false left
-                let rRight = compileTerm context false right
+                let rLeft = compileTermStrict context left
+                let rRight = compileTermStrict context right
                 builder.StrCat(rLeft, rRight)
 
             | Internals.Internal_ppshow(term) ->
-                let r = compileTerm context false term
+                let r = compileTermStrict context term
                 builder.PPShow(r)
 
-            // --- --- //
+            // --- Lazy and force "keywords" (testing for now) --- //
+
+            | Symbol { Symbol = "lazy"; Children = [ body ] } ->
+                compileThunk context isTail body
+
+            | Symbol { Symbol = "force"; Children = [ expr ] } ->
+                let thunkReg = compileTerm context isTail expr
+                builder.Force(thunkReg)
+
+            // ----------------------------------------------
 
             | Symbol { Symbol = name; Children = children } ->
-                let childRegs = List.map (compileTerm context false) children
+
+                // Arguments are prepared differently depending on the main strategy associated
+                // with the different rules using the symbol as LHS.
+                let inline argsRegs (strategy: Strategy) = 
+                    match strategy with
+                    | (Strict | Memoize) -> 
+                        // Strict: everything is evaluated before the call (default behavior).
+                        List.map (compileTermStrict context) children
+
+                    | Lazy ->
+                        // Lazy: each argument is transformed into a Thunk.
+                        List.map (compileThunk context false) children
+
+                    | (Outermost | Invalid) ->
+                        // Outermost: each argument is reified in symbolic data.
+                        List.map (compileAsData context) children
 
                 match DispatchTable.tryFindByNameArity (name, List.length children) context.Global.SymbolLabels with
-                | Some (label, _) ->
+                | Some (label, strategy) ->
                     if isTail then
-                        builder.Tailcall(label, childRegs)
+                        builder.Tailcall(label, argsRegs strategy)
                         Reg 0 // dummy
                     else
-                        builder.Call(label, childRegs)
+                        builder.Call(label, argsRegs strategy)
+
                 | None ->
-                    builder.AllocData(name, childRegs)
+                    builder.AllocData(name, argsRegs context.Strategy)
 
             | FunctionalApplication { Base = b; Arguments = args } ->
                 let bReg = compileTerm context false b
@@ -310,7 +361,7 @@ module public BytecodeCompiler =
                     let bodyContext =
                         { context with
                             Env = bodyEnv
-                            Args = Array.ofList argRegs
+                            Arguments = Array.ofList argRegs
                             PathCache = Map.empty }
 
                     let resReg = compileTerm bodyContext true body
@@ -496,18 +547,91 @@ module public BytecodeCompiler =
                     compileTree matchContext tree onMatch onMismatch
                 )
 
-            | Substitution { Env = env; InExpr = inExpr } ->
+            | Substitution { Env = subEnv; InExpr = inExpr } ->
                 failwith "todo"
 
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
+
+        // Compiles an expression as a thunk (for the Lazy strategy)
+        and compileThunk (context: CompilationContext) (isTail: bool) (body: CoreTerm) =
+
+            // Capture free variables (such as a zero-arity closure).
+            let captures =
+                getFreeVariables Set.empty body
+                |> Set.toList
+                |> List.choose (fun name ->
+                    match Map.tryFind name context.Env with
+                    | Some reg -> Some (name, reg)
+                    | None -> None
+                )
+
+            let captureRegs = List.map snd captures
+            let labelBody = freshLabel ()
+            let labelSkip = freshLabel ()
+
+            // Generation of the thunk body (like a zero-arity closure).
+            builder.Jump(labelSkip)
+            builder.Scope(fun () ->
+                builder.SetLabel(labelBody)
+                let (_, patchIndex, savedMaxStack) = builder.DefineFunction(0)
+
+                let bodyEnv =
+                    captures
+                    |> List.mapi (fun i (name, _) -> name, builder.GetUpvalue(i))
+                    |> Map.ofList
+
+                let bodyContext =
+                    { context with
+                        Env = bodyEnv
+                        Arguments = Array.empty
+                        PathCache = Map.empty }
+
+                let resReg = compileTerm bodyContext isTail body
+                builder.Ret(resReg) // will trigger the update of the thunk (memoization)
+                builder.FinalizeFunction(patchIndex, savedMaxStack)
+            )
+
+            builder.SetLabel(labelSkip)
+            builder.Delay(labelBody, captureRegs)
+
+        // Compiles an expression as Data / AST (for the Outermost strategy)
+        and compileAsData (context: CompilationContext) (term: CoreTerm) =
+            match term with
+            | Symbol { Symbol = name; Children = children } ->
+                // We compile children as data recursively and allocate a symbolic object for it.
+                let childRegs = List.map (compileAsData context) children
+                builder.AllocData(name, childRegs)
+
+            | RecordExtend { BaseRecord = base'; Extension = extensions } ->
+                // We compile fields as data recursively and allocate a symbolic object for it.
+                let extensionRegs =
+                    extensions
+                    |> List.collect (fun (name, expr) ->
+                        let rVal = compileAsData context expr
+                        let rKey = builder.LoadAtom name
+                        [ rKey; rVal ])
+
+                match base' with
+                | None -> builder.MkRecord(extensionRegs)
+                | Some baseTerm ->
+                    let rBase = compileAsData context baseTerm
+                    builder.ExtendRecord(rBase, extensionRegs)
+
+            | other ->
+                // The rest is not compilable as a symbolic data.
+                compileTerm context false other
+
+        and compileTermStrict (context: CompilationContext) (term: CoreTerm) =
+            let reg = compileTerm context false term
+            builder.Force(reg) // This allows strict code to consume the result of lazy code.
 
         and tryCompileIntrinsicBool (context: CompilationContext) (term: CoreTerm) =
             match term with
             | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
-                let rLeft = compileTerm context false left
-                let rRight = compileTerm context false right
+                let rLeft = compileTermStrict context left
+                let rRight = compileTermStrict context right
 
                 let rawResult = 
                     match op with
@@ -549,12 +673,17 @@ module public BytecodeCompiler =
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
 
+                let testReg =
+                    match ctx.Strategy with
+                    | Strategy.Lazy -> builder.Force(pathReg)
+                    | _ -> pathReg
+
                 builder.Scope(fun () ->
                     let phiReg = builder.Alloc() 
 
                     for KeyValue((tag, _), subTree) in cases do
                         let nextLbl = freshLabel()
-                        builder.TestTag(pathReg, tag, nextLbl)
+                        builder.TestTag(testReg, tag, nextLbl)
                         let ctxBranch = branchContext ctx
                         let res = compileTree ctxBranch subTree onMatch fallback
                         builder.Mov(phiReg, res)
@@ -578,6 +707,11 @@ module public BytecodeCompiler =
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
 
+                let testReg =
+                    match ctx.Strategy with
+                    | Strategy.Lazy -> builder.Force(pathReg)
+                    | _ -> pathReg
+
                 builder.Scope(fun () ->
                     let phiReg = builder.Alloc()
 
@@ -590,7 +724,7 @@ module public BytecodeCompiler =
                             | String s -> builder.LoadString(s)
                             | Char c -> builder.LoadChar(c)
                         
-                        let eq = builder.Eq(pathReg, litReg)
+                        let eq = builder.Eq(testReg, litReg)
                         builder.JumpFalse(eq, nextLbl)
 
                         let ctxBranch = branchContext ctx
@@ -656,12 +790,17 @@ module public BytecodeCompiler =
                 let endLabel = freshLabel()
                 let phiReg = builder.Alloc()
 
+                let testReg =
+                    match ctx.Strategy with
+                    | Strategy.Lazy -> builder.Force(pathReg)
+                    | _ -> pathReg
+
                 builder.Scope(fun () ->
                     for KeyValue(t, subTree) in cases do
                         let nextLbl = freshLabel()
                         
                         match t with
-                        | TRecord -> builder.TestRecord(pathReg, nextLbl) 
+                        | TRecord -> builder.TestRecord(testReg, nextLbl) 
                         | _ -> builder.Jump(nextLbl)
 
                         let ctxBranch = branchContext ctx
@@ -701,19 +840,34 @@ module public BytecodeCompiler =
             let argRegs = Array.ofList argRegsList
             let rulesArray = Array.ofList rules
             let tree = DecisionTreeCompiler.compileRules rulesArray
-            let bodies = rulesArray |> Array.map _.RHS
 
             let context =
                 { Global = globalContext
                   Env = Map.empty
                   PathCache = Map.empty
-                  Args = argRegs }
+                  Arguments = argRegs
+                  Strategy = strategy }
 
             let fallback () =
                 builder.AllocData(symbolName, List.ofArray argRegs)
-            
+
             let onMatch ruleIndex leafContext =
-                compileTerm leafContext (symbolName <> "main") bodies.[ruleIndex]
+                let rule = rulesArray.[ruleIndex]
+                let localStrategy = Strategy.FromAST rule.Strategy
+
+                match localStrategy with
+                | Strategy.Invalid ->
+                    let errorValReg = compileTerm leafContext false rule.RHS
+                    let errorStrReg = builder.PPShow(errorValReg)
+                    let prefixReg = builder.LoadString "Invalid rule matched: "
+                    let fullMsgReg = builder.StrCat(prefixReg, errorStrReg)
+
+                    builder.Print(fullMsgReg)
+                    builder.Halt(1)
+                    builder.Alloc() // dummy
+
+                | _ ->
+                    compileTerm leafContext (symbolName <> "main") rule.RHS
 
             let optimizedTree =
                 match tree with
