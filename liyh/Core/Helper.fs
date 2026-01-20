@@ -88,6 +88,13 @@ module public Helper =
                   State = flattenTermSequence state
                   ToHandle = flattenTermSequence toHandle }
 
+        | Substitution { Env = env
+                         InExpr = inExpr } ->
+
+            Substitution
+                { Env = List.map (fun (a, b) -> (a, flattenTermSequence b)) env
+                  InExpr = flattenTermSequence inExpr }
+
         | Wildcard -> term
 
     /// Retrieves variables that are not defined in `term` nor present in `boundVars`.
@@ -181,6 +188,11 @@ module public Helper =
             | Handle handle ->
                 let a = loop handle.State
                 let b = loop handle.ToHandle
+                Set.union a b
+
+            | Substitution sub ->
+                let a = List.foldBack (snd >> loop >> Set.union) sub.Env Set.empty
+                let b = loop sub.InExpr
                 Set.union a b
 
             | Wildcard

@@ -127,6 +127,10 @@ module PrettyPrint =
                     (prettyPrintExpression h.Body)
             | ResumeWith rw ->
                 sprintf "%s with %s" (prettyPrintExpression rw.Node.Value) (prettyPrintExpression rw.Node.Value)
+            | Substitution(env, inExpr) ->
+                let envStr = List.map (fun (a, b) -> sprintf "%s -> %s" a (prettyPrintExpression b)) env
+                let inExprStr = prettyPrintExpression inExpr
+                sprintf "[%s] in %s" (System.String.Join(", ", envStr)) inExprStr
 
     and public prettyPrintLiteral =
         removePos

@@ -205,6 +205,7 @@ module CoreCompiler =
         | ReAssign(v, e) -> UpdateVariable(v, compileExpression cstate e)
         | HandleEffect handle -> compileHandleEffect cstate handle
         | ResumeWith resume -> compileResume cstate (removePos resume)
+        | Substitution(env, inExpr) -> compileSubstitution cstate env inExpr
         | other -> failwithf "Todo: %A" other
 
         |> flattenTermSequence
@@ -636,6 +637,14 @@ module CoreCompiler =
             Rewrite = value
             State = state
             FromHandler = cstate.CurrentHandler.Value }
+
+    and private compileSubstitution (cstate: State) (env: list<string * ExpressionWithPos>) (inExpr: ExpressionWithPos) =
+        let env = List.map (fun (a, b) -> let (Symbol sym) = simpleSymbol a in sym, compileExpression cstate b) env
+        let inExpr = compileExpression cstate inExpr
+
+        CoreTerm.Substitution
+            { Env = env
+              InExpr = inExpr }
 
     // --- Patterns --- //
 

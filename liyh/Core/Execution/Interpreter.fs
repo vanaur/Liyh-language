@@ -454,6 +454,9 @@ module Interpreter =
                 State = substitute env resumeTerm.State
                 Rewrite = substitute env resumeTerm.Rewrite }
 
+        | Substitution sub ->
+            failwithf "TODO: %A" sub
+
         | AsClause(p, v) -> AsClause(substitute env p, v)
         | WhenClause(p, w) -> WhenClause(substitute env p, substitute env w)
 

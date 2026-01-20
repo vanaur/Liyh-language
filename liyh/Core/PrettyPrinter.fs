@@ -154,6 +154,11 @@ module PrettyPrinter =
         | Resume { Rewrite = rewrite; State = state } ->
             sprintf "resume %s with %s" (prettyPrintExprInternal rewrite depth) (prettyPrintExprInternal state depth)
 
+        | Substitution { Env = env; InExpr = inExpr } ->
+            let envStr = List.map (fun ({ Symbol = a }, b) -> sprintf "%s -> %s" a (prettyPrintExprInternal b depth)) env
+            let inExprStr = prettyPrintExprInternal inExpr depth
+            sprintf "[%s] in %s" (System.String.Join(", ", envStr)) inExprStr
+
         | other -> failwithf "Todo (pretty print): %A" other
 
     and private prettyPrintDefinitionInternal (def: CoreDefinition) : string =

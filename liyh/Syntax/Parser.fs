@@ -285,6 +285,8 @@ module private ParsingErorr =
             collectParsingErrorsFromExpression handle.InitialState @ collectParsingErrorsFromExpression handle.Body
         | ResumeWith rw ->
             collectParsingErrorsFromExpression rw.Node.Value @ collectParsingErrorsFromExpression rw.Node.HandlerState
+        | Substitution(env, inExpr) ->
+            List.collect (snd >> collectParsingErrorsFromExpression) env @ collectParsingErrorsFromExpression inExpr
 
     and private collectParsingErrorsFromPattern (pat: PatternWithPos) =
         match pat.Node with
@@ -1205,10 +1207,31 @@ module Parser =
                 then Expression.ForTo { Pattern = patt; InitialValue = value; EndValue = toReach; Body = expression }
                 else Expression.ForDownTo { Pattern = patt; InitialValue = value; EndValue = toReach; Body = expression })
 
+    let private parseSubstitution =
+        let sub =
+            pipe3
+                (spaces >>. NameParser.parseName false)
+                (spaces >>. skipString "->")
+                (spaces >>. parseExpressionRef)
+                (fun symbol _ replace -> (symbol, replace))
+
+        let subEnv =
+            between
+                (skipChar '[')
+                (skipChar ']')
+                (sepBy1 sub (spaces >>. skipChar ','))
+
+        pipe3
+            (spaces >>. subEnv)
+            (spaces >>. skipString "in")
+            (spaces >>. parseExpressionRef)
+            (fun env _ inExpr -> Substitution(env, inExpr))
+
     let private parseBasicExpression =
 
         let parsers =
             [ attempt (parseWithPos parseReAssign)
+              attempt (parseWithPos parseSubstitution)
               attempt (parseWithPos parseIdentifier)
               attempt (parseWithPos parseLiteral)
               attempt parseBetweenParens

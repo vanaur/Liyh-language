@@ -71,6 +71,7 @@ module SyntaxTree =
         | Lambda of Lambda
         | HandleEffect of Handle
         | ResumeWith of ResumeWith WithPos
+        | Substitution of (string * ExpressionWithPos) list * ExpressionWithPos
 
     and public UFCS =
         { LHS: ExpressionWithPos
@@ -376,6 +377,8 @@ module Replace =
             { expwp with Node = HandleEffect { Handler = handle.Handler; InitialState = replaceExpr handle.InitialState; Body = replaceExpr handle.Body } }
         | ResumeWith rw ->
             { expwp with Node = ResumeWith { rw with Node = { rw.Node with Value = replaceExpr rw.Node.Value; HandlerState = replaceExpr rw.Node.HandlerState } } }
+        | Substitution(env, inExpr) ->
+            { expwp with Node = Substitution(List.map (fun (a, b) -> a, replaceExpr b) env, replaceExpr inExpr) }
 
     and public replacePatternVariable (map: Map<string, ExpressionWithPos>) (patwp: PatternWithPos) : PatternWithPos =
         let replaceExpr = replaceVariable map

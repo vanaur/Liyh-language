@@ -496,6 +496,9 @@ module public BytecodeCompiler =
                     compileTree matchContext tree onMatch onMismatch
                 )
 
+            | Substitution { Env = env; InExpr = inExpr } ->
+                failwith "todo"
+
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
 
         and tryCompileIntrinsicBool (context: CompilationContext) (term: CoreTerm) =

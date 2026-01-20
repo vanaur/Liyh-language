@@ -63,6 +63,10 @@ type public CoreTerm =
     | Closure of Closure
     | FunctionalApplication of FunctionalApplication
 
+    // --- symbolic features --- //
+
+    | Substitution of CoreSubstitution
+
     // --- imperative features --- //
 
     | TermSequence of CoreTerm list
@@ -123,6 +127,10 @@ and public CoreHandle =
     { Handler: string
       State: CoreTerm
       ToHandle: CoreTerm }
+
+and public CoreSubstitution =
+    { Env: (CoreSymbol * CoreTerm) list
+      InExpr: CoreTerm }
 
 type public CoreDefinition =
     | Rule of CoreRule

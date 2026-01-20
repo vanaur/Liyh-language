@@ -187,6 +187,11 @@ module AlphaConversion =
                   Value = ac renaming l.Value
                   IsVariable = l.IsVariable }
 
+        | Substitution sub ->
+            Substitution
+                { Env = List.map (fun (a, b) -> a, ac renaming b) sub.Env
+                  InExpr = ac renaming sub.InExpr }
+
         | Wildcard -> term
 
     let public alphaConversionDefinition (getUniqueVariable: string -> string) (def: CoreDefinition) =

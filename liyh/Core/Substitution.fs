@@ -115,4 +115,12 @@ module public CoreTermSubstitution =
                 else
                     AsClause (newPat, newBody)
 
+            | Substitution sub ->
+                let newEnv = List.map (fun (a, b) -> (a, replaceCoreTerm substitutions b)) sub.Env
+                let newInExpr = replaceCoreTerm substitutions sub.InExpr
+                
+                Substitution
+                    { Env = newEnv
+                      InExpr = newInExpr }
+
             | Wildcard -> term
