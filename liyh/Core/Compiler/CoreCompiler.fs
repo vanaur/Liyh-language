@@ -813,37 +813,7 @@ module CoreCompiler =
         definitions.Values
         |> List.ofSeq
         |> List.concat
-        |> sortRules
         |> List.map (compileDefinition cstate)
-
-    // TODO: sort handlers, too!
-
-    and private sortRules (definitions: TopLevelWithPos list) =
-
-        let sorter (rules: TopLevelWithPos list) =
-            let strategyOrder = function
-                | Some Outermost -> 0
-                | Some Lazy -> 1
-                | Some Memoize -> 1
-                | Some Strict -> 2
-                | Some Invalid -> 3
-                | None -> 2
-
-            let compareRules (i1, { Node = Rule r1 }) (i2, { Node = Rule r2 }) =
-                let s1 = strategyOrder r1.Strategy
-                let s2 = strategyOrder r2.Strategy
-                if s1 <> s2 then compare s1 s2
-                else compare i1 i2
-
-            rules
-            |> List.mapi (fun i rule -> i, rule)
-            |> List.sortWith compareRules
-            |> List.map snd
-
-        let rules, others = definitions |> List.partition _.Node.IsRule
-        let rules = sorter rules
-
-        others @ rules
 
     /// Compiles each modules of the list to the LiyhCore intermediate representation.
     /// The compilation is done in parallel.
