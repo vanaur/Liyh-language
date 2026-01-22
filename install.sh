@@ -19,6 +19,24 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+# Check if .NET version is 9.x
+check_dotnet_version() {
+    local dotnet_cmd="$1"
+    local version_output=$($dotnet_cmd --version 2>/dev/null || echo "")
+    
+    if [ -z "$version_output" ]; then
+        return 1
+    fi
+    
+    local major_version=$(echo "$version_output" | cut -d'.' -f1)
+    
+    if [ "$major_version" = "9" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
 # Global variables for config generation
 EXTRA_CFLAGS=""
 EXTRA_LDFLAGS=""
@@ -121,7 +139,27 @@ setup_environment() {
 
     # Check for global .NET SDK
     if command_exists dotnet; then
-        info "Global .NET SDK found ($(dotnet --version))."
+        if check_dotnet_version "dotnet"; then
+            local version=$(dotnet --version)
+            info "Compatible .NET 9 SDK found (version $version)."
+        else
+            local version=$(dotnet --version 2>/dev/null || echo "unknown")
+            warn ".NET SDK found but version $version is not compatible (requires .NET 9.x)."
+            info "Installing local .NET 9 SDK..."
+            local install_dir="$project_root/.dotnet_internal"
+            
+            if [ ! -d "$install_dir" ]; then
+                if ! command_exists wget; then error "wget is required to download .NET SDK."; fi
+                wget -q https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh
+                chmod +x /tmp/dotnet-install.sh
+                /tmp/dotnet-install.sh --channel 9.0 --install-dir "$install_dir" --no-path
+                rm /tmp/dotnet-install.sh
+            fi
+            
+            dotnet_cmd="$install_dir/dotnet"
+            use_local_dotnet=true
+            info "Local .NET 9 SDK installed in .dotnet_internal."
+        fi
     else
         info ".NET SDK not found. Installing a local copy..."
         local install_dir="$project_root/.dotnet_internal"
