@@ -99,15 +99,16 @@ type public OpCode =
     | ExtendRecord = 30
     | GetField = 31
     | Alloc = 32
-    | Closure = 33
-    | CallClosure = 34
-    | GetUpvalue = 35
-    | TestTag = 36
-    | Deconstruct = 37
-    | Delay = 38
-    | Force = 39
-    | PPShow = 40
-    | Print = 41
+    | Subst = 33
+    | Closure = 34
+    | CallClosure = 35
+    | GetUpvalue = 36
+    | TestTag = 37
+    | Deconstruct = 38
+    | Delay = 39
+    | Force = 40
+    | PPShow = 41
+    | Print = 42
 
 [<Struct>]
 type public ByteCodeInstr =

@@ -315,6 +315,9 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.Alloc, dstIdx, tagId, count, blockIdx))
         this.CompactStack(blockStart, count, dst)
 
+    member public __.Subst (dst: Reg, src: Reg, toRep: Reg, value: Reg) =
+        instructions.Add(Instr(OpCode.Subst, dst.Index, src.Index, toRep.Index, value.Index))
+
     member public this.Closure (label: int, captures: Reg list) =
         let (blockStart, count) = this.PrepareBlock captures
         let dst = this.Alloc()
@@ -551,6 +554,9 @@ module public PrettyPrinter =
         | Instr(OpCode.Alloc, dst, tagId, count, childrenStart) ->
             let tag = InternTable.AtomTable.Get(tagId)
             $"    {reg dst} = alloc :{tag}({reg childrenStart}..+{count})"
+
+        | Instr(OpCode.Subst, dst, src, toRep, value) ->
+            $"    {reg dst} = subst {reg src}({reg toRep} -> {reg value})"
 
         | Instr(OpCode.Closure, dst, label, count, capturesStart) ->
             $"    {reg dst} = closure {lbl label}[{reg capturesStart}..+{count}]"

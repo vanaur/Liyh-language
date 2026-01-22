@@ -548,7 +548,20 @@ module public BytecodeCompiler =
                 )
 
             | Substitution { Env = subEnv; InExpr = inExpr } ->
-                failwith "todo"
+                let astReg = compileTermStrict context inExpr
+
+                let finalReg =
+                    subEnv
+                    |> List.fold (fun currentTreeReg (sym, valExpr) ->
+                        let valReg = compileTermStrict context valExpr
+                        let atomReg = builder.LoadAtom(sym.Symbol)
+                        let nextReg = builder.Alloc()
+
+                        builder.Subst(nextReg, currentTreeReg, atomReg, valReg)
+                        nextReg
+                    ) astReg
+
+                finalReg
 
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
 

@@ -54,6 +54,7 @@ typedef uint32_t sym_id_t;
 #define SYM_FLOAT           0xFFFFFFFD
 #define SYM_CLOSURE         0xFFFFFFFE
 #define SYM_INT_NATIVE      0xFFFFFFFF
+#define SYM_SUSPENDED_CALL  0xFFFFFFF6  // Indicates a function application that has been created dynamically.
 #define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
 #define SYM_THUNK           0xFFFFFFF8
 #define SYM_INDIRECT        0xFFFFFFF9
@@ -125,6 +126,7 @@ typedef enum
     // symbolic data allocation instruction
 
     INSTR_ALLOC,
+    INSTR_SUBST,
 
     // closure specific instructions
 
@@ -186,6 +188,7 @@ static const char* opcode_names[] = {
     [INSTR_EXTEND_RECORD] = "EXTEND_RECORD",
     [INSTR_GET_FIELD] =     "GET_FIELD",
     [INSTR_ALLOC] =         "ALLOC",
+    [INSTR_SUBST] =         "SUSBT",
     [INSTR_CLOSURE] =       "CLOSURE",
     [INSTR_CALL_CLOSURE] =  "CALL_CLOSURE",
     [INSTR_GET_UPVALUE] =   "GET_UPVALUE",
@@ -689,6 +692,107 @@ static bool term_equals(term_t root_a, term_t root_b)
 
     free(stack);
     return true;
+}
+
+/// Performs a structural and recursive substitution: replaces occurrences of `toRepId` with
+/// `repl` in `root`. Returns a new term (or the original if no changes were made).
+static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
+{
+    // NOTE: this function can overflow the stack, for now.
+
+    root = resolve_indirection(root);
+    if (!IS_PTR(root)) return root;
+
+    term_header_t *h = AS_HEADER(root);
+
+    if (h->arity == 0 && h->id == toRepId)
+        return repl;
+
+    if (h->id == SYM_RECORD)
+    {
+        const int count = h->arity / 2;
+        bool changed = false;
+
+        term_t new_children[h->arity]; 
+        memcpy(new_children, h->children, h->arity * sizeof(term_t));
+
+        for (int i = 0; i < count; i++)
+        {
+            // children[i*2] is th key, children[i*2+1] is the value.
+            const term_t old_val = h->children[i * 2 + 1];
+            const term_t new_val = perform_substitution(old_val, toRepId, repl);
+
+            if (old_val != new_val)
+            {
+                new_children[i * 2 + 1] = new_val;
+                changed = true;
+            }
+        }
+
+        if (!changed) return root;
+
+        term_header_t *new_rec = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
+        new_rec->id = SYM_RECORD;
+        new_rec->arity = h->arity;
+        memcpy(new_rec->children, new_children, h->arity * sizeof(term_t));
+
+        return (term_t)new_rec;
+    }
+
+    if ((h->id < SYM_CONTINUATION) && h->arity > 0)
+    {
+        bool changed = false;
+        term_t new_children[h->arity];
+
+        for (uint32_t i = 0; i < h->arity; i++)
+        {
+            new_children[i] = perform_substitution(h->children[i], toRepId, repl);
+            if (new_children[i] != h->children[i]) changed = true;
+        }
+
+        if (h->id == toRepId)
+        {
+            changed = true;
+
+            // If the replacement is a closure, a "suspended call" is created.
+            if (IS_PTR(repl) && AS_HEADER(repl)->id == SYM_CLOSURE)
+            {
+                // Layout of SUSPENDED_CALL: [Closure, Arg1, Arg2, ...]
+                // Arity = 1 + h->arity
+
+                const int new_arity = h->arity + 1;
+                term_header_t *susp = GC_MALLOC(sizeof(term_header_t) + new_arity * sizeof(term_t));
+                susp->id = SYM_SUSPENDED_CALL;
+                susp->arity = new_arity;
+
+                susp->children[0] = repl;
+                memcpy(&susp->children[1], new_children, h->arity * sizeof(term_t));
+
+                return (term_t)susp;
+            }
+
+            else if (IS_PTR(repl))
+            {
+                const sym_id_t new_id = AS_HEADER(repl)->id; 
+                term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
+                new_term->id = new_id;
+                new_term->arity = h->arity;
+                memcpy(new_term->children, new_children, h->arity * sizeof(term_t));
+                return (term_t)new_term;
+            }
+        }
+
+        if (!changed)
+            return root;
+
+        term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
+        new_term->id = h->id;
+        new_term->arity = h->arity;
+        memcpy(new_term->children, new_children, h->arity * sizeof(term_t));
+        return (term_t)new_term;
+    }
+
+    return root;
 }
 
 #define MAX_PRETTY_PRINT_DEPTH  50
@@ -1393,7 +1497,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             term_header_t *thunk = AS_HEADER(t);
 
             // Is this already a computed value?
-            if (thunk->id != SYM_THUNK && thunk->id != SYM_BLACK_HOLE)
+            if (thunk->id != SYM_THUNK && thunk->id != SYM_BLACK_HOLE && thunk->id != SYM_SUSPENDED_CALL)
             {
                 regs[instr.a] = t;
                 break;
@@ -1402,13 +1506,44 @@ int run_vm(vm_t *vm_ptr, const int entry)
             // Cycle detection: mark as Black Hole or error if already marked.
             lock_and_check_thunk(t);
 
+            // Suspended calls are from substitutions and symbolic computations.
+            if (thunk->id == SYM_SUSPENDED_CALL)
+            {
+                // Laouyt: [Closure, Arg1, Arg2, ...]
+                const term_t closure_term = thunk->children[0];
+                const term_header_t *closure_h = AS_HEADER(closure_term);
+
+                // The closure contains [Label, EnvVar1, EnvVar2...]
+                const int target_label = (int)GET_INT(closure_h->children[0]);
+                const int arg_count = thunk->arity - 1; // The closure doest not count in the arity
+
+                if (fp + 1 >= (int)farmes_capacity)
+                    grow_frames_impl(vm_ptr, &frames, &farmes_capacity);
+
+                int needed = arg_count + STACK_FRAME_PADDING;
+                if (sp + needed >= (int)stack_capacity)
+                    grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
+
+                frames[fp++] = (frame_t){ pc, bp, instr.a, closure_term, t };
+
+                if (arg_count > 0)
+                    memcpy(&stack[sp], &thunk->children[1], arg_count * sizeof(term_t));
+                
+                memset(&stack[sp + arg_count], 0, STACK_FRAME_PADDING * sizeof(term_t));
+
+                bp = sp;
+                sp = sp + needed;
+                pc = labels[target_label];
+                break;
+            }
+
             // Otherwise, this is a thunk to be evaluated.
 
             int target_label = (int)GET_INT(thunk->children[0]);
 
             if (fp + 1 >= (int)farmes_capacity)
                 grow_frames_impl(vm_ptr, &frames, &farmes_capacity);
-            
+
             int needed = STACK_FRAME_PADDING; // a thunk has no argument (0 arity)
             if (sp + needed >= (int)stack_capacity)
                 grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
@@ -1649,6 +1784,31 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 h->children[i + 1] = regs[instr.d + i];
 
             regs[instr.a] = (term_t)h;
+            break;
+        }
+
+        case INSTR_SUBST:
+        {
+            // instr.a = dst register
+            // instr.b = src register
+            // instr.c = symbol atom to find
+            // instr.d = replacement value
+
+            const term_t tree = regs[instr.b];
+            const term_t toReplace = resolve_indirection(regs[instr.c]);
+            const term_t replacement = regs[instr.d];
+
+            if (!IS_PTR(toReplace)) // only atoms can be substitued
+            {
+                fprintf(stderr, "Runtime Error: Substitution must be onto atoms.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            const sym_id_t toReplaceId = AS_HEADER(toReplace)->id;
+            regs[instr.a] = perform_substitution(tree, toReplaceId, replacement);
+
             break;
         }
 
