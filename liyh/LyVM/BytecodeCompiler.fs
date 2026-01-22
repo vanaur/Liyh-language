@@ -103,19 +103,25 @@ module public BytecodeCompiler =
 
             |> List.map (fun ((name, arity), rules) ->
                 let strategyWeight = function
-                    | Outermost -> 3  // Requires unevaluated ASTs
-                    | Lazy      -> 2  // Requires thunks
-                    | Strict    -> 1  // Requires evaluated values
-                    | Memoize   -> 1  // Strict + cache (same requirement as Strict)
-                    | Invalid   -> 0  // Neutral
+                    | Outermost -> 2
+                    | (Lazy | Strict | Memoize) -> 1
+                    | Invalid -> 0
 
                 let unifiedStrategy =
                     rules 
                     |> List.map (_.Strategy >> Strategy.FromAST)
                     |> List.maxBy strategyWeight
 
-                let ruleInfo = { Name = name; Arity = arity; Strategy = unifiedStrategy }
-                (ruleInfo, rules))
+                let sortedRules =
+                    rules
+                    |> List.sortByDescending (fun rule -> strategyWeight (Strategy.FromAST rule.Strategy))
+
+                let ruleInfo =
+                    { Name = name
+                      Arity = arity
+                      Strategy = unifiedStrategy }
+
+                (ruleInfo, sortedRules)) 
 
             |> Map.ofList
 
