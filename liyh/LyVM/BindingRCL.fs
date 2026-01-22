@@ -9,8 +9,14 @@ module public BindingRCL =
     type public EnvPtr = IntPtr
     type public VMPtr = IntPtr
 
-    [<Literal>]
-    let public SYM_RECORD = -4
+    let public SYM_STRING_NATIVE = int 0xFFFFFFFBu
+    let public SYM_RECORD_NATIVE = int 0xFFFFFFFCu
+    let public SYM_FLOAT_NATIVE = int 0xFFFFFFFDu
+    let public SYM_CLOSURE = int 0xFFFFFFFEu
+    let public SYM_INT_NATIVE = int 0xFFFFFFFFu
+    let public SYM_CHAR_NATIVE = int 0xFFFFFFF0u
+
+    let inline isSystemTag (id: int) = (uint32 id) >= 0xFFFFFFF0u
 
     /// This have to be found in the compilation path of the compiler.
     [<Literal>]

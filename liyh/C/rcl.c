@@ -48,16 +48,22 @@ typedef uint32_t sym_id_t;
 #define MAKE_CHAR(val)  ((((uintptr_t)(val)) << 2) | TAG_CHAR)
 #define GET_CHAR(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
 
-#define SYM_CONTINUATION    0xFFFFFFFA
-#define SYM_STRING          0xFFFFFFFB
-#define SYM_RECORD          0xFFFFFFFC
-#define SYM_FLOAT           0xFFFFFFFD
-#define SYM_CLOSURE         0xFFFFFFFE
-#define SYM_INT_NATIVE      0xFFFFFFFF
+#define SYM_CONTINUATION    0xFFFFFFFA  // continuation for symbolic computations and substitutions
+
+#define SYM_STRING_NATIVE   0xFFFFFFFB  // strings
+#define SYM_RECORD_NATIVE   0xFFFFFFFC  // records
+#define SYM_FLOAT_NATIVE    0xFFFFFFFD  // floats
+#define SYM_CLOSURE         0xFFFFFFFE  // closures
+#define SYM_INT_NATIVE      0xFFFFFFFF  // integers
+#define SYM_CHAR_NATIVE     0xFFFFFFF0  // characters
+
 #define SYM_SUSPENDED_CALL  0xFFFFFFF6  // Indicates a function application that has been created dynamically.
 #define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
-#define SYM_THUNK           0xFFFFFFF8
-#define SYM_INDIRECT        0xFFFFFFF9
+#define SYM_THUNK           0xFFFFFFF8  // Thunk for lazy evaluation (delays)
+#define SYM_INDIRECT        0xFFFFFFF9  // Indirections in lazy evaluation
+
+#define IS_SYSTEM_TAG(id)   ((id) >= SYM_CHAR_NATIVE)
+#define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)
 
 typedef struct
 {
@@ -498,7 +504,7 @@ static term_t make_float(const double value)
 {
     term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(double));
 
-    term->id = SYM_FLOAT;
+    term->id = SYM_FLOAT_NATIVE;
     term->arity = 0;
 
     uint64_t bits;
@@ -519,7 +525,7 @@ static double get_float(term_t term)
     if (IS_PTR(term))
     {
         const term_header_t *h = AS_HEADER(term);
-        if (h->id == SYM_FLOAT)
+        if (h->id == SYM_FLOAT_NATIVE)
         {
             double value;
             memcpy(&value, &h->children[0], sizeof value);
@@ -536,7 +542,7 @@ static double get_float(term_t term)
 static term_t make_string(const char *s)
 {
     term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(term_t));
-    term->id = SYM_STRING;
+    term->id = SYM_STRING_NATIVE;
     term->arity = 0;
 
     char *buff = GC_MALLOC_ATOMIC(strlen(s) + 1);
@@ -588,7 +594,7 @@ static term_t make_record_from_pairs(record_field_t *pairs, const int count)
     const uint32_t arity = 2 * unique_count;
     term_header_t *header = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
 
-    header->id = SYM_RECORD;
+    header->id = SYM_RECORD_NATIVE;
     header->arity = arity;
 
     for (int i = 0; i < unique_count; i++)
@@ -654,7 +660,7 @@ static bool term_equals(term_t root_a, term_t root_b)
             return false;
         }
 
-        if (ha->id == SYM_FLOAT)
+        if (ha->id == SYM_FLOAT_NATIVE)
         {
             if (get_float(p.a) != get_float(p.b))
             {
@@ -664,7 +670,7 @@ static bool term_equals(term_t root_a, term_t root_b)
             continue;
         }
 
-        if (ha->id == SYM_STRING)
+        if (ha->id == SYM_STRING_NATIVE)
         {
             if (strcmp((const char *)ha->children[0], (const char *)hb->children[0]) != 0)
             {
@@ -708,7 +714,7 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
     if (h->arity == 0 && h->id == toRepId)
         return repl;
 
-    if (h->id == SYM_RECORD)
+    if (h->id == SYM_RECORD_NATIVE)
     {
         const int count = h->arity / 2;
         bool changed = false;
@@ -732,7 +738,7 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
         if (!changed) return root;
 
         term_header_t *new_rec = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
-        new_rec->id = SYM_RECORD;
+        new_rec->id = SYM_RECORD_NATIVE;
         new_rec->arity = h->arity;
         memcpy(new_rec->children, new_children, h->arity * sizeof(term_t));
 
@@ -830,14 +836,14 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
     {
         const term_header_t *header = AS_HEADER(term);
 
-        if (header->id == SYM_STRING)
+        if (header->id == SYM_STRING_NATIVE)
             //APPEND("\"%s\"", (char *)header->children[0]);
             APPEND("%s", (char *)header->children[0]);
 
-        else if (header->id == SYM_FLOAT)
+        else if (header->id == SYM_FLOAT_NATIVE)
             APPEND("%.*g", DBL_DIG, get_float(term));
 
-        else if (header->id == SYM_RECORD)
+        else if (header->id == SYM_RECORD_NATIVE)
         {
             APPEND("{ ");
             const int field_count = header->arity / 2;
@@ -1084,6 +1090,40 @@ static inline void perform_call(
     *pc = target_label;
 }
 
+/// Helper function to perform a call where arguments are stored in a heap-allocated array.
+/// This avoids code duplication in INSTR_FORCE for both symbolic data and suspended calls.
+static inline void perform_call_heap_args(
+    vm_t *vm,
+    int *pc, int *sp, int *fp, int *bp,
+    term_t **stack, size_t *stack_cap,
+    frame_t **frames, size_t *frames_cap,
+    int target_label, int arg_count, 
+    term_t *args_array, // Array of arguments from the heap (e.g. h->children)
+    int dst_reg, term_t closure_env, term_t thunk_ptr
+) {
+    if (__builtin_expect(*fp + 1 >= (int)*frames_cap, 0)) {
+        grow_frames_impl(vm, frames, frames_cap);
+    }
+
+    int needed = arg_count + STACK_FRAME_PADDING;
+    if (__builtin_expect(*sp + needed >= (int)*stack_cap, 0)) {
+        grow_stack_impl(vm, stack, stack_cap, needed);
+    }
+
+    (*frames)[(*fp)++] = (frame_t){ *pc, *bp, dst_reg, closure_env, thunk_ptr };
+
+    term_t *dst_args = (*stack) + (*sp);
+    if (arg_count > 0)
+        memcpy(dst_args, args_array, arg_count * sizeof(term_t));
+
+    memset(dst_args + arg_count, 0, STACK_FRAME_PADDING * sizeof(term_t));
+
+    // 6. Update VM registers
+    *bp = *sp;
+    *sp = *sp + needed;
+    *pc = target_label;
+}
+
 /// We can collect statistics for the VM. This collect the number of times each opcode is called
 /// and the average time each opcode took to execute.
 typedef struct
@@ -1225,13 +1265,21 @@ int run_vm(vm_t *vm_ptr, const int entry)
         case INSTR_TEST_TAG:
         {
             const term_t val = resolve_indirection(regs[instr.a]);
+            const sym_id_t toTest = (sym_id_t)instr.b;
+
             bool matches = false;
 
             if (IS_INT(val))
-                matches = ((sym_id_t)instr.b == SYM_INT_NATIVE);
+                matches = (toTest == SYM_INT_NATIVE);
+
+            else if (IS_CHAR(val))
+                matches = (toTest == SYM_CHAR_NATIVE);
 
             else if (IS_PTR(val))
-                matches = (AS_HEADER(val)->id == (sym_id_t)instr.b);
+                matches = (AS_HEADER(val)->id == toTest);
+
+            // If it's a float (PTR with SYM_FLOAT), it matches here because toTest == SYM_FLOAT
+            // If it's a string (PTR with SYM_STRING), it matches here because toTest == SYM_STRING
 
             if (!matches)
                 pc = labels[instr.c];
@@ -1485,7 +1533,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             // instr.a = dst register
             // instr.b = src register
 
-            term_t t = resolve_indirection(regs[instr.b]);
+            const term_t t = resolve_indirection(regs[instr.b]);
 
             // If not a pointer, it is a computed value.
             if (!IS_PTR(t))
@@ -1494,69 +1542,96 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 break;
             }
 
-            term_header_t *thunk = AS_HEADER(t);
+            term_header_t *h = AS_HEADER(t);
 
-            // Is this already a computed value?
-            if (thunk->id != SYM_THUNK && thunk->id != SYM_BLACK_HOLE && thunk->id != SYM_SUSPENDED_CALL)
+            // Try to evaluate symbolic data ("outermost strategy") if it's not a system tag.
+            if (IS_USER_DATA(h->id) && h->arity > 0)
+            {
+                const sym_id_t sym_id = h->id;
+                const int arg_count = h->arity;
+
+                // Search dispatch table for a matching function
+                int target = -1;
+                if (sym_id < vm_ptr->env_ptr->dispatch_table_capacity)
+                {
+                    dispatch_entry_t *entry = vm_ptr->env_ptr->dispatch_table[sym_id];
+                    while (entry != NULL)
+                    {
+                        if (entry->arity == arg_count)
+                        {
+                            target = labels[entry->label];
+                            break;
+                        }
+                        entry = entry->next;
+                    }
+                }
+
+                if (target != -1) // Found a function to call
+                {
+                    perform_call_heap_args(
+                        vm_ptr, &pc, &sp, &fp, &bp,
+                        &stack, &stack_capacity, &frames, &farmes_capacity,
+                        target,
+                        arg_count,
+                        h->children,    // Arguments are the children of the data
+                        instr.a,        // Destination register
+                        0,              // No closure env
+                        0               // Not a thunk update
+                    );
+                    break;
+                }
+
+                // If no function found, it's just a symbolic data.
+                regs[instr.a] = t;
+                break;
+            }
+
+            // If it's not a Thunk, BlackHole or SuspendedCall, it's a value (Record, String, etc.)
+            if (h->id != SYM_THUNK && h->id != SYM_BLACK_HOLE && h->id != SYM_SUSPENDED_CALL)
             {
                 regs[instr.a] = t;
                 break;
             }
 
-            // Cycle detection: mark as Black Hole or error if already marked.
             lock_and_check_thunk(t);
 
-            // Suspended calls are from substitutions and symbolic computations.
-            if (thunk->id == SYM_SUSPENDED_CALL)
+            // Suspended Call (from substitution).
+            if (h->id == SYM_SUSPENDED_CALL)
             {
-                // Laouyt: [Closure, Arg1, Arg2, ...]
-                const term_t closure_term = thunk->children[0];
+                // Layout: [Closure, Arg1, Arg2, ...]
+                const term_t closure_term = h->children[0];
                 const term_header_t *closure_h = AS_HEADER(closure_term);
-
-                // The closure contains [Label, EnvVar1, EnvVar2...]
                 const int target_label = (int)GET_INT(closure_h->children[0]);
-                const int arg_count = thunk->arity - 1; // The closure doest not count in the arity
+                const int arg_count = h->arity - 1;
 
-                if (fp + 1 >= (int)farmes_capacity)
-                    grow_frames_impl(vm_ptr, &frames, &farmes_capacity);
-
-                int needed = arg_count + STACK_FRAME_PADDING;
-                if (sp + needed >= (int)stack_capacity)
-                    grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
-
-                frames[fp++] = (frame_t){ pc, bp, instr.a, closure_term, t };
-
-                if (arg_count > 0)
-                    memcpy(&stack[sp], &thunk->children[1], arg_count * sizeof(term_t));
-                
-                memset(&stack[sp + arg_count], 0, STACK_FRAME_PADDING * sizeof(term_t));
-
-                bp = sp;
-                sp = sp + needed;
-                pc = labels[target_label];
+                perform_call_heap_args(
+                    vm_ptr, &pc, &sp, &fp, &bp,
+                    &stack, &stack_capacity, &frames, &farmes_capacity,
+                    labels[target_label],
+                    arg_count,
+                    &h->children[1], // Arguments start at index 1
+                    instr.a,
+                    closure_term,    // Use closure as environment
+                    t                // Update 't' with result (memoization)
+                );
                 break;
             }
 
-            // Otherwise, this is a thunk to be evaluated.
-
-            int target_label = (int)GET_INT(thunk->children[0]);
-
-            if (fp + 1 >= (int)farmes_capacity)
-                grow_frames_impl(vm_ptr, &frames, &farmes_capacity);
-
-            int needed = STACK_FRAME_PADDING; // a thunk has no argument (0 arity)
-            if (sp + needed >= (int)stack_capacity)
-                grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
-
-            // We pass a thunk as a `closure_env` so that all operations of accessing
-            // closure env variables remains the same with both closures and thunks.
-            // The last argument 't' is the thunk pointer itself, used for memoization in RET.
-            frames[fp++] = (frame_t){ pc, bp, instr.a, (term_t)thunk, t };
-
-            bp = sp;
-            sp = sp + needed;
-            pc = labels[target_label];
-
+            // A thunk for lazy evaluation.
+            // Layout: [Label, Capture1, Capture2...]
+            const int target_label = (int)GET_INT(h->children[0]);
+            
+            // Note: Thunks have 0 arguments for the call itself (captured vars are in closure_env)
+            perform_call_heap_args(
+                vm_ptr, &pc, &sp, &fp, &bp,
+                &stack, &stack_capacity, &frames, &farmes_capacity,
+                labels[target_label],
+                0,                  // No stack arguments
+                NULL,               // No source array needed
+                instr.a,
+                (term_t)h,          // The thunk is its own environment
+                t                   // Update 't' with result (memoization)
+            );
             break;
         }
 
@@ -1861,7 +1936,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             const term_t base = resolve_indirection(regs[instr.b]);
 
-            if (!IS_PTR(base) || AS_HEADER(base)->id != SYM_RECORD)
+            if (!IS_PTR(base) || AS_HEADER(base)->id != SYM_RECORD_NATIVE)
             {
                 fprintf(stderr, "Fatal error: expected a base record.\n");
                 return_value = EXIT_FAILURE;
@@ -1921,7 +1996,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             if (IS_PTR(t))
             {
                 term_header_t *h = AS_HEADER(t);
-                if (h->id == SYM_RECORD)
+                if (h->id == SYM_RECORD_NATIVE)
                 {
                     const int count = h->arity / 2;
                     for (int i = 0; i < count; i++)
@@ -1955,7 +2030,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             const size_t alloc_size = sizeof(term_header_t) + sizeof(term_t) + total_len + 1;
             term_header_t *term = GC_MALLOC_ATOMIC(alloc_size);
 
-            term->id = SYM_STRING;
+            term->id = SYM_STRING_NATIVE;
             term->arity = 0;
 
             char *buffer = (char*)((uintptr_t)term + sizeof(term_header_t) + sizeof(term_t));
@@ -1975,7 +2050,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             const char *s = term_to_string(vm_ptr->env_ptr, regs[instr.b], 0, NULL);
             term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(term_t));
 
-            term->id = SYM_STRING;
+            term->id = SYM_STRING_NATIVE;
             term->arity = 0;
 
             term->children[0] = (term_t)s;

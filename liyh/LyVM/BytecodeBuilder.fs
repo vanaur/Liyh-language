@@ -343,12 +343,17 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.GetUpvalue, dstIdx, index, 0, 0))
         dst
 
+    /// Test tag for user defined symbols.
     member public __.TestTag (Reg term, tagName: string, failLabel: int) =
         let tagId = InternTable.AtomTable.Intern tagName
         instructions.Add(Instr(OpCode.TestTag, term, tagId, failLabel, 0))
 
+    /// Test tag for system symbols.
+    member public __.TestTag (Reg term, tagId: int, failLabel: int) =
+        instructions.Add(Instr(OpCode.TestTag, term, tagId, failLabel, 0))
+
     member public __.TestRecord (Reg term, failLabel: int) =
-        instructions.Add(Instr(OpCode.TestTag, term, SYM_RECORD, failLabel, 0))
+        instructions.Add(Instr(OpCode.TestTag, term, SYM_RECORD_NATIVE, failLabel, 0))
 
     member public this.Delay (label: int, captures: Reg list) =
         let (blockStart, count) = this.PrepareBlock captures
@@ -567,12 +572,21 @@ module public PrettyPrinter =
         | Instr(OpCode.GetUpvalue, dst, index, _, _) ->
             $"    {reg dst} = upvalue[{index}]"
 
-        | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
-            $"    testtype {reg term} is record or {lbl failLabel}"
+        | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId < 0 ->
+            let tagName = 
+                match tagId with
+                | tagId when tagId = SYM_INT_NATIVE -> "INT"
+                | tagId when tagId = SYM_FLOAT_NATIVE -> "FLOAT"
+                | tagId when tagId = SYM_STRING_NATIVE -> "STRING"
+                | tagId when tagId = SYM_RECORD_NATIVE -> "RECORD"
+                | tagId when tagId = SYM_CHAR_NATIVE -> "CHAR"
+                | other -> failwithf "testtag with %A" other    // this may not happen
+
+            $"    testtag {reg term} is {tagName} or {lbl failLabel}"
 
         | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
             let tag = InternTable.AtomTable.Get(tagId)
-            $"    testtag {reg term} is {tag} or {lbl failLabel}"
+            $"    testtag {reg term} is atom :{tag} or {lbl failLabel}"
 
         | Instr(OpCode.Deconstruct, dst, term, index, _) ->
             $"    {reg dst} = deconstruct {reg term}[{index}]"
@@ -666,7 +680,7 @@ type public VM() =
                 let sym = intern_symbol (env, tag)
                 emit (env, int OpCode.Alloc, dst, int sym, count, childrenStart)
 
-            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when tagId = SYM_RECORD ->
+            | Instr(OpCode.TestTag, term, tagId, failLabel, _) when isSystemTag tagId ->
                 emit (env, int OpCode.TestTag, term, tagId, failLabel, 0)
 
             | Instr(OpCode.TestTag, term, tagId, failLabel, _) ->
@@ -1121,7 +1135,7 @@ module public AOT =
             | Instr(OpCode.LoadAtom, _, id, _, _) -> if id > maxAtomId then maxAtomId <- id
             | Instr(OpCode.Alloc, _, id, _, _) -> if id > maxAtomId then maxAtomId <- id
             | Instr(OpCode.GetField, _, _, id, _) -> if id > maxAtomId then maxAtomId <- id
-            | Instr(OpCode.TestTag, _, id, _, _) -> if id > maxAtomId then maxAtomId <- id
+            | Instr(OpCode.TestTag, _, id, _, _) -> if id >= 0 && id > maxAtomId then maxAtomId <- id
             | _ -> ()
 
         // Also ensure symbols from DispatchTable are included (even if not used in bytecode)
