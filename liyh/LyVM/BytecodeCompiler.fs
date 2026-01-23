@@ -155,7 +155,13 @@ module public BytecodeCompiler =
                             | Strategy.Lazy -> builder.Force(parentReg)
                             | _ -> parentReg
 
-                        builder.Deconstruct(effectiveParent, idx)
+                        let childReg = builder.Deconstruct(effectiveParent, idx)
+
+                        // Always force after deconstruction (because we don't know where the value comes from)
+                        // except for outermost (which wants to keep the symbolic structures)
+                        match context.Strategy with
+                        | Strategy.Outermost -> childReg
+                        | _ -> builder.Force(childReg)
 
                     | Field(parent, name) ->
                         let parentReg = compilePath context parent
@@ -180,7 +186,12 @@ module public BytecodeCompiler =
                         )
                         
                         builder.SetLabel(successLabel)
-                        res
+
+                        // Always force after deconstruction (because we don't know where the value comes from)
+                        // except for outermost (which wants to keep the symbolic structures)
+                        match context.Strategy with
+                        | Strategy.Outermost -> res
+                        | _ -> builder.Force(res)
 
                 context.PathCache <- Map.add path reg context.PathCache
                 reg
