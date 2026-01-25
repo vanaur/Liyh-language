@@ -132,53 +132,6 @@ type public Reg =
 module public Reg =
     let public (|Reg|) (reg: Reg) = reg.Index
 
-[<AutoOpen>]
-module public ByteCodeInstr =
-
-    [<Struct>]
-    type public RegUsage =
-        { Dest: int
-          Used: int list }
-
-    /// Classify the use of registers in the given instruction.
-    let public classifyRegisterUsage (instr: ByteCodeInstr) =
-        match instr with
-        | Instr(op, a, b, c, d) ->
-            match op with
-            | OpCode.Halt
-            | OpCode.Jump
-            | OpCode.Reserve -> None
-            | OpCode.Mov -> Some { Dest = a; Used = [b] }
-            | OpCode.JumpFalse
-            | OpCode.JumpTrue -> Some { Dest = -1; Used = [a] }
-            | OpCode.Print -> Some { Dest = -1; Used = [a] }
-            | OpCode.LoadInt
-            | OpCode.LoadChar
-            | OpCode.LoadFloat
-            | OpCode.LoadAtom
-            | OpCode.LoadString -> Some { Dest = a; Used = [] }
-            | OpCode.Add | OpCode.Sub | OpCode.Mul | OpCode.Div | OpCode.Mod
-            | OpCode.Equal | OpCode.NotEqual | OpCode.Le | OpCode.Leq | OpCode.Ge | OpCode.Geq
-            | OpCode.StrCat -> Some { Dest = a; Used = [b; c] }
-            | OpCode.Neg
-            | OpCode.Not -> Some { Dest = a; Used = [b] }
-            | OpCode.Call
-            | OpCode.Apply
-            | OpCode.CallClosure -> Some { Dest = d; Used = [b .. b + c - 1] }
-            | OpCode.Tailcall -> Some { Dest = -1; Used = [b .. b + c - 1] }
-            | OpCode.Ret -> Some { Dest = -1; Used = [a] }
-            | OpCode.Closure -> Some { Dest = a; Used = [d .. d + c - 1] }
-            | OpCode.GetUpvalue -> Some { Dest = a; Used = [] }
-            | OpCode.Alloc -> Some { Dest = a; Used = [d .. d + c - 1] }
-            | OpCode.MkRecord -> Some { Dest = a; Used = [c .. c + b - 1] }
-            | OpCode.ExtendRecord -> Some { Dest = a; Used = [b] @ [d .. d + c - 1] }
-            | OpCode.GetField -> Some { Dest = a; Used = [b] }
-            | OpCode.TestTag -> Some { Dest = -1; Used = [a] }
-            | OpCode.Deconstruct -> Some { Dest = a; Used = [b] }
-            | OpCode.PPShow -> Some { Dest = a; Used = [b] }
-            | _ -> None
-        | _ -> None
-
 [<Struct>]
 type public Strategy =
     | Strict
