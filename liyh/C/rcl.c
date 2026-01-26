@@ -18,8 +18,24 @@
 #include <float.h>
 #include <time.h>
 
+//
 // We use Boehm GC for the automatic memory management. It is assumed that the user or
 // installer has installed the required dependencies.
+//
+// We mainly make usage of
+//
+//  - `GC_MALLOC` : classical memory allocation.
+//  - `GC_MALLOC_ATOMIC` : allocation for pointerless data (more efficient for the mark and sweep phase).
+//
+// but we still use standard `malloc` and `free` where local and temporary computations have to be done, so that
+// the GC pressure is reduced and the program run faster at those spots.
+//
+// Known drawbacks:
+//
+//  - memory can leak sometime (because of the conservative nature of the GC)
+//  - acceptable performance, but generally less suitable for languages that allocate memory like crazy
+//  - high dependency of this external dependency
+//
 
 #if __has_include(<gc.h>)
 #  include <gc.h>
@@ -37,7 +53,7 @@ typedef uint32_t sym_id_t;
 #define TAG_PTR         0x0 // tagged pointer (ptr)
 #define TAG_INT         0x1 // tagged pointer (int)
 #define TAG_CHAR        0x2 // tagged pointer (char)
-#define TAG_MASK        0x3
+#define TAG_MASK        0x3 // extract the 2 least significant bits
 
 #define IS_PTR(x)       (((x) & TAG_MASK) == TAG_PTR)
 #define IS_INT(x)       (((x) & TAG_MASK) == TAG_INT)
@@ -62,14 +78,16 @@ typedef uint32_t sym_id_t;
 #define SYM_THUNK           0xFFFFFFF8  // Thunk for lazy evaluation (delays)
 #define SYM_INDIRECT        0xFFFFFFF9  // Indirections in lazy evaluation
 
-#define IS_SYSTEM_TAG(id)   ((id) >= SYM_CHAR_NATIVE)
-#define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)
+#define IS_SYSTEM_TAG(id)   ((id) >= SYM_CHAR_NATIVE)   // identify internal tags
+#define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)    // identify user defined data
 
+// This type represents the "header" for "structured terms", it serves as a basis for
+// each high level composed types (symbolic expressions, closures, records, ...)
 typedef struct
 {
-    sym_id_t id;
-    uint32_t arity;
-    term_t children[];
+    sym_id_t id;            // Identify the symbol id
+    uint32_t arity;         // Number of children
+    term_t children[];      // Children array
 } term_header_t;
 
 #define AS_HEADER(val)  ((term_header_t *)(val))
@@ -78,86 +96,86 @@ typedef enum
 {
     // jump instructions
 
-    INSTR_HALT,
-    INSTR_JUMP,
-    INSTR_JUMP_FALSE,
-    INSTR_JUMP_TRUE,
+    INSTR_HALT,                                         // HALT exit_code, _, _, _
+    INSTR_JUMP,                                         // JUMP label, _, _, _
+    INSTR_JUMP_FALSE,                                   // JUMP_FALSE src_reg, label, _, _
+    INSTR_JUMP_TRUE,                                    // JUMP_TRUE src_reg, label, _, _
 
     // function calling instructions
 
-    INSTR_RESERVE,
-    INSTR_CALL,
-    INSTR_TAILCALL,
-    INSTR_RET,
-    INSTR_APPLY,
-    INSTR_MOV,
+    INSTR_RESERVE,                                      // RESERVE count, _, _, _
+    INSTR_CALL,                                         // CALL label, arg_offset, arg_count, dst_reg
+    INSTR_TAILCALL,                                     // TAILCALL label, arg_offset, arg_count, _
+    INSTR_RET,                                          // RET src_reg, _, _, _
+    INSTR_APPLY,                                        // APPLY fn_reg, arg_offset, arg_count, dst_reg
+    INSTR_MOV,                                          // MOV dst_reg, src_reg, _, _
 
     // literal and atom loading instructions
 
-    INSTR_LOAD_INT,
-    INSTR_LOAD_ATOM,
-    INSTR_LOAD_FLOAT,
-    INSTR_LOAD_CHAR,
-    INSTR_LOAD_STRING,
+    INSTR_LOAD_INT,                                     // LOAD_INT dst_reg, value, _, _
+    INSTR_LOAD_ATOM,                                    // LOAD_ATOM dst_reg, sym_id, _, _
+    INSTR_LOAD_FLOAT,                                   // LOAD_FLOAT dst_reg, hi_bits, lo_bits, _
+    INSTR_LOAD_CHAR,                                    // LOAD_CHAR dst_reg, value, _, _
+    INSTR_LOAD_STRING,                                  // LOAD_STRING dst_reg, str_index, _, _
 
     // native arithmetic instructions
 
-    INSTR_ADD,
-    INSTR_SUB,
-    INSTR_MUL,
-    INSTR_DIV,
-    INSTR_MOD,
-    INSTR_NEG,
+    INSTR_ADD,                                          // ADD dst_reg, lhs_reg, rhs_reg, _
+    INSTR_SUB,                                          // SUB dst_reg, lhs_reg, rhs_reg, _
+    INSTR_MUL,                                          // MUL dst_reg, lhs_reg, rhs_reg, _
+    INSTR_DIV,                                          // DIV dst_reg, lhs_reg, rhs_reg, _
+    INSTR_MOD,                                          // MOD dst_reg, lhs_reg, rhs_reg, _
+    INSTR_NEG,                                          // NEG dst_reg, src_reg, _, _
 
     // native boolean instructions
 
-    INSTR_EQUAL,
-    INSTR_NOT_EQUAL,
-    INSTR_NOT,
-    INSTR_LEQ,
-    INSTR_LE,
-    INSTR_GE,
-    INSTR_GEQ,
+    INSTR_EQUAL,                                        // EQUAL dst_reg, lhs_reg, rhs_reg, _
+    INSTR_NOT_EQUAL,                                    // NOT_EQUAL dst_reg, lhs_reg, rhs_reg, _
+    INSTR_NOT,                                          // NOT dst_reg, src_reg, _, _
+    INSTR_LEQ,                                          // LEQ dst_reg, lhs_reg, rhs_reg, _
+    INSTR_LE,                                           // LE dst_reg, lhs_reg, rhs_reg, _
+    INSTR_GE,                                           // GE dst_reg, lhs_reg, rhs_reg, _
+    INSTR_GEQ,                                          // GEQ dst_reg, lhs_reg, rhs_reg, _
 
     // native string concatenation instruction
 
-    INSTR_STR_CAT,
+    INSTR_STR_CAT,                                      // STR_CAT dst_reg, lhs_reg, rhs_reg, _
 
     // record specific instructions
 
-    INSTR_MK_RECORD,
-    INSTR_EXTEND_RECORD,
-    INSTR_GET_FIELD,
+    INSTR_MK_RECORD,                                    // MK_RECORD dst_reg, pair_count, start_reg, _
+    INSTR_EXTEND_RECORD,                                // EXTEND_RECORD dst_reg, base_reg, ext_count, ext_start
+    INSTR_GET_FIELD,                                    // GET_FIELD dst_reg, record_reg, field_id, fail_label
 
     // symbolic data allocation instruction
 
-    INSTR_ALLOC,
-    INSTR_SUBST,
+    INSTR_ALLOC,                                        // ALLOC dst_reg, sym_id, arity, src_offset
+    INSTR_SUBST,                                        // SUBST dst_reg, src_reg, atom_reg, repl_reg
 
     // closure specific instructions
 
-    INSTR_CLOSURE,
-    INSTR_CALL_CLOSURE,
-    INSTR_GET_UPVALUE,
+    INSTR_CLOSURE,                                      // CLOSURE dst_reg, label, upval_count, upval_start
+    INSTR_CALL_CLOSURE,                                 // CALL_CLOSURE cl_reg, arg_offset, arg_count, dst_reg
+    INSTR_GET_UPVALUE,                                  // GET_UPVALUE dst_reg, upval_index, _, _
 
     // pattern matching specific instructions
 
-    INSTR_TEST_TAG,
-    INSTR_DECONSTRUCT,
+    INSTR_TEST_TAG,                                     // TEST_TAG src_reg, tag_id, fail_label, _
+    INSTR_DECONSTRUCT,                                  // DECONSTRUCT dst_reg, src_reg, index, _
 
     // lazy evaluation instructions
 
-    INSTR_DELAY,
-    INSTR_FORCE,
+    INSTR_DELAY,                                        // DELAY dst_reg, label, capture_count, capture_start
+    INSTR_FORCE,                                        // FORCE dst_reg, src_reg, _, _
 
     // debugging instruction
 
-    INSTR_PPSHOW,
-    INSTR_PRINT,
+    INSTR_PPSHOW,                                       // PPSHOW dst_reg, src_reg, _, _
+    INSTR_PRINT,                                        // PRINT str_reg, _, _, _
 } opcode_t;
 
 /// The number of opcdes.
-#define OPCODE_NUMBER ((int)INSTR_PRINT)
+#define OPCODE_NUMBER ((int)INSTR_PRINT)  // (`INSTR_PRINT` must be the last opcode)
 
 /// String representation of the opcodes for debugging purpose.
 static const char* opcode_names[] = {
@@ -202,14 +220,15 @@ static const char* opcode_names[] = {
     [INSTR_DECONSTRUCT] =   "DECONSTRUCT",
     [INSTR_DELAY] =         "DELAY",
     [INSTR_FORCE] =         "FORCE",
+    [INSTR_PPSHOW] =        "PPSHOW",
     [INSTR_PRINT] =         "PRINT",
 };
 
-/// Four-address code instruction.
+/// Four-operands instruction.
 typedef struct
 {
-    opcode_t op;
-    int a, b, c, d;
+    opcode_t op;        // instruction opcode
+    int a, b, c, d;     // arguments (some may be unset / unused (usualy set to 0 if so))
 } instr_t;
 
 typedef struct atom
@@ -228,27 +247,27 @@ typedef struct dispatch_entry
 
 typedef struct
 {
-    instr_t *program;
-    size_t program_size;
-    size_t program_capacity;
+    instr_t *program;                           // array of bytecode instructions
+    size_t program_size;                        // actual size of the program
+    size_t program_capacity;                    // allocated size for the program
 
-    int *labels;
-    size_t labels_capacity;
+    int *labels;                                // label table
+    size_t labels_capacity;                     // allocated size for the labels
 
     // Strings are constant and cached.
 
-    char **string_pool;
-    size_t string_pool_count;
-    size_t string_pool_capacity;
+    char **string_pool;                         // pool for constant strings
+    size_t string_pool_count;                   // actual size of the string pool
+    size_t string_pool_capacity;                // allocated size for the string pool
 
     // Symbols are constants and cached.
 
-    atom_t **symbol_pool;
-    size_t symbol_pool_count;
-    size_t symbol_counter;
+    atom_t **symbol_pool;                       // pool for constant symbols
+    size_t symbol_pool_count;                   // actual size of the symbol pool
+    size_t symbol_counter;                      // allocated size for the symbol pool
 
-    dispatch_entry_t **dispatch_table;
-    size_t dispatch_table_capacity;
+    dispatch_entry_t **dispatch_table;          // dispatch table of functions by symbol/arity
+    size_t dispatch_table_capacity;             // allocated size for the dispatch table
 } vm_env_t;
 
 #define INITIAL_CAPACITY    1024    // arbitrary
@@ -801,6 +820,8 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
     return root;
 }
 
+// We will not pretty print structures that are too deep; we will stop at an arbitrary limit.
+// If the user wishes to pretty print deep structures, it is preferable that they provide their own solution.
 #define MAX_PRETTY_PRINT_DEPTH  50
 
 /// Return a pointer to a string associated to a pretty print of the term.
@@ -818,8 +839,8 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
         int needed = snprintf(buffer + length, capacity - length, fmt, ##__VA_ARGS__); \
         if (needed >= (int)(capacity - length)) { \
             capacity = length + needed + 256; \
-            char *new_buf = GC_realloc(buffer, capacity); \
-            if (!new_buf) { GC_free(buffer); return NULL; } \
+            char *new_buf = GC_REALLOC(buffer, capacity); \
+            if (!new_buf) { GC_FREE(buffer); return NULL; } \
             buffer = new_buf; \
             snprintf(buffer + length, capacity - length, fmt, ##__VA_ARGS__); \
         } \
@@ -908,7 +929,7 @@ static void io_print_term(vm_env_t *env_ptr, const term_t term)
 {
     char *s = term_to_string(env_ptr, term, 0, NULL);
     printf("%s", s);
-    GC_free(s);
+    GC_FREE(s);
 }
 
 
@@ -919,25 +940,58 @@ static void io_print_term(vm_env_t *env_ptr, const term_t term)
 #define INITIAL_FRAMES_CAPACITY 2048 // arbitrary
 #define STACK_FRAME_PADDING     16
 
+/*
+The VM is a stack-based virtual machine with register windows.
+
+Temporary virtual registers reside in a single linear stack (`stack[]`), 
+but the architecture mainly uses two distinct memory areas at runtime:
+
+ - `stack[]`: window of active virtual registers (offsets relative to bp)
+ - `frames[]`: stack of call frames containing metadata (ret_pc, prev_bp, etc.)
+
+The execution stack (`stack[]`) and the frame stack (`frames[]`) follow 
+a LIFO discipline for managing function calls.
+
+Virtual registers are aliases over the stack:
+they are implemented as offsets relative to a base pointer (bp).
+The stack is not directly accessible to the user or compiler.
+The stack is the memory model, while the registers are the access model.
+
+Conceptually:
+  regs = &stack[bp]
+  regs[i] = stack[bp + i]
+
+Registers are not fixed locations and their count is not predefined.
+The size of the current register window is determined dynamically
+by INSTR_RESERVE, which advances sp.
+
+Each CALL pushes a frame recording the previous bp.
+On RET, bp is restored from the frame.
+sp always marks the upper bound of the current register window.
+*/
+
+// Calling frame.
 typedef struct
 {
-    int ret_pc;
-    int prev_bp;
-    int dst_reg;
-    term_t closure_env;
-    term_t thunk;
+    int ret_pc;                 // the return program counter (pc of return)
+    int prev_bp;                // previous base pointer
+    int dst_reg;                // destination register for the result
+
+    term_t closure_env;         // closure environment (can be set to 0)
+    term_t thunk;               // thunk for lazy evaluation (can be set to 0)
 } frame_t;
 
+// Execution state (VM).
 typedef struct
 {
-    term_t *stack;
-    size_t stack_capacity;
+    term_t *stack;              // evaluation stack
+    size_t stack_capacity;      // allocated size for the stack
 
-    frame_t *frames;
-    size_t frames_capacity;
+    frame_t *frames;            // call stack frames
+    size_t frames_capacity;     // allocated size for the call stack frames
 
-    int sp, bp, fp, pc;
-    vm_env_t *env_ptr;
+    int sp, bp, fp, pc;         // Stack Pointer, Base Pointer, Frame Pointer, Program Counter
+    vm_env_t *env_ptr;          // Environment pointer
 } vm_t;
 
 /// Creates a new VM and returns a pointer to it.
@@ -975,7 +1029,7 @@ void destroy_vm(vm_t *vm_ptr)
     vm_ptr = NULL;
 }
 
-/// Sets a recursion limit by limmiting the number of frames.
+// Sets a recursion limit by limmiting the number of frames.
 
 #define LIMIT               (256)               // arbitrary ~256MB (not small but not too big),
 #define DIVISOR             (1024 * 1024)       // allowing very deep recursion
@@ -1037,6 +1091,7 @@ static void grow_frames(vm_t *vm_ptr)
     vm_ptr->frames_capacity = new_capacity;
 }
 
+/// Grows the stack and check for recursion limit.
 static inline void grow_stack_impl(vm_t *vm, term_t **stack, size_t *cap, int needed)
 {
     vm->stack = *stack; // Sync
@@ -1045,6 +1100,7 @@ static inline void grow_stack_impl(vm_t *vm, term_t **stack, size_t *cap, int ne
     *cap = vm->stack_capacity;
 }
 
+/// Grows the frames and check for recursion limit.
 static inline void grow_frames_impl(vm_t *vm, frame_t **frames, size_t *cap)
 {
     vm->frames = *frames; // Sync
@@ -1053,6 +1109,7 @@ static inline void grow_frames_impl(vm_t *vm, frame_t **frames, size_t *cap)
     *cap = vm->frames_capacity;
 }
 
+/// Helper function to perform a call.
 static inline void perform_call(
     vm_t *vm,
     int *pc, int *sp, int *fp, int *bp,
@@ -1236,7 +1293,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
     while (run)
     {
         const instr_t instr = program[pc++];
-        term_t *regs = &stack[bp];
+        term_t *regs = &stack[bp]; // virtual registers are indexed relative to the base pointer
 
         #ifdef STATS
 
@@ -2110,7 +2167,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
 #ifdef EMBEDDED
 
 /*
-* In ‘AOT compilation’, the runtime and VM are integrated into a C file that will be compiled with the
+* In 'AOT compilation', the runtime and VM are integrated into a C file that will be compiled with the
 * generated bytecode directly integrated. The resulting executable will therefore still be interpreted
 * code, but with instant start-up time.
 * */
