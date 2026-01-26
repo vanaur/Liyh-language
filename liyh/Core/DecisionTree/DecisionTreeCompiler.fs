@@ -250,6 +250,72 @@ module DecisionTreeCompiler =
                 let (bySymbol, byLiteral, byRecord, defaults, others) =
                     partitionByConstructor path uniqueOccurrences
 
+                // Identify the highest priority default rule (wildcard or variable).
+                let bestDefault = List.tryHead defaults
+
+                // Determine the highest priority (lowest index) among all specific rules.
+                // We need this to ensure the default rule strictly precedes any specific rule.
+                let minSpecificIndex =
+                    let s = bySymbol |> Map.toSeq |> Seq.collect snd |> Seq.map _.RuleIndex
+                    let l = byLiteral |> Map.toSeq |> Seq.collect snd |> Seq.map _.RuleIndex
+                    let r = byRecord |> Seq.map _.RuleIndex
+
+                    Seq.append s (Seq.append l r)
+                    |> Seq.fold min System.Int32.MaxValue
+
+                //
+                // Generating a Switch forces evaluation of the pattern matched argument, which breaks
+                // lazy evaluation semantics. For example, in `(true || bomb[])` where `bomb[] -> bomb[]`,
+                // the second argument must never be evaluated if `(_ || _)` is lazy.
+                //
+                // Safety conditions for skipping the Switch:
+                // 1. The default rule has higher priority (lower RuleIndex) than all specific rules
+                // 2. The default rule has no when-clause
+                // 3. The default rule matches unconditionally on all paths:
+                //    - Only Wildcards (always match)
+                //    - Only fresh Variables (bind without checking)
+                //    - No repeated variables (would require equality checks)
+                //    - No constructors or literals (would require type/value checks)
+                //
+                // If these conditions hold, the specific rules are unreachable, and we can safely
+                // skip to compileBindings without generating a Switch.
+                //
+
+                let shadowAllSpecifics =
+                    match bestDefault with
+                    | Some def when def.RuleIndex < minSpecificIndex && def.WhenClause.IsNone ->
+
+                        // We must check all remaining paths for this rule to ensure it's truly unconditional.
+                        let pathsToCheck = path :: (matrix.RemainingPaths |> List.filter (( <> ) path))
+
+                        let rec checkPaths paths seenVars =
+                            match paths with
+                            | [] -> true
+                            | p :: rest ->
+                                match safeAccess p def.Pattern with
+                                | Wildcard -> checkPaths rest seenVars
+                                | Variable v ->
+                                    // Check for linear patterns
+                                    let isBoundPreviously = def.Bindings.ContainsKey v
+                                    let isBoundCurrently = Set.contains v seenVars
+
+                                    if isBoundPreviously || isBoundCurrently then false
+                                    else checkPaths rest (Set.add v seenVars)
+
+                                // Specific patterns (Literals, etc.) in other paths mean this rule is conditional.
+                                | _ -> false
+
+                        checkPaths pathsToCheck Set.empty
+
+                    | _ -> false
+
+                // If shadowing is active, we discard the specific cases.
+                let (bySymbol, byLiteral, byRecord) =
+                    if shadowAllSpecifics then
+                        (Map.empty, Map.empty, [])
+                    else
+                        (bySymbol, byLiteral, byRecord)
+
                 let allDefaults = defaults @ others
 
                 if not (Map.isEmpty bySymbol)
