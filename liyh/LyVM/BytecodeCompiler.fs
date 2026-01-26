@@ -676,11 +676,11 @@ module public BytecodeCompiler =
                 Some rawResult
             | _ -> None
 
-        and compileTree 
-            (ctx: CompilationContext) 
-            (tree: DecisionTree) 
-            (onMatch: int -> CompilationContext -> Reg) 
-            (fallback: unit -> Reg) 
+        and compileTree
+            (ctx: CompilationContext)
+            (tree: DecisionTree)
+            (onMatch: int -> CompilationContext -> Reg)
+            (fallback: unit -> Reg)
             : Reg =
 
             let inline branchContext (ctx': CompilationContext) =
@@ -690,8 +690,8 @@ module public BytecodeCompiler =
             | Fail -> fallback()
 
             | Leaf(ruleIndex, bindings) ->
-                let newEnv = 
-                    bindings 
+                let newEnv =
+                    bindings
                     |> Map.fold (fun env varName path ->
                         let reg = compilePath ctx path
                         Map.add varName reg env
@@ -703,13 +703,26 @@ module public BytecodeCompiler =
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
 
-                let testReg =
+                let shouldForce =
                     match ctx.Strategy with
-                    | Strategy.Lazy -> builder.Force(pathReg)
-                    | _ -> pathReg
+                    | Strategy.Lazy -> true
+                    | Strategy.Outermost ->
+                        let involvesFunctionMatching =
+                            cases
+                            |> Map.exists (fun (name, arity) _ ->
+                                DispatchTable.contains (name, arity) ctx.Global.SymbolLabels
+                            )
+
+                        not involvesFunctionMatching
+
+                    | _ -> false
+
+                let testReg =
+                    if shouldForce then builder.Force(pathReg)
+                    else pathReg
 
                 builder.Scope(fun () ->
-                    let phiReg = builder.Alloc() 
+                    let phiReg = builder.Alloc()
 
                     for KeyValue((tag, _), subTree) in cases do
                         let nextLbl = freshLabel()
@@ -719,13 +732,13 @@ module public BytecodeCompiler =
                         builder.Mov(phiReg, res)
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
-                    
+
                     match defaultCase with
                     | Some def ->
                         let ctxDefault = branchContext ctx
                         let res = compileTree ctxDefault def onMatch fallback
                         builder.Mov(phiReg, res)
-                    | None -> 
+                    | None ->
                         let res = fallback()
                         builder.Mov(phiReg, res)
 
@@ -739,7 +752,7 @@ module public BytecodeCompiler =
 
                 let testReg =
                     match ctx.Strategy with
-                    | Strategy.Lazy -> builder.Force(pathReg)
+                    | (Strategy.Outermost | Strategy.Lazy) -> builder.Force(pathReg)
                     | _ -> pathReg
 
                 builder.Scope(fun () ->
@@ -747,13 +760,13 @@ module public BytecodeCompiler =
 
                     for KeyValue(lit, subTree) in cases do
                         let nextLbl = freshLabel()
-                        let litReg = 
-                            match lit with 
+                        let litReg =
+                            match lit with
                             | Integer i -> builder.LoadInt(int i)
                             | Float f -> builder.LoadFloat(f)
                             | String s -> builder.LoadString(s)
                             | Char c -> builder.LoadChar(c)
-                        
+
                         let eq = builder.Eq(testReg, litReg)
                         builder.JumpFalse(eq, nextLbl)
 
@@ -769,26 +782,26 @@ module public BytecodeCompiler =
                         let res = compileTree ctxDefault def onMatch fallback
                         builder.Mov(phiReg, res)
 
-                    | None -> 
+                    | None ->
                         let res = fallback()
                         builder.Mov(phiReg, res)
-                    
+
                     builder.SetLabel(endLabel)
                     phiReg
                 )
 
             | WhenGuard(guardExpr, bindings, successTree, failureTreeOpt) ->
                 builder.Scope(fun () ->
-                    let guardEnv = 
+                    let guardEnv =
                         bindings |> Map.fold (fun env varName path ->
                             Map.add varName (compilePath ctx path) env
                         ) ctx.Env
                     let guardCtx = { ctx with Env = guardEnv }
-                    
+
                     let guardReg = compileTerm guardCtx false guardExpr
-                    let trueAtom = builder.LoadAtom(Builtin.True) 
+                    let trueAtom = builder.LoadAtom(Builtin.True)
                     let isTrue = builder.Eq(guardReg, trueAtom)
-                    
+
                     let failLabel = freshLabel()
                     let endLabel = freshLabel()
                     let phiReg = builder.Alloc()
@@ -822,22 +835,22 @@ module public BytecodeCompiler =
 
                 let testReg =
                     match ctx.Strategy with
-                    | Strategy.Lazy -> builder.Force(pathReg)
+                    | (Strategy.Outermost | Strategy.Lazy) -> builder.Force(pathReg)
                     | _ -> pathReg
 
                 builder.Scope(fun () ->
                     for KeyValue(t, subTree) in cases do
                         let nextLbl = freshLabel()
-                        
+
                         match t with
-                        | TRecord -> builder.TestRecord(testReg, nextLbl) 
+                        | TRecord -> builder.TestRecord(testReg, nextLbl)
                         | _ -> builder.Jump(nextLbl)
 
                         let ctxBranch = branchContext ctx
                         let res = compileTree ctxBranch subTree onMatch fallback
                         builder.Mov(phiReg, res)
                         builder.Jump(endLabel)
-                        
+
                         builder.SetLabel(nextLbl)
 
                     match defaultCase with
@@ -846,7 +859,7 @@ module public BytecodeCompiler =
                         let res = compileTree ctxDefault d onMatch fallback
                         builder.Mov(phiReg, res)
 
-                    | None -> 
+                    | None ->
                         let res = fallback()
                         builder.Mov(phiReg, res)
 
