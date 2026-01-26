@@ -4,9 +4,9 @@
  * @brief Runtime Core Library (RCL) for the Liyh language.
  * @version 0.1
  * @date 2025-12-25
- * 
+ *
  * @copyright Copyright (c) 2025
- * 
+ *
  */
 
 #include <stdlib.h>
@@ -19,7 +19,7 @@
 #include <time.h>
 
 // We use Boehm GC for the automatic memory management. It is assumed that the user or
-// installer has installed the required dependencies. 
+// installer has installed the required dependencies.
 
 #if __has_include(<gc.h>)
 #  include <gc.h>
@@ -289,7 +289,7 @@ void destroy_env(vm_env_t *env_ptr)
 
     for (size_t i = 0; i < env_ptr->string_pool_count; i++)
         free(env_ptr->string_pool[i]);
-    
+
     env_ptr = NULL;
 }
 
@@ -401,7 +401,7 @@ void set_label(vm_env_t *env_ptr, const int label)
         memset(new_labels, -1, new_cap * sizeof(int));
         if (env_ptr->labels != NULL && env_ptr->labels_capacity > 0)
             memcpy(new_labels, env_ptr->labels, env_ptr->labels_capacity * sizeof(int));
-        
+
         env_ptr->labels = new_labels;
         env_ptr->labels_capacity = new_cap;
     }
@@ -465,7 +465,7 @@ static term_t resolve_indirection(term_t term)
 {
     while (IS_PTR(term) && AS_HEADER(term)->id == SYM_INDIRECT)
         term = AS_HEADER(term)->children[0];
-    
+
     return term;
 }
 
@@ -533,7 +533,7 @@ static double get_float(term_t term)
         }
     }
 
-    fprintf(stderr, "Runtime Error: Expected number (int/float), got type ID %u (or raw %lu)\n", 
+    fprintf(stderr, "Runtime Error: Expected number (int/float), got type ID %u (or raw %lu)\n",
             IS_PTR(term) ? AS_HEADER(term)->id : 0, (unsigned long)term);
     exit(1);
 }
@@ -569,7 +569,7 @@ static int compare_fields(const void *a, const void *b)
 {
     const record_field_t *fa = (const record_field_t *)a;
     const record_field_t *fb = (const record_field_t *)b;
-    
+
     return (int)fa->key - (int)fb->key;
 }
 
@@ -623,7 +623,7 @@ static bool term_equals(term_t root_a, term_t root_b)
 
     if ((root_a & TAG_MASK) != (root_b & TAG_MASK))
         return false;
-    
+
     if (IS_INT(root_a) || IS_CHAR(root_a))
         return false;
 
@@ -719,7 +719,7 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
         const int count = h->arity / 2;
         bool changed = false;
 
-        term_t new_children[h->arity]; 
+        term_t new_children[h->arity];
         memcpy(new_children, h->children, h->arity * sizeof(term_t));
 
         for (int i = 0; i < count; i++)
@@ -779,7 +779,7 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
 
             else if (IS_PTR(repl))
             {
-                const sym_id_t new_id = AS_HEADER(repl)->id; 
+                const sym_id_t new_id = AS_HEADER(repl)->id;
                 term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
                 new_term->id = new_id;
                 new_term->arity = h->arity;
@@ -896,9 +896,9 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
 
     else
         APPEND("<?>");
-    
+
     #undef APPEND
-    
+
     if (out_len) *out_len = length;
     return buffer;
 }
@@ -932,7 +932,7 @@ typedef struct
 {
     term_t *stack;
     size_t stack_capacity;
-    
+
     frame_t *frames;
     size_t frames_capacity;
 
@@ -992,7 +992,7 @@ static void grow_stack(vm_t *vm_ptr, const int needed)
         new_capacity = vm_ptr->stack_capacity + needed + 1024;
 
     const size_t new_size_bytes = new_capacity * sizeof(term_t);
-    
+
     if (new_size_bytes > MAX_STACK_BYTES)
     {
         fprintf(stderr, "Fatal Error: Stack Overflow.\n");
@@ -1077,7 +1077,7 @@ static inline void perform_call(
     // Copy the arguments.
     term_t *src_args = (*stack) + (*bp) + args_src_offset;
     term_t *dst_args = (*stack) + (*sp);
-    
+
     if (arg_count > 0)
         memcpy(dst_args, src_args, arg_count * sizeof(term_t));
 
@@ -1097,7 +1097,7 @@ static inline void perform_call_heap_args(
     int *pc, int *sp, int *fp, int *bp,
     term_t **stack, size_t *stack_cap,
     frame_t **frames, size_t *frames_cap,
-    int target_label, int arg_count, 
+    int target_label, int arg_count,
     term_t *args_array, // Array of arguments from the heap (e.g. h->children)
     int dst_reg, term_t closure_env, term_t thunk_ptr
 ) {
@@ -1300,7 +1300,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             if (__builtin_expect(needed >= (int)stack_capacity, 0))
                 grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
-            
+
             if (needed > sp)
             {
                 memset(stack + sp, 0, (needed - sp) * sizeof(term_t));
@@ -1315,7 +1315,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             pc = labels[instr.a];
             break;
         }
-        
+
         // jump if false, otherwise continue;
         case INSTR_JUMP_FALSE:
         {
@@ -1324,7 +1324,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             break;
         }
-        
+
         // jump if true, otherwise continue;
         case INSTR_JUMP_TRUE:
         {
@@ -1402,7 +1402,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
                     // Jump to the new thunk.
                     pc = labels[(int)GET_INT(AS_HEADER(deep_res)->children[0])];
-                    break; 
+                    break;
                 }
             }
 
@@ -1480,10 +1480,10 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 term_header_t *h = GC_MALLOC(sizeof(term_header_t) + count * sizeof(term_t));
                 h->id = sym_id;
                 h->arity = count;
-                
+
                 for (int i = 0; i < count; i++)
                     h->children[i] = regs[instr.b + i];
-                    
+
                 regs[instr.d] = (term_t)h;
             }
             break;
@@ -1620,7 +1620,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             // A thunk for lazy evaluation.
             // Layout: [Label, Capture1, Capture2...]
             const int target_label = (int)GET_INT(h->children[0]);
-            
+
             // Note: Thunks have 0 arguments for the call itself (captured vars are in closure_env)
             perform_call_heap_args(
                 vm_ptr, &pc, &sp, &fp, &bp,
@@ -1640,19 +1640,19 @@ int run_vm(vm_t *vm_ptr, const int entry)
             regs[instr.a] = MAKE_INT(instr.b);
             break;
         }
-        
+
         case INSTR_LOAD_CHAR:
         {
             regs[instr.a] = MAKE_CHAR((uint32_t)instr.b);
             break;
         }
-        
+
         case INSTR_LOAD_STRING:
         {
             regs[instr.a] = make_string(vm_ptr->env_ptr->string_pool[instr.b]);
             break;
         }
-        
+
         case INSTR_LOAD_FLOAT:
         {
             // floats are encoded as two 32 bits integers
@@ -1767,7 +1767,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             {
                 const double numerator = get_float(l);
                 const double denominator = get_float(r);
-                
+
                 if (denominator == 0.0)
                 {
                     fprintf(stderr, "Fatal error: Division by zero\n");
@@ -2041,7 +2041,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             term->children[0] = (term_t)buffer;
             regs[instr.a] = (term_t)term;
-            
+
             break;
         }
 
@@ -2086,7 +2086,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
         {
             const int new_cap = stats[instr.op].times_cap * 2;
             double* new_times = realloc(stats[instr.op].times, new_cap * sizeof(double));
-            
+
             stats[instr.op].times = new_times;
             stats[instr.op].times_cap = new_cap;
         }
@@ -2101,7 +2101,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
     display_vm_stats(stats, opcode_names);
     for (int i = 0; i <= OPCODE_NUMBER; i++)
         free(stats[i].times);
-    
+
     #endif
 
     return return_value;

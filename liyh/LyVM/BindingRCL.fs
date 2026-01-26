@@ -169,6 +169,12 @@ module public DispatchTable =
             then Some (label, ruleInfo.Strategy)
             else None)
 
+    /// Checks if the given key is found in the given dispatch table.
+    let public contains (name: string, arity: int) (dispatchTable: DispatchTable) =
+        dispatchTable
+        |> tryFindByNameArity (name, arity)
+        |> Option.isSome
+
 type public CompiledProgram =
     { Program: ByteCodeInstr[]          // the compiled program
       EntryPointLabel: LabelIndex       // the entry point of the program (label)

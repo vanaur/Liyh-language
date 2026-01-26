@@ -108,7 +108,7 @@ module public BytecodeCompiler =
                     | Invalid -> 0
 
                 let unifiedStrategy =
-                    rules 
+                    rules
                     |> List.map (_.Strategy >> Strategy.FromAST)
                     |> List.maxBy strategyWeight
 
@@ -121,7 +121,7 @@ module public BytecodeCompiler =
                       Arity = arity
                       Strategy = unifiedStrategy }
 
-                (ruleInfo, sortedRules)) 
+                (ruleInfo, sortedRules))
 
             |> Map.ofList
 
@@ -136,7 +136,7 @@ module public BytecodeCompiler =
             match context.PathCache.TryGetValue path with
             | true, reg -> reg
             | false, _ ->
-                let reg = 
+                let reg =
                     match path with
                     | Root ->
                         failwith "Unresolved root path" // this may not happens
@@ -184,7 +184,7 @@ module public BytecodeCompiler =
                             builder.Print(builder.LoadString msg)
                             builder.Halt(1)
                         )
-                        
+
                         builder.SetLabel(successLabel)
 
                         // Always force after deconstruction (because we don't know where the value comes from)
@@ -201,14 +201,14 @@ module public BytecodeCompiler =
             let resReg = builder.Alloc()
             let lblFalse = freshLabel()
             let lblEnd = freshLabel()
-            
+
             builder.JumpFalse(boolReg, lblFalse)
             builder.Mov(resReg, builder.LoadAtom(Builtin.True))
             builder.Jump(lblEnd)
-            
+
             builder.SetLabel(lblFalse)
             builder.Mov(resReg, builder.LoadAtom(Builtin.False))
-            
+
             builder.SetLabel(lblEnd)
             resReg
 
@@ -227,7 +227,7 @@ module public BytecodeCompiler =
                 match Map.tryFind name context.Env with
                 | Some r -> r
                 | None -> failwithf "Variable '%s unfound." name
-            
+
             | Literal lit ->
                 match lit with
                 | Integer i -> builder.LoadInt (int i)  // bingint -> int64 -> int62 : be careful
@@ -242,7 +242,7 @@ module public BytecodeCompiler =
                         let rVal = compileTerm context false expr
                         let rKey = builder.LoadAtom name
                         [ rKey; rVal ])
-                
+
                 match base' with
                 | None -> builder.MkRecord(extensionRegs)
                 | Some baseTerm ->
@@ -251,7 +251,7 @@ module public BytecodeCompiler =
 
             // --- Internals --- //
 
-            | Symbol { Symbol = op; Children = [left; right] } 
+            | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.arithmeticInternals) ->
 
                 let rLeft = compileTermStrict context left
@@ -265,13 +265,13 @@ module public BytecodeCompiler =
                 | Internals.Mod -> builder.Mod(rLeft, rRight)
                 | _ -> failwith "??" // This may not happens
 
-            | Symbol { Symbol = op; Children = [left; right] } 
+            | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
                 let rLeft = compileTermStrict context left
                 let rRight = compileTermStrict context right
 
-                let cmpRes = 
+                let cmpRes =
                     match op with
                     | Internals.Eq  -> builder.Eq(rLeft, rRight)
                     | Internals.Neq -> builder.NotEqual(rLeft, rRight)
@@ -312,9 +312,9 @@ module public BytecodeCompiler =
 
                 // Arguments are prepared differently depending on the main strategy associated
                 // with the different rules using the symbol as LHS.
-                let inline argsRegs (strategy: Strategy) = 
+                let inline argsRegs (strategy: Strategy) =
                     match strategy with
-                    | (Strict | Memoize) -> 
+                    | (Strict | Memoize) ->
                         // Strict: everything is evaluated before the call (default behavior).
                         List.map (compileTermStrict context) children
 
@@ -466,7 +466,7 @@ module public BytecodeCompiler =
                 builder.SetLabel(startLabel)
 
                 // Attempts to compile the predicate as a native comparison.
-                let predBool = 
+                let predBool =
                     match tryCompileIntrinsicBool context pred with
                     | Some rawReg -> rawReg
                     | None ->
@@ -474,7 +474,7 @@ module public BytecodeCompiler =
                         convertAtomToBool predReg
 
                 builder.JumpFalse(predBool, endLabel)
-                
+
                 builder.Scope(fun () -> compileTerm context false body |> ignore)
                 builder.Jump(startLabel)
                 builder.SetLabel(endLabel)
@@ -543,12 +543,12 @@ module public BytecodeCompiler =
                         else
                             allPatterns, None
 
-                    let patternsList = 
+                    let patternsList =
                         displayedPatterns
                         |> List.map (sprintf " - `%s`")
                         |> String.concat "\n"
 
-                    let extraMsg = 
+                    let extraMsg =
                         match remaining with
                         | Some n -> $"\n ... and {n} other pattern(s)"
                         | None -> ""
@@ -663,7 +663,7 @@ module public BytecodeCompiler =
                 let rLeft = compileTermStrict context left
                 let rRight = compileTermStrict context right
 
-                let rawResult = 
+                let rawResult =
                     match op with
                     | Internals.Eq  -> builder.Eq(rLeft, rRight)
                     | Internals.Neq -> builder.NotEqual(rLeft, rRight)
@@ -924,7 +924,7 @@ module public BytecodeCompiler =
 
             if symbolName = "main" then
                 // builder.Print(result)
-                builder.Halt()            
+                builder.Halt()
             else
                 builder.Ret(result)
 
