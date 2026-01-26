@@ -1545,7 +1545,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
             term_header_t *h = AS_HEADER(t);
 
             // Try to evaluate symbolic data ("outermost strategy") if it's not a system tag.
-            if (IS_USER_DATA(h->id) && h->arity > 0)
+            if (IS_USER_DATA(h->id))
             {
                 const sym_id_t sym_id = h->id;
                 const int arg_count = h->arity;
