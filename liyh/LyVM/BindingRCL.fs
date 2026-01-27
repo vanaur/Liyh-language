@@ -175,6 +175,10 @@ module public DispatchTable =
         |> tryFindByNameArity (name, arity)
         |> Option.isSome
 
+    /// Gets the number of entry in the given dispatch table.
+    let public count (dispatchTable: DispatchTable) =
+        dispatchTable.Count
+
 type public CompiledProgram =
     { Program: ByteCodeInstr[]          // the compiled program
       EntryPointLabel: LabelIndex       // the entry point of the program (label)
