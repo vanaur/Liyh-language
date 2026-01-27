@@ -719,105 +719,162 @@ static bool term_equals(term_t root_a, term_t root_b)
     return true;
 }
 
+// Work frame structure for the iterative substitution algorithm
+typedef struct {
+    term_t term;            // the original term being processed
+    term_header_t *header;  // pre-resolved header
+    uint32_t next_child;    // index of the next child to visit
+} subst_frame_t;
+
 /// Performs a structural and recursive substitution: replaces occurrences of `toRepId` with
 /// `repl` in `root`. Returns a new term (or the original if no changes were made).
+/// No overflow will occurs.
 static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
 {
-    // NOTE: this function can overflow the stack, for now.
-
     root = resolve_indirection(root);
+
     if (!IS_PTR(root)) return root;
 
-    term_header_t *h = AS_HEADER(root);
+    size_t work_capacity = INITIAL_CAPACITY;
+    size_t work_sp = 0;
 
-    if (h->arity == 0 && h->id == toRepId)
-        return repl;
+    size_t result_capacity = INITIAL_CAPACITY;
+    size_t result_sp = 0;
 
-    if (h->id == SYM_RECORD_NATIVE)
+    subst_frame_t *work_stack = malloc(work_capacity * sizeof(subst_frame_t));
+    term_t *result_stack = malloc(result_capacity * sizeof(term_t));
+
+    // Push the root frame onto the work stack
+    work_stack[work_sp++] = (subst_frame_t){ root, AS_HEADER(root), 0 };
+
+    while (work_sp > 0)
     {
-        const int count = h->arity / 2;
-        bool changed = false;
+        // Get pointer to the current frame (top of work stack)
+        // Note: We keep this as a pointer because the frame is modified in-place
+        subst_frame_t *frame = &work_stack[work_sp - 1];
 
-        term_t new_children[h->arity];
-        memcpy(new_children, h->children, h->arity * sizeof(term_t));
-
-        for (int i = 0; i < count; i++)
+        // While there are still children to visit, we keep descending into the tree
+        if (frame->next_child < frame->header->arity)
         {
-            // children[i*2] is th key, children[i*2+1] is the value.
-            const term_t old_val = h->children[i * 2 + 1];
-            const term_t new_val = perform_substitution(old_val, toRepId, repl);
+            // Get the next child to process
+            term_t child = frame->header->children[frame->next_child];
+            frame->next_child++;
 
-            if (old_val != new_val)
+            child = resolve_indirection(child);
+
+            if (!IS_PTR(child)) {
+                if (result_sp == result_capacity)
+                {
+                    result_capacity *= 2;
+                    result_stack = realloc(result_stack, result_capacity * sizeof(term_t));
+                }
+                result_stack[result_sp++] = child;
+            } 
+            else
             {
-                new_children[i * 2 + 1] = new_val;
-                changed = true;
+                if (work_sp == work_capacity)
+                {
+                    work_capacity *= 2;
+                    work_stack = realloc(work_stack, work_capacity * sizeof(subst_frame_t));
+                    frame = &work_stack[work_sp - 1];
+                }
+                work_stack[work_sp++] = (subst_frame_t){ child, AS_HEADER(child), 0 };
+            }
+            continue;
+        }
+
+        // At this stage, all children have been processed and their results
+        // are on the result stack. Now we reconstruct the parent term.
+
+        work_sp--; // Pop the current frame from work stack.
+        const uint32_t arity = frame->header->arity;
+
+        // The results of all children are at the top of the result stack.
+        term_t *child_results = &result_stack[result_sp - arity];
+
+        bool children_changed = false;
+        for (uint32_t i = 0; i < arity; i++)
+        {
+            if (child_results[i] != frame->header->children[i])
+            {
+                children_changed = true;
+                break;
             }
         }
 
-        if (!changed) return root;
+        bool self_changed = (frame->header->id == toRepId);
+        term_t final_res = (term_t)NULL;
 
-        term_header_t *new_rec = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
-        new_rec->id = SYM_RECORD_NATIVE;
-        new_rec->arity = h->arity;
-        memcpy(new_rec->children, new_children, h->arity * sizeof(term_t));
+        if (!children_changed && !self_changed)
+        {
+            final_res = frame->term;
+        }
+        else if (self_changed)
+        {    
+            if (arity == 0)
+            {
+                final_res = repl;
+            }
+            else
+            {
+                if (IS_PTR(repl) && AS_HEADER(repl)->id == SYM_CLOSURE) {
+                    // Closure replacement creates a SUSPENDED_CALL
+                    // Layout: [Closure, Arg1, Arg2, ...]
+                    uint32_t new_arity = arity + 1;
+                    term_header_t *susp = GC_MALLOC(sizeof(term_header_t) + new_arity * sizeof(term_t));
+                    susp->id = SYM_SUSPENDED_CALL;
+                    susp->arity = new_arity;
+                    susp->children[0] = repl;
+                    memcpy(&susp->children[1], child_results, arity * sizeof(term_t));
+                    final_res = (term_t)susp;
+                }
+                else if (IS_PTR(repl))
+                {
+                    sym_id_t new_id = AS_HEADER(repl)->id;
+                    term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
+                    new_term->id = new_id;
+                    new_term->arity = arity;
+                    memcpy(new_term->children, child_results, arity * sizeof(term_t));
+                    final_res = (term_t)new_term;
+                } 
+                else
+                {
+                    // Fallback: keep the original ID but use the substituted children
+                    term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
+                    new_term->id = frame->header->id;
+                    new_term->arity = arity;
+                    memcpy(new_term->children, child_results, arity * sizeof(term_t));
+                    final_res = (term_t)new_term;
+                }
+            }
+        }
+        else
+        {
+            // Only children changed (propagate changes upward): create a new
+            // term with the same ID but updated children.
+            term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
+            new_term->id = frame->header->id;
+            new_term->arity = arity;
+            memcpy(new_term->children, child_results, arity * sizeof(term_t));
+            final_res = (term_t)new_term;
+        }
 
-        return (term_t)new_rec;
+        result_sp -= arity;
+
+        if (result_sp == result_capacity)
+        {
+            result_capacity *= 2;
+            result_stack = realloc(result_stack, result_capacity * sizeof(term_t));
+        }
+        result_stack[result_sp++] = final_res;
     }
 
-    if ((h->id < SYM_CONTINUATION) && h->arity > 0)
-    {
-        bool changed = false;
-        term_t new_children[h->arity];
+    const term_t final = result_stack[0]; // should be the only item left onto the stack
 
-        for (uint32_t i = 0; i < h->arity; i++)
-        {
-            new_children[i] = perform_substitution(h->children[i], toRepId, repl);
-            if (new_children[i] != h->children[i]) changed = true;
-        }
-
-        if (h->id == toRepId)
-        {
-            changed = true;
-
-            // If the replacement is a closure, a "suspended call" is created.
-            if (IS_PTR(repl) && AS_HEADER(repl)->id == SYM_CLOSURE)
-            {
-                // Layout of SUSPENDED_CALL: [Closure, Arg1, Arg2, ...]
-                // Arity = 1 + h->arity
-
-                const int new_arity = h->arity + 1;
-                term_header_t *susp = GC_MALLOC(sizeof(term_header_t) + new_arity * sizeof(term_t));
-                susp->id = SYM_SUSPENDED_CALL;
-                susp->arity = new_arity;
-
-                susp->children[0] = repl;
-                memcpy(&susp->children[1], new_children, h->arity * sizeof(term_t));
-
-                return (term_t)susp;
-            }
-
-            else if (IS_PTR(repl))
-            {
-                const sym_id_t new_id = AS_HEADER(repl)->id;
-                term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
-                new_term->id = new_id;
-                new_term->arity = h->arity;
-                memcpy(new_term->children, new_children, h->arity * sizeof(term_t));
-                return (term_t)new_term;
-            }
-        }
-
-        if (!changed)
-            return root;
-
-        term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + h->arity * sizeof(term_t));
-        new_term->id = h->id;
-        new_term->arity = h->arity;
-        memcpy(new_term->children, new_children, h->arity * sizeof(term_t));
-        return (term_t)new_term;
-    }
-
-    return root;
+    free(work_stack);
+    free(result_stack);
+    
+    return final;
 }
 
 // We will not pretty print structures that are too deep; we will stop at an arbitrary limit.
