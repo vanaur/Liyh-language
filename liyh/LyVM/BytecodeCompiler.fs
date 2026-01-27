@@ -761,7 +761,7 @@ module public BytecodeCompiler =
 
                 let testReg =
                     match ctx.Strategy with
-                    | (Strategy.Outermost | Strategy.Lazy) -> builder.Force(pathReg)
+                    | (Strategy.Lazy) -> builder.Force(pathReg)
                     | _ -> pathReg
 
                 builder.Scope(fun () ->
