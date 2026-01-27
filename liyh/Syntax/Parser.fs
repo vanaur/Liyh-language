@@ -1277,13 +1277,6 @@ module Parser =
                   Node = Expression.CollectionAccess { LHS = expr; Indices = indices.Node }
                   Pos' = indices.Pos' }
 
-        let ufcs =
-            spaces >>? skipString "|>" <?> "" >>. spaces >>. parseExpressionRef
-            |>> fun b expr ->
-                { Pos = expr.Pos
-                  Node = Expression.UFCS { LHS = expr; RHS = b }
-                  Pos' = b.Pos' }
-
         let resume =
             spaces >>? skipString "with" <?> "" >>? notFollowedBy parseMatchingCases >>. parseExpressionRef
             |>> fun state resume ->
@@ -1297,63 +1290,47 @@ module Parser =
             functionCall
             // collection access
             collectionAccess
-            // Unified Function Calling Syntax (UFCS) as a pipe "operator"
-            ufcs
             // resume with (semantically valid only in handlers)
             attempt resume
         ]
-
-    /// Transforms a right-associative UFCS call chain (e.g., `a |> (b |> c)`)
-    /// into a left-associative chain (e.g., `((a |> b) |> c)`).
-    let rec private linearizeUfcsChain (expression: ExpressionWithPos) =
-
-        let inline createUfcsNode (pos, pos') lhs rhs =
-            { Node = UFCS { LHS = lhs; RHS = rhs }; Pos = pos; Pos' = pos' }
-
-        let rec collectParts (currentExpr: ExpressionWithPos) =
-            match removePos currentExpr with
-            | UFCS { LHS = lhs; RHS = rhs } -> lhs :: collectParts rhs
-            | _ -> [ currentExpr ]
-
-        match expression.Node with
-        | UFCS _ ->
-            let parts = collectParts expression
-            let leftAssociativeTree = List.reduce (createUfcsNode expression.PosTuple) parts
-            leftAssociativeTree
-
-        | _ -> expression
 
     let private parseMainExpression =
         parseTermRef.Value <-
             parseBasicExpression .>>. many parsePostfixNotations
             |>> fun (baseExpr, postfixes) ->
                 List.fold (fun expr transf -> transf expr) baseExpr postfixes
-                |> linearizeUfcsChain
 
         fun (stream: CharStream<_>) ->
             let state = stream.UserState.UserState
             let engine = state.MixfixExpressionEngine
             let operators = state.MixfixOperators
 
-            let singleExprParser = engine.CreateParser operators parseTerm
+            let mixfixParser = engine.CreateParser operators parseTerm
+
+            let pipeOp = 
+                spaces >>? skipString "|>" >>. spaces 
+                >>% (fun lhs rhs ->
+                        { Node = Expression.UFCS { LHS = lhs; RHS = rhs }
+                          Pos = lhs.Pos
+                          Pos' = rhs.Pos' })
+
+            let expressionWithPipes = chainl1 mixfixParser pipeOp
 
             let currentParser = parse {
                 let blockParser = parse {
                     do! spacesOrComment
                     let! pos = getPosition
-                    let! head = singleExprParser .>>? spacesOrComment
+
+                    let! head = expressionWithPipes .>>? spacesOrComment
 
                     let exprErrorHandler (p: Position) (endP: Position) (msgs: ErrorMessageList) =
-                        let sourceCode = stream.UserState.UserState.SourceCode
-                        let report = ParsingErorr.buildErrorReport sourceCode p endP msgs
-                        
-                        { Node = Expression.ParseError report
-                          Pos = p
-                          Pos' = endP }
+                         let sourceCode = stream.UserState.UserState.SourceCode
+                         let report = ParsingErorr.buildErrorReport sourceCode p endP msgs
+                         { Node = Expression.ParseError report; Pos = p; Pos' = endP }
 
                     let safeExprParser = 
                         Recoverable.recover 
-                            (singleExprParser .>>? spacesOrComment) 
+                            (expressionWithPipes .>>? spacesOrComment) 
                             exprErrorHandler
 
                     let rec loop acc = parse {
@@ -1361,18 +1338,13 @@ module Parser =
                         | true -> return List.rev acc
                         | false ->
                             let! isAligned = attempt (exact pos (preturn ())) >>% true <|>% false
-                            
                             if isAligned then
                                 let! item = safeExprParser
                                 let! endPos = getPosition
-
-                                if pos = endPos
-                                then return List.rev (item :: acc)
+                                if pos = endPos then return List.rev (item :: acc)
                                 else return! loop (item :: acc)
-                            else
-                                return List.rev acc
+                            else return List.rev acc
                     }
-
                     let! tail = loop []
 
                     return
@@ -1382,7 +1354,6 @@ module Parser =
                                   Node = ExpressionSequence xs
                                   Pos' = (List.last xs).Pos' }
                 }
-
                 return! blockParser
             }
             currentParser stream
