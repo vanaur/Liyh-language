@@ -335,7 +335,16 @@ module public BytecodeCompiler =
                         builder.Call(label, argsRegs strategy)
 
                 | None ->
-                    builder.AllocData(name, argsRegs context.Strategy)
+                    let args =
+                        match context.Strategy with
+                        | Outermost ->
+                            // In the RHS of an outermost rule, we want to evaluate children
+                            // to allow function calls rather that a simple substitution.
+                            List.map (compileTerm context false) children
+                        | _ ->
+                            argsRegs context.Strategy
+
+                    builder.AllocData(name, args)
 
             | FunctionalApplication { Base = b; Arguments = args } ->
                 let bReg = compileTerm context false b
