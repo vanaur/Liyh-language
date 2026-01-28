@@ -42,6 +42,8 @@
     <Compile Include="Core/Execution/FFI.fs" />
     <Compile Include="Core/Execution/Interpreter.fs" />
 
+    <Compile Include="LyVM/Optimizer.fs" />
+
     <Compile Include="LyVM/BindingRCL.fs" />
     <Compile Include="LyVM/BytecodeBuilder.fs" />
     <Compile Include="LyVM/BytecodeCompiler.fs" />
