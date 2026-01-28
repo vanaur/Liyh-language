@@ -1,17 +1,36 @@
 # LyVM
 
-LyVM is an attempt for a virtual machine for Liyh. The runtime and the library as such are known as "RCL" (Runtime Core Library). The RCL is written in C (see [rcl.c](/C/rcl.c)) and designed for ease of use for symbolic/rules-based/functionnal languages and also for good performances (to compensate for the slower nature of the paradigms mentioned).
+LyVM is an attempt for a virtual machine for Liyh. The runtime and the library as such are known as "**RCL**" (Runtime Core Library). The RCL is written in C (see [rcl.c](/C/rcl.c)) and designed for ease of use for symbolic/rules-based/functionnal languages and also for good performances (to compensate for the slower nature of the paradigms mentioned).
+
+> [!NOTE]
+> Historically, RCL was another very old project (older than the idea of the Liyh language itself, you can see it [here](https://github.com/vanaur/RCL-C) but it is not compilable and not worth your time). It has been completely redesigned for this project. Originally, the RCL was designed to offer an attractive alternative to other existing runtimes and VMs, ticking the following three boxes:
+> 
+> - [x] expressive and capable
+> - [x] easy to use
+> - [x] deliver decent performances given the last two points
+>
+> These points remain unchanged, at least we hope so!
 
 ### Characteristics
 
- - The VM is register-based and does not have an explicit stack (or, similarly, a stack maps each register, but the stack is not accessible as such). The number of registers is arbitrary, fixed for each case by the compiler.
+ - The VM is register-based and does not have an explicit stack (or, similarly, a stack maps each register, but the stack is not accessible as such). The number of registers is arbitrary, fixed for each case by the compiler (using instruction `reverse`).
  - Integers (`int`) and characters (`char`) are unboxed (using pointer tagging). Integers are of 62 bits size because of pointer tagging.
- - Automatic garbage collection using [bdwgc](https://github.com/bdwgc/bdwgc) (known as Boehm-Demers-Weiser GC). Memory leaks are known to occur.
- - Deep adaptive stack frame, up to 256 MB of stack frame allowed.
- - Tailcall optimisation via a `tailcall` keyword.
- - Abstract symbols (via `alloc` and `atom`) for constructing symbolic data or functional data structures.
+ - Automatic garbage collection using [bdwgc](https://github.com/bdwgc/bdwgc) (known as Boehm-Demers-Weiser GC). Memory leaks are known to occur (due to the nature of this kind of GC) and performance of memory allocation is acceptable, although there is room for improvement with a generational GC instead.
+ - Deep adaptive stack frame, up to 256 MB of stack frame allowed. This allows deep recursion and traverse of deep structures.
+ - Tailcall optimisation via a `tailcall` instruction.
+ - Abstract symbols/constructors (via `alloc` and `atom` instructions) for constructing symbolic data or functional data structures.
+ - Structural symbolic substitution (via the `subst` instruction) to substitute symbols with expressions. No overflow will occurs.
+ - Structural equality (with `eq` instruction) of values/symbolic data. No overflow will occurs.
  - Contiguous register calling convention (each call to a function label requires the arguments to be in the form of contiguous registers from the caller).
- - Support for closures, records and pattern matching.
+ - Support for floats (64 bits), closures, records, immuable strings (and string concatenation) and pattern matching.
+ - Support for lazy evaluation (using the `delay` and `force` instructions) and [black-holes](https://downloads.haskell.org/~ghc/0.29/docs/users_guide/user_86.html) detection.
+ - Quite small (~2 kLoC for now).
+
+### Supported paradigms
+
+The VM was designed with Liyh in mind, so it is naturally capable of supporting the imperative paradigm, the functional paradigm, and the symbolic paradigm.
+
+At the moment, though, there is no support for concurrency.
 
 ### Performances
 
@@ -20,7 +39,7 @@ Given that the very nature of dynamic functional languages or symbolic term rewr
 A good compiler for this VM may produce bytecode that is roughly on par with what we would expect from Python or Lua in the few performance tests we have done. Our compiler is still non-optimising.
 
 > [!IMPORTANT]
-> Please note, however (if anyone happens to pass by and read this...), that the VM is just as young as the project itself; the goal is not to compete with established runtimes, but only to compensate for our own interpreter (what has already been  achieved).
+> Please note, however (if anyone happens to pass by and read this...), that this VM is just as young as the project itself; the goal is not to compete with established runtimes, but only to compensate for our own interpreter (what has already been  achieved) and offer something usable in practice.
 
 ### Using RCL elsewhere
 
