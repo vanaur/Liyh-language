@@ -743,14 +743,14 @@ module Parser =
         // Int, Bool, MyType, Option['t]
         let private parseNamedType =
             let parseElementAfterComma =
-                spaces >>. (parseType <?> "other elements in the parametrized's type") .>> spaces
+                spacesOrComment >>. (parseType <?> "other elements in the parametrized's type") .>> spacesOrComment
 
             parseWithPos (
                 parseWithPos NameParser.parseIdentifier
                 .>>. opt (
-                    skipChar '[' >>. spaces >>.
+                    skipChar '[' >>. spacesOrComment >>.
                     sepBy1 parseElementAfterComma (skipChar ',' <?> "other types") .>>
-                    spaces .>> (skipChar ']' <?> "closing ']' to end the parametrized type")
+                    spacesOrComment .>> (skipChar ']' <?> "closing ']' to end the parametrized type")
                 )
                 |>> fun (id, argsOpt) ->
                     match argsOpt with
@@ -762,12 +762,12 @@ module Parser =
         let private parseTupleType =
             let comma = skipChar ',' <?> "comma ',' between types"
             let parseElementAfterComma =
-                spaces >>. (parseType <?> "other elements in the tuple's type") .>> spaces
+                spacesOrComment >>. (parseType <?> "other elements in the tuple's type") .>> spacesOrComment
 
             parseWithPos (
                 between
-                    (skipChar '(' >>. spaces)
-                    (spaces >>. skipChar ')' <?> "closing ')' to end tuple")
+                    (skipChar '(' >>. spacesOrComment)
+                    (spacesOrComment >>. skipChar ')' <?> "closing ')' to end tuple")
                     (sepBy1 parseElementAfterComma comma)
 
                 |>> fun types ->
@@ -779,7 +779,7 @@ module Parser =
         // { a: Int, b: String }
         let private parseRowRecordType =
             let fieldName = NameParser.parseIdentifierName
-            let colon = spaces >>. (skipChar ':' >>. spaces <?> "':' after field name")
+            let colon = spacesOrComment >>. (skipChar ':' >>. spacesOrComment <?> "':' after field name")
             let comma = skipChar ',' <?> "comma ',' between fields or closing '}'"
             let closingBrace = skipChar '}' <?> "closing '}' to end record type"
 
@@ -787,12 +787,12 @@ module Parser =
                 fieldName .>> colon .>>. parseType <?> "other elements in the record"
 
             let parseFields =
-                sepBy1 field (spaces >>. comma >>. spaces)
+                sepBy1 field (spacesOrComment >>. comma >>. spacesOrComment)
 
             parseWithPos (
-                skipChar '{' >>. spaces >>.
+                skipChar '{' >>. spacesOrComment >>.
                 parseFields .>>
-                spaces .>> closingBrace
+                spacesOrComment .>> closingBrace
                 |>> Type.RowRecordType
             )
 
@@ -804,16 +804,16 @@ module Parser =
             let comma = skipChar ',' <?> "comma ',' between arguments"
 
             let parseElementAfterComma =
-                spaces >>. (parseType <?> "other elements in the function type parameters") .>> spaces
+                spacesOrComment >>. (parseType <?> "other elements in the function type parameters") .>> spacesOrComment
 
             let args =
-                openBracket >>. spaces >>.
+                openBracket >>. spacesOrComment >>.
                 sepBy parseElementAfterComma comma .>>
-                spaces .>> closeBracket
+                spacesOrComment .>> closeBracket
 
             parseWithPos (
                 pipe2
-                    (args .>> spaces .>> arrow .>> spaces)
+                    (args .>> spacesOrComment .>> arrow .>> spacesOrComment)
                     (parseType <?> "return type (the function must return something after '->')")
                     (fun args ret ->
                         let argsList = match args with | [] -> [] | xs -> xs
@@ -824,14 +824,14 @@ module Parser =
         // t1 % { eff₁, eff₂, ..., effₙ }
         let private parseModuloEffectType =
             pipe2
-                (spaces >>? skipChar '%' <?> "")
-                (spaces >>.
+                (spacesOrComment >>? skipChar '%' <?> "")
+                (spacesOrComment >>.
                     between
-                        (spaces >>. (skipChar '{' <?> "some effects"))
-                        (spaces >>. (skipChar '}' <?> "closing '}'"))
+                        (spacesOrComment >>. (skipChar '{' <?> "some effects"))
+                        (spacesOrComment >>. (skipChar '}' <?> "closing '}'"))
                         (sepBy
-                            (spaces >>? (parseWithPos NameParser.parseIdentifier <?> "effect name"))
-                            (spaces >>? skipChar ',')))
+                            (spacesOrComment >>? (parseWithPos NameParser.parseIdentifier <?> "effect name"))
+                            (spacesOrComment >>? skipChar ',')))
                 (fun _ xs -> xs)
 
         let private parseTypeWithContext =
@@ -851,7 +851,7 @@ module Parser =
                     { Node = Type.ModuloEffectType(t1, effects); Pos = pos; Pos' = pos' }
 
         do parseTypeRef.Value <-
-            spaces >>. parseTypeWithContext .>> spaces
+            spacesOrComment >>. parseTypeWithContext .>> spacesOrComment
 
     module private PatternParser =
         // Forward reference to resolve recursion
@@ -881,9 +881,9 @@ module Parser =
         // (1, 2, 3)
         let private parseTuplePattern =
             between
-                (skipChar '(' >>. spaces)
-                (spaces >>. skipChar ')' <?> "closing tuple pattern")
-                (sepBy1 (spaces >>. parsePatternRef) (spaces >>. skipChar ',' <?> "other elements in the tuple pattern"))
+                (skipChar '(' >>. spacesOrComment)
+                (spacesOrComment >>. skipChar ')' <?> "closing tuple pattern")
+                (sepBy1 (spacesOrComment >>. parsePatternRef) (spacesOrComment >>. skipChar ',' <?> "other elements in the tuple pattern"))
 
             >>= function
                 | [] -> fail "Tuple cannot be empty"
@@ -893,25 +893,25 @@ module Parser =
         // { 1, 2, 3 }
         let private parseListPattern =
             between
-                (skipChar '{' >>. spaces)
-                (spaces >>. skipChar '}' <?> "closing list pattern")
-                (sepBy parsePatternRef (spaces >>. skipChar ',' <?> "other elements in the list pattern"))
+                (skipChar '{' >>. spacesOrComment)
+                (spacesOrComment >>. skipChar '}' <?> "closing list pattern")
+                (sepBy parsePatternRef (spacesOrComment >>. skipChar ',' <?> "other elements in the list pattern"))
             |>> Pattern.ListPattern
 
         // { a₁ = ..., a₂ = ..., ..., aₙ = ... }
         let private parseRecordPattern =
             let parseRecordField =
                 pipe3
-                    (spaces >>. NameParser.parseIdentifierName)
-                    (spaces >>. skipChar '=')
-                    (spaces >>. parsePatternRef)
+                    (spacesOrComment >>. NameParser.parseIdentifierName)
+                    (spacesOrComment >>. skipChar '=')
+                    (spacesOrComment >>. parsePatternRef)
                     (fun name _ pattern -> (name, pattern))
 
-            spaces >>.
+            spacesOrComment >>.
                 between
-                    (spaces >>. skipChar '{')
-                    (spaces >>. skipChar '}')
-                    (spaces >>. sepBy1 parseRecordField (spaces >>. skipChar ','))
+                    (spacesOrComment >>. skipChar '{')
+                    (spacesOrComment >>. skipChar '}')
+                    (spacesOrComment >>. sepBy1 parseRecordField (spacesOrComment >>. skipChar ','))
             |>> Pattern.RecordPattern
 
         let private parseAtomicPattern =
@@ -923,7 +923,7 @@ module Parser =
                 attempt (parseWithPos parseTuplePattern)
                 attempt (parseWithPos parseListPattern)
                 attempt (parseWithPos parseRecordPattern)
-                attempt (between (skipChar '(') (spaces >>. skipChar ')') parsePatternRef)
+                attempt (between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef)
             ] <?> "atomic pattern" .>> spacesOrComment
 
         let private parsePatternWithMixfixInternal () =
@@ -937,8 +937,8 @@ module Parser =
         let private parsePatternWithPostfixInternal () =
             parsePatternWithMixfixInternal ()
             .>>. many (
-                between (skipChar '[' >>. spaces) (spaces >>. skipChar ']')
-                    (sepBy parsePatternRef (spaces >>. skipChar ',' >>. spaces))
+                between (skipChar '[' >>. spacesOrComment) (spacesOrComment >>. skipChar ']')
+                    (sepBy parsePatternRef (spacesOrComment >>. skipChar ',' >>. spacesOrComment))
             )
             |>> fun (basePattern, postfixesList) ->
                 List.fold (fun pattern args ->
@@ -949,21 +949,21 @@ module Parser =
         // as, when, `x : Type`
         let private parsePatternWithModifiersInternal () =
             let parseAs (basePattern: WithPos<_>) =
-                spaces >>. skipString "as" >>. spaces >>. parsePatternRef
+                spacesOrComment >>. skipString "as" >>. spacesOrComment >>. parsePatternRef
                 |>> fun asPattern ->
                     { Node = Pattern.AsPattern(basePattern, asPattern)
                       Pos = basePattern.Pos
                       Pos' = basePattern.Pos' }
 
             let parseWhen (basePattern: WithPos<_>) =
-                spaces >>. skipString "when" >>. spaces >>. parseExpressionRef
+                spacesOrComment >>. skipString "when" >>. spacesOrComment >>. parseExpressionRef
                 |>> fun condition ->
                     { Node = Pattern.WhenPattern(basePattern, condition)
                       Pos = basePattern.Pos
                       Pos' = basePattern.Pos' }
 
             let parseTyped (basePattern: WithPos<_>) =
-                spaces >>. skipChar ':' >>. spaces >>. TypeParser.parseType
+                spacesOrComment >>. skipChar ':' >>. spacesOrComment >>. TypeParser.parseType
                 |>> fun typeAnnotation ->
                     { Node = Pattern.TypedPattern(basePattern, typeAnnotation)
                       Pos = basePattern.Pos
@@ -980,7 +980,7 @@ module Parser =
         // 1 | 2 | 3 | 4 (for literals only)
         let private parseAlternativePatternInternal () =
             attempt (
-                sepBy1 (LiteralParser.parseLiteral (Some parseExpressionRef)) (spaces >>. skipChar '|' >>. spaces)
+                sepBy1 (LiteralParser.parseLiteral (Some parseExpressionRef)) (spacesOrComment >>. skipChar '|' >>. spacesOrComment)
                 |>> fun literals ->
                     match literals with
                     | [single] -> Pattern.LiteralPattern single
@@ -991,7 +991,7 @@ module Parser =
 
         let public createPatternParser () =
             parsePatternImpl.Value <-
-                spaces >>. parseWithPos (parseAlternativePatternInternal ()) .>> spaces
+                spacesOrComment >>. parseWithPos (parseAlternativePatternInternal ()) .>> spacesOrComment
 
             parsePatternRef
 
@@ -1022,7 +1022,7 @@ module Parser =
 
     // ( ... )
     let private parseBetweenParens =
-        between (pchar '(' >>. spaces) (spaces >>. pchar ')') parseExpressionRef
+        between (pchar '(' >>. spacesOrComment) (spacesOrComment >>. pchar ')') parseExpressionRef
 
     // Unicode identifier starting with a letter or '_'
     let private parseIdentifier =
@@ -1032,10 +1032,10 @@ module Parser =
     // x <- y
     let private parseReAssign =
         pipe2
-            //(spaces >>. NameParser.parseIdentifierName)
-            //(spaces >>. skipChar ''' >>. NameParser.parseIdentifierName)
-            (spaces >>. choice [ NameParser.parseIdentifierName; skipChar ''' >>. NameParser.parseIdentifierName ])
-            (spaces >>. skipString "<-" >>. spaces >>. parseExpressionRef)
+            //(spacesOrComment >>. NameParser.parseIdentifierName)
+            //(spacesOrComment >>. skipChar ''' >>. NameParser.parseIdentifierName)
+            (spacesOrComment >>. choice [ NameParser.parseIdentifierName; skipChar ''' >>. NameParser.parseIdentifierName ])
+            (spacesOrComment >>. skipString "<-" >>. spacesOrComment >>. parseExpressionRef)
             (fun var value -> Expression.ReAssign(var, value))
 
     // (a, b, c)
@@ -1043,7 +1043,7 @@ module Parser =
         between
             (skipChar '(')
             (skipChar ')' <?> "closing tuple")
-            (sepBy (spaces >>. parseExpressionRef) (spaces >>. skipChar ',' <?> "other elements in the tuple"))
+            (sepBy (spacesOrComment >>. parseExpressionRef) (spacesOrComment >>. skipChar ',' <?> "other elements in the tuple"))
         |> parseWithPos
         |>> function
             | { Node = []; Pos = pos; Pos' = pos' } -> { Node = Expression.Literal { Node = Literal.Unit; Pos = pos; Pos' = pos' }; Pos = pos; Pos' = pos' }
@@ -1053,12 +1053,12 @@ module Parser =
     // { a = 3, b = "hello" }, { 0 .. 10 }, { 0 .. 0.1 .. 10 }, { 1, 2, 3, 4, 5 }
     // { k for k in { 0 .. 10_000 } if k % 2 = 0 }, { myRecord with a = 0 }
     let private parseBracedExpression =
-        let sep = spaces >>. skipChar ',' <?> "other items before '}'" >>. spaces
+        let sep = spacesOrComment >>. skipChar ',' <?> "other items before '}'" >>. spacesOrComment
 
         let parseRecordField =
             pipe3
                 NameParser.parseIdentifierName
-                (spaces >>. skipChar '=' >>. spaces)
+                (spacesOrComment >>. skipChar '=' >>. spacesOrComment)
                 parseExpressionRef
                 (fun name _ expr -> (name, expr))
 
@@ -1069,22 +1069,22 @@ module Parser =
         let parseRecordUsing =
             pipe3
                 //NameParser.parseIdentifierName
-                (spaces >>? parseExpressionRef)
-                (spaces >>. skipString "using" >>. spaces)  // It clashes with "ResumeWith" using `with`
+                (spacesOrComment >>? parseExpressionRef)
+                (spacesOrComment >>. skipString "using" >>. spacesOrComment)  // It clashes with "ResumeWith" using `with`
                 (sepBy1 parseRecordField sep)
                 (fun recordName _ fields -> Expression.RecordUsing(recordName, fields))
 
         let parseRangeWithStep =
             pipe3
                 parseExpressionRef
-                (spaces >>. skipString ".." >>. spaces >>. parseExpressionRef)
-                (spaces >>. skipString ".." >>. spaces >>. parseExpressionRef)
+                (spacesOrComment >>. skipString ".." >>. spacesOrComment >>. parseExpressionRef)
+                (spacesOrComment >>. skipString ".." >>. spacesOrComment >>. parseExpressionRef)
                 (fun start step endExpr -> Expression.Range { RangeStart = start; RangeStep = Some step; RangeStop = endExpr })
 
         let parseRangeSimple =
             pipe2
                 parseExpressionRef
-                (spaces >>. skipString ".." >>. spaces >>. parseExpressionRef)
+                (spacesOrComment >>. skipString ".." >>. spacesOrComment >>. parseExpressionRef)
                 (fun start endExpr -> Expression.Range { RangeStart = start; RangeStep = None; RangeStop = endExpr })
 
         let parseRange = attempt parseRangeWithStep <|> parseRangeSimple
@@ -1092,9 +1092,9 @@ module Parser =
         let parseListComprehension =
             pipe4
                 parseExpressionRef
-                (spaces >>. skipString "for" >>. spaces >>. PatternParser.parsePattern)
-                (spaces >>. skipString "in" >>. spaces >>. parseExpressionRef)
-                (opt (spaces >>. skipString "if" >>. spaces >>. parseExpressionRef))
+                (spacesOrComment >>. skipString "for" >>. spacesOrComment >>. PatternParser.parsePattern)
+                (spacesOrComment >>. skipString "in" >>. spacesOrComment >>. parseExpressionRef)
+                (opt (spacesOrComment >>. skipString "if" >>. spacesOrComment >>. parseExpressionRef))
                 (fun expr var range condition ->
                     Expression.ListComprehension { ItemValue = expr; Pattern = var; ListExpr = range; IfPred = condition })
 
@@ -1112,24 +1112,24 @@ module Parser =
             ]
 
         between
-            (skipChar '{' >>. spaces)
-            (spaces >>. skipChar '}' <?> "closing '{'")
+            (skipChar '{' >>. spacesOrComment)
+            (spacesOrComment >>. skipChar '}' <?> "closing '{'")
             parseContent
 
     // while <PRED> do <EXPR>
     let private parseWhileDo =
         pipe2
-            (skipString "while" >>. spaces >>. parseExpressionRef)
-            (spaces >>. skipString "do" >>. parseExpressionRef)
+            (skipString "while" >>. spacesOrComment >>. parseExpressionRef)
+            (spacesOrComment >>. skipString "do" >>. parseExpressionRef)
             (fun cond content -> Expression.While { Predicate = cond; Body = content })
 
     // let x = y, var x = y
     let private parseLetVar =
         pipe4
-            (spaces >>. choice [ pstring "let"; pstring "var" ])
-            (spaces >>. PatternParser.parsePattern)
-            (spaces >>. skipChar '=' >>. parseExpressionRef)
-            (opt (spaces >>? skipString "in" >>. spaces >>. parseExpressionRef))
+            (spacesOrComment >>. choice [ pstring "let"; pstring "var" ])
+            (spacesOrComment >>. PatternParser.parsePattern)
+            (spacesOrComment >>. skipChar '=' >>. parseExpressionRef)
+            (opt (spacesOrComment >>? skipString "in" >>. spacesOrComment >>. parseExpressionRef))
             (fun letVar p v in' ->
                 let head =
                     if letVar = "let"
@@ -1144,12 +1144,12 @@ module Parser =
     let private parseLambdaRule =
         let parseLHS =
             between
-                (spaces >>. skipChar '[')
-                (spaces >>. skipChar ']')
-                (sepBy (spaces >>. PatternParser.parsePattern) (spaces >>. skipChar ','))
+                (spacesOrComment >>. skipChar '[')
+                (spacesOrComment >>. skipChar ']')
+                (sepBy (spacesOrComment >>. PatternParser.parsePattern) (spacesOrComment >>. skipChar ','))
 
         let parseRHS =
-            spaces >>. skipString "->" >>. spaces >>. parseExpressionRef
+            spacesOrComment >>. skipString "->" >>. spacesOrComment >>. parseExpressionRef
 
         pipe2
             parseLHS
@@ -1159,49 +1159,49 @@ module Parser =
     // using <HANDLER>(<STATE>) handle <TO HANDLE>
     let private parseHandleEffect =
         pipe3
-            (spaces >>. skipString "using" >>. spaces >>. parseWithPos NameParser.parseIdentifier)
-            (spaces >>. parseExpressionRef)
-            (spaces >>. skipString "handle" >>. parseExpressionRef)
+            (spacesOrComment >>. skipString "using" >>. spacesOrComment >>. parseWithPos NameParser.parseIdentifier)
+            (spacesOrComment >>. parseExpressionRef)
+            (spacesOrComment >>. skipString "handle" >>. parseExpressionRef)
             (fun handler initState expr ->
                 Expression.HandleEffect { Handler = handler; InitialState = initState; Body = expr })
 
     let private parseMatchingCases =
         blockOf
             (tuple2
-                (spaces >>. optional (skipChar '|') >>. spaces >>. PatternParser.parsePattern)
-                (spaces >>. skipString "->" >>. spaces >>. parseExpressionRef))
+                (spacesOrComment >>. optional (skipChar '|') >>. spacesOrComment >>. PatternParser.parsePattern)
+                (spacesOrComment >>. skipString "->" >>. spacesOrComment >>. parseExpressionRef))
 
     // match cases
     let private parseMatch =
         pipe2
-            (spaces >>. skipString "match" >>. spaces >>. parseExpressionRef .>> (spaces .>> skipString "with" <?> "'with' keyword"))
-            (spaces >>. parseMatchingCases)
+            (spacesOrComment >>. skipString "match" >>. spacesOrComment >>. parseExpressionRef .>> (spacesOrComment .>> skipString "with" <?> "'with' keyword"))
+            (spacesOrComment >>. parseMatchingCases)
             (fun expr cases -> Expression.Match { ToMatch = expr; Cases = cases })
 
     let private parseIfThenElse =
         pipe3
-            (skipString "if" >>. spaces >>. parseExpressionRef)
-            (skipString "then" >>. spaces >>. parseExpressionRef)
-            (opt (skipString "else" >>. spaces >>. parseExpressionRef))
+            (skipString "if" >>. spacesOrComment >>. parseExpressionRef)
+            (skipString "then" >>. spacesOrComment >>. parseExpressionRef)
+            (opt (skipString "else" >>. spacesOrComment >>. parseExpressionRef))
             (fun condition thenBranch elseBranch ->
                 IfThenElse { Condition = condition; ThenBranch = thenBranch; ElseBranch = elseBranch })
 
     // for <ITEM> in <COLLECTION> do <BODY>
     let private parseForIn =
         pipe3
-            (spaces >>. skipString "for" >>. spaces >>. PatternParser.parsePattern)
-            (spaces >>. skipString "in" >>. spaces >>. parseExpressionRef)
-            (spaces >>. skipString "do" >>. spaces >>. parseExpressionRef)
+            (spacesOrComment >>. skipString "for" >>. spacesOrComment >>. PatternParser.parsePattern)
+            (spacesOrComment >>. skipString "in" >>. spacesOrComment >>. parseExpressionRef)
+            (spacesOrComment >>. skipString "do" >>. spacesOrComment >>. parseExpressionRef)
             (fun pattern collection expression ->
                 Expression.ForIn { Pattern = pattern; ListExpr = collection; Body = expression })
 
     // for <VAR> to <VAL> do <BODY>
     let private parseForTo =
         pipe4
-            (spaces >>. skipString "for" >>. spaces >>. PatternParser.parsePattern)
-            (spaces >>. skipChar '=' >>. spaces >>. parseExpressionRef)
-            (spaces >>. (choice [ pstring "to" <|> pstring "downto" ] .>> spaces) .>>. parseExpressionRef)
-            (spaces >>. skipString "do" >>. spaces >>. parseExpressionRef)
+            (spacesOrComment >>. skipString "for" >>. spacesOrComment >>. PatternParser.parsePattern)
+            (spacesOrComment >>. skipChar '=' >>. spacesOrComment >>. parseExpressionRef)
+            (spacesOrComment >>. (choice [ pstring "to" <|> pstring "downto" ] .>> spacesOrComment) .>>. parseExpressionRef)
+            (spacesOrComment >>. skipString "do" >>. spacesOrComment >>. parseExpressionRef)
             (fun patt value (reachingMethod, toReach) expression ->
                 if reachingMethod = "to"
                 then Expression.ForTo { Pattern = patt; InitialValue = value; EndValue = toReach; Body = expression }
@@ -1210,21 +1210,21 @@ module Parser =
     let private parseSubstitution =
         let sub =
             pipe3
-                (spaces >>. NameParser.parseName false)
-                (spaces >>. skipString "->")
-                (spaces >>. parseExpressionRef)
+                (spacesOrComment >>. NameParser.parseName false)
+                (spacesOrComment >>. skipString "->")
+                (spacesOrComment >>. parseExpressionRef)
                 (fun symbol _ replace -> (symbol, replace))
 
         let subEnv =
             between
                 (skipChar '[')
                 (skipChar ']')
-                (sepBy1 sub (spaces >>. skipChar ','))
+                (sepBy1 sub (spacesOrComment >>. skipChar ','))
 
         pipe3
-            (spaces >>. subEnv)
-            (spaces >>. skipString "in")
-            (spaces >>. parseExpressionRef)
+            (spacesOrComment >>. subEnv)
+            (spacesOrComment >>. skipString "in")
+            (spacesOrComment >>. parseExpressionRef)
             (fun env _ inExpr -> Substitution(env, inExpr))
 
     let private parseBasicExpression =
@@ -1252,7 +1252,7 @@ module Parser =
     do PatternParser.createPatternParser () |> ignore
 
     let private parseApplyArguments =
-        sepBy parseExpressionRef (spaces >>. pchar ',' >>. spaces)
+        sepBy parseExpressionRef (spacesOrComment >>. pchar ',' >>. spacesOrComment)
 
     let private parseTermRefHolder = createParserForwardedToRef<ExpressionWithPos, NotationState IndentState>()
     let private parseTerm = fst parseTermRefHolder
@@ -1260,17 +1260,17 @@ module Parser =
 
     let private parsePostfixNotations =
         let functionCall =
-            parseWithPos (between (skipChar '[' <?> "" .>> spaces) (skipChar ']' <?> "closing '['") parseApplyArguments)
+            parseWithPos (between (skipChar '[' <?> "" .>> spacesOrComment) (skipChar ']' <?> "closing '['") parseApplyArguments)
             |>> fun args expr ->
                 { Pos = expr.Pos
                   Node = Expression.Apply { LHS = expr; Arguments = args.Node } //(expr, args)
                   Pos' = args.Pos' }
 
         let collectionAccess =
-            spaces >>? skipChar '.' >>? notFollowedBy (skipChar '.') <?> "" >>. spaces >>. between
-                (skipChar '[' <?> "collection access '.[ ... ]'" .>> spaces)
+            spacesOrComment >>? skipChar '.' >>? notFollowedBy (skipChar '.') <?> "" >>. spacesOrComment >>. between
+                (skipChar '[' <?> "collection access '.[ ... ]'" .>> spacesOrComment)
                 (skipChar ']' <?> "closing '['")
-                (spaces >>. sepBy1 parseExpressionRef (spaces >>. skipChar ',') .>> spaces)
+                (spacesOrComment >>. sepBy1 parseExpressionRef (spacesOrComment >>. skipChar ',') .>> spacesOrComment)
             |> parseWithPos
             |>> fun indices expr ->
                 { Pos = expr.Pos
@@ -1278,7 +1278,7 @@ module Parser =
                   Pos' = indices.Pos' }
 
         let resume =
-            spaces >>? skipString "with" <?> "" >>? notFollowedBy parseMatchingCases >>. parseExpressionRef
+            spacesOrComment >>? skipString "with" <?> "" >>? notFollowedBy parseMatchingCases >>. parseExpressionRef
             |>> fun state resume ->
                 let node = { Value = resume; HandlerState = state }
                 { Pos = resume.Pos
@@ -1308,7 +1308,7 @@ module Parser =
             let mixfixParser = engine.CreateParser operators parseTerm
 
             let pipeOp = 
-                spaces >>? skipString "|>" >>. spaces 
+                spacesOrComment >>? skipString "|>" >>. spacesOrComment 
                 >>% (fun lhs rhs ->
                         { Node = Expression.UFCS { LHS = lhs; RHS = rhs }
                           Pos = lhs.Pos
@@ -1358,7 +1358,7 @@ module Parser =
             }
             currentParser stream
 
-    do parseExpressionImpl.Value <- spaces >>. parseMainExpression
+    do parseExpressionImpl.Value <- spacesOrComment >>. parseMainExpression
 
 
 
@@ -1378,8 +1378,8 @@ module Parser =
     let private parseUse =
         pipe3
             (spaces >>. skipString "use")
-            (spaces >>. parseWithPos NameParser.parseIdentifier)
-            (opt (attempt (spaces >>. skipString "as" >>. notFollowedBy letter >>. spaces >>. NameParser.parseName false)))
+            (spacesOrComment >>. parseWithPos NameParser.parseIdentifier)
+            (opt (attempt (spacesOrComment >>. skipString "as" >>. notFollowedBy letter >>. spacesOrComment >>. NameParser.parseName false)))
             (fun _ lib as' -> { Lib = lib; Qualifier = as' })
         |> parseWithPos
         |>> TopLevel.Use
@@ -1387,18 +1387,18 @@ module Parser =
     let private parseRule' =
         pipe6
             (spaces >>. parseWithPos (NameParser.parseName false))
-            (spaces >>.
+            (spacesOrComment >>.
                 choice [
                     between
-                        (spaces >>. skipChar '[' <?> "parameters/patterns")
-                        (spaces >>. skipChar ']' <?> "closing '['")
-                        (sepBy (spaces >>. PatternParser.parsePattern) (spaces >>. skipChar ','));
+                        (spacesOrComment >>. skipChar '[' <?> "parameters/patterns")
+                        (spacesOrComment >>. skipChar ']' <?> "closing '['")
+                        (sepBy (spacesOrComment >>. PatternParser.parsePattern) (spacesOrComment >>. skipChar ','));
                     preturn []
                 ])
-            (spaces >>. opt (skipString "when" <?> "when-clause" >>? spaces >>. parseExpressionRef))
-            (spaces >>. opt (skipChar ':' <?> "rule's type" >>? spaces >>. TypeParser.parseType))
-            (spaces >>. opt parseStrategy)
-            (spaces >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
+            (spacesOrComment >>. opt (skipString "when" <?> "when-clause" >>? spacesOrComment >>. parseExpressionRef))
+            (spacesOrComment >>. opt (skipChar ':' <?> "rule's type" >>? spacesOrComment >>. TypeParser.parseType))
+            (spacesOrComment >>. opt parseStrategy)
+            (spacesOrComment >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
             (fun name pattern whenClause type' strategy rewriting ->
                 TopLevel.Rule
                     { Name = name
@@ -1419,11 +1419,11 @@ module Parser =
 
             let currentParser = parse {
                 return! pipe5
-                    (spaces >>. between (skipChar '(') (skipChar ')') mixfixPatternParser)
-                    (spaces >>. opt (skipString "when" <?> "when-clause" >>? spaces >>. parseExpressionRef))
-                    (spaces >>. opt (skipChar ':' <?> "rule's type" >>? spaces >>. TypeParser.parseType))
-                    (spaces >>. opt parseStrategy)
-                    (spaces >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
+                    (spacesOrComment >>. between (skipChar '(') (skipChar ')') mixfixPatternParser)
+                    (spacesOrComment >>. opt (skipString "when" <?> "when-clause" >>? spacesOrComment >>. parseExpressionRef))
+                    (spacesOrComment >>. opt (skipChar ':' <?> "rule's type" >>? spacesOrComment >>. TypeParser.parseType))
+                    (spacesOrComment >>. opt parseStrategy)
+                    (spacesOrComment >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
                     (fun lhsPattern whenClause type' strategy rewriting ->
                         // Extract the head symbol and collect patterns
                         let rec findHeadAndPatterns p =
@@ -1483,7 +1483,7 @@ module Parser =
     let private parseExport =
         pipe2
             (spaces >>. skipString "export")
-            (spaces >>. sepBy1 (spaces >>. NameParser.parseName true) (spaces >>? skipChar ',' <?> "other symbols to export (separated by a comma)"))
+            (spacesOrComment >>. sepBy1 (spacesOrComment >>. NameParser.parseName true) (spacesOrComment >>? skipChar ',' <?> "other symbols to export (separated by a comma)"))
             (fun _ lst -> TopLevel.ModuleExport lst)
 
     let private parseSignature (mustIndicateRetType: bool) =
