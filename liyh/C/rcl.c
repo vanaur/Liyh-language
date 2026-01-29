@@ -1442,7 +1442,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
         // jump if true, otherwise continue;
         case INSTR_JUMP_TRUE:
         {
-            if (IS_INT(regs[instr.a] && GET_INT(regs[instr.b])) != 0)
+            if (IS_INT(regs[instr.a]) && GET_INT(regs[instr.a]) != 0)
                 pc = labels[instr.b];
 
             break;
