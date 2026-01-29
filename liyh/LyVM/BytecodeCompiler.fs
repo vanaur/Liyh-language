@@ -348,9 +348,10 @@ module public BytecodeCompiler =
 
             | FunctionalApplication { Base = b; Arguments = args } ->
                 let bReg = compileTerm context false b
+                let bStrict = builder.Force(bReg)
                 let argsRegs = List.map (compileTerm context false) args
 
-                builder.Apply(bReg, argsRegs)
+                builder.Apply(bStrict, argsRegs)
 
             | Closure { Parameters = parameters; Value = body } ->
                 let boundInClosure = Set.ofList parameters
