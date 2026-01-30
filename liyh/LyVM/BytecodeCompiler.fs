@@ -932,7 +932,39 @@ module public BytecodeCompiler =
                   Strategy = strategy }
 
             let fallback () =
-                builder.AllocData(symbolName, List.ofArray argRegs)
+                match strategy with
+                | Outermost ->
+
+                    // In case of fallback, we force the arguments because nothing else matched
+                    // (that's why the control stream goes there).
+
+                    let newArgs = Array.map builder.Force argRegs
+
+                    let labelRetry = freshLabel()
+                    let labelStable = freshLabel()
+
+                    // Check if an argument changed after this FORCE.
+                    // If `oldReg != newReg` it means that a reduction has taken place.
+                    // If there is a difference, immediately jump to the RETRY label.
+
+                    for (oldReg, newReg) in Array.zip argRegs newArgs do
+                        let isDifferent = builder.NotEqual(oldReg, newReg)
+                        builder.JumpTrue(isDifferent, labelRetry)
+
+                    builder.Jump(labelStable)
+
+                    // RETRY label: at least one argument has changed, so we restart the
+                    // function (the root) with the new reduced arguments.
+                    builder.SetLabel(labelRetry)
+                    builder.Tailcall(label, List.ofArray newArgs)
+
+                    // STABLE label: a normal form has been reached (or blocked at the root),
+                    // so we reconstruct the symbolic term.
+                    builder.SetLabel(labelStable)
+                    builder.AllocData(symbolName, List.ofArray newArgs)
+
+                | _ ->
+                    builder.AllocData(symbolName, List.ofArray argRegs)
 
             let onMatch ruleIndex leafContext =
                 let rule = rulesArray.[ruleIndex]
