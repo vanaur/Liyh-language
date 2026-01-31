@@ -455,6 +455,13 @@ module Parser =
         spaces >>. optional comments >>. spaces
 
     module private NameParser =
+        open System.Globalization
+
+        let private isExtendedDigit (c: char) =
+            if System.Char.IsDigit c then true
+            else
+                let numericValue = CharUnicodeInfo.GetNumericValue c
+                numericValue >= 0.0 && numericValue <= 9.0 && numericValue = System.Math.Floor(numericValue)
 
         /// Parses a valid name according to the Liyh specification and returns it as a character string.
         /// This parser may fail in a definition context if the name is already defined in a custom notation.
@@ -463,7 +470,7 @@ module Parser =
             let parseUsualName =
                 parse {
                     let! first = satisfy (fun c -> c = '_' || System.Char.IsLetter c)
-                    let! rest = manySatisfy (fun c -> c = '_' || System.Char.IsLetter c || System.Char.IsDigit c)
+                    let! rest = manySatisfy (fun c -> c = '_' || System.Char.IsLetter c || isExtendedDigit c)
                     return string first + rest
                 } <?> "valid name (unicode string that does not begin with a number or '_')"
             
