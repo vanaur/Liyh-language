@@ -83,6 +83,36 @@ module Internals =
         | Symbol { Symbol = Geq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
+    // --- Primitive types checking internals --- //
+
+    let [<Literal>] public IsInt = "__internal_is_int"
+    let [<Literal>] public IsFloat = "__internal_is_float"
+    let [<Literal>] public IsChar = "__internal_is_char"
+    let [<Literal>] public IsString = "__internal_is_string"
+
+    /// Internal primitive type checking (is_int, is_float, is_char, is_string).
+    let public primitiveTypeCheckingInternals =
+        [| IsInt
+           IsFloat
+           IsChar
+           IsString |]
+
+    let public (|Internal_is_int|) = function
+        | Symbol { Symbol = IsInt; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+    let public (|Internal_is_float|) = function
+        | Symbol { Symbol = IsFloat; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+    let public (|Internal_is_char|) = function
+        | Symbol { Symbol = IsChar; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+    let public (|Internal_is_string|) = function
+        | Symbol { Symbol = IsString; Children = [ a ] } -> Some(a)
+        | _ -> None
+
     // --- Pretty printing --- //
 
     let [<Literal>] public Print = "__internal_print"

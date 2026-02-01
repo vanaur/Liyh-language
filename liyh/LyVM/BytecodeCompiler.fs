@@ -91,6 +91,36 @@ module public BytecodeCompiler =
             nextLabelId <- nextLabelId + 1
             l
 
+        /// Builds a "fake" rule to be added to the global context. This is used for internal rules.
+        let makeIntrinsicRule (arity: int) (name: string) =
+            let args = List.init arity (fun i -> Variable $"arg{i}")
+            let term = symbol name args
+
+            // A placeholder rule definition
+
+            { LHS = term
+              RHS = term
+              Strategy = Liyh.Syntax.SyntaxTree.RewritingStrategy.Strict
+              WhenClause = None }
+
+        /// Placeholder rules for the internals.
+        let internalIntrinsicRules =
+            (Array.concat >> List.ofArray)
+                [| Internals.primitiveTypeCheckingInternals
+                   |> Array.map (makeIntrinsicRule 1)
+
+                   Internals.arithmeticInternals
+                   |> Array.map (makeIntrinsicRule 2)
+
+                   Internals.booleanInternals
+                   |> Array.map (makeIntrinsicRule 2)
+
+                   [| Internals.Print; Internals.Ppshow |]
+                   |> Array.map (makeIntrinsicRule 1)
+
+                   [| Internals.Strcat |]
+                   |> Array.map (makeIntrinsicRule 2) |]
+
         let contextParents =
             program
             |> List.choose (function Context c -> Some (c.ContextName, c.Using) | _ -> None)
@@ -140,6 +170,7 @@ module public BytecodeCompiler =
                     )
                 | _ -> []
             )
+            |> List.append (internalIntrinsicRules |> List.map (fun r -> (r.LHS, r, None)))
 
         let groupedRules =
             allRules
@@ -366,6 +397,36 @@ module public BytecodeCompiler =
                     | _ -> failwith "??" // This may not happens
 
                 convertBoolToAtom cmpRes
+
+            | Symbol { Symbol = symb; Children = [ arg ] }
+                when Array.contains symb Internals.primitiveTypeCheckingInternals ->
+
+                let targetTag =
+                    match symb with
+                    | Internals.IsInt -> BindingRCL.SYM_INT_NATIVE
+                    | Internals.IsFloat -> BindingRCL.SYM_FLOAT_NATIVE
+                    | Internals.IsChar -> BindingRCL.SYM_CHAR_NATIVE
+                    | Internals.IsString -> BindingRCL.SYM_STRING_NATIVE
+                    | _ -> failwith "??" // This may not happens
+
+                let rArg = compileTermStrict context arg
+                let rRes = builder.Alloc()
+
+                let lblFail = freshLabel()
+                let lblEnd = freshLabel()
+
+                builder.TestTag(rArg, targetTag, lblFail)
+
+                // Success: True
+                builder.Mov(rRes, builder.LoadAtom(Builtin.True))
+                builder.Jump(lblEnd)
+
+                // Failure: False
+                builder.SetLabel(lblFail)
+                builder.Mov(rRes, builder.LoadAtom(Builtin.False))
+
+                builder.SetLabel(lblEnd)
+                rRes
 
             | Internals.Internal_print(x) ->
                 let xReg = compileTermStrict context x
