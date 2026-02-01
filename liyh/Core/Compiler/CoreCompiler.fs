@@ -206,6 +206,7 @@ module CoreCompiler =
         | HandleEffect handle -> compileHandleEffect cstate handle
         | ResumeWith resume -> compileResume cstate (removePos resume)
         | Substitution(env, inExpr) -> compileSubstitution cstate env inExpr
+        | UsingContext ctx -> compileUsingContext cstate ctx
         | other -> failwithf "Todo: %A" other
 
         |> flattenTermSequence
@@ -646,6 +647,11 @@ module CoreCompiler =
             { Env = env
               InExpr = inExpr }
 
+    and private compileUsingContext (cstate: State) (ctx: UsingContext) =
+        CoreTerm.UsingContext
+            { Context = string (removePos ctx.ContextName)
+              Expr = compileExpression cstate ctx.ContentExpr }
+
     // --- Patterns --- //
 
     and private compilePattern (cstate: State) (pattern: PatternWithPos) =
@@ -737,6 +743,7 @@ module CoreCompiler =
             | TopLevel.Rule rule -> compileRule cstate rule
             | TopLevel.Handler handler -> compileHandler cstate handler
             | TopLevel.Extern extrn -> compileExtern extrn
+            | TopLevel.Context context -> compileContext cstate context
             | other -> failwithf "Todo: %A" other
 
         AlphaConversion.alphaConversionDefinition UniqueName.get compiled
@@ -804,6 +811,12 @@ module CoreCompiler =
             { LibraryName = string (removePos extrn.AsName)
               Library = lib
               Functions = functions }
+
+    and private compileContext (cstate: State) (context: Context) =
+        CoreDefinition.Context
+            { ContextName = string (removePos context.Name)
+              Content = List.map (compileDefinition cstate) context.Content
+              Using = List.map (removePos >> string) context.Using }
 
     // --- Module --- //
 

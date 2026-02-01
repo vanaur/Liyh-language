@@ -66,6 +66,7 @@ type public CoreTerm =
     // --- symbolic features --- //
 
     | Substitution of CoreSubstitution
+    | UsingContext of CoreUsingContext
 
     // --- imperative features --- //
 
@@ -132,10 +133,15 @@ and public CoreSubstitution =
     { Env: (CoreSymbol * CoreTerm) list
       InExpr: CoreTerm }
 
+and public CoreUsingContext =
+    { Context: string
+      Expr: CoreTerm }
+
 type public CoreDefinition =
     | Rule of CoreRule
     | Handler of CoreHandler
     | Extern of CoreExtern
+    | Context of CoreContext
 
 and public CoreRule =
     { LHS: CoreTerm
@@ -155,6 +161,11 @@ and public CoreExtern =
     { LibraryName: string
       Library: Liyh.FFI.CFFI.DynLib
       Functions: Map<string, Liyh.FFI.CFFI.FunctionSignature> }
+
+and public CoreContext =
+    { ContextName: string
+      Content: CoreDefinition list
+      Using: string list }
 
 type public CoreProgram = CoreDefinition list
 

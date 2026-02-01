@@ -72,6 +72,11 @@ module SyntaxTree =
         | HandleEffect of Handle
         | ResumeWith of ResumeWith WithPos
         | Substitution of (string * ExpressionWithPos) list * ExpressionWithPos
+        | UsingContext of UsingContext
+
+    and public UsingContext =
+        { ContextName: IdentifierWithPos
+          ContentExpr: ExpressionWithPos }
 
     and public UFCS =
         { LHS: ExpressionWithPos
@@ -180,12 +185,18 @@ module SyntaxTree =
         | Type of SumType
         | TypeAlias of name: string * vartypes: string list * TypeWithPos
         | Notation of Notation
+        | Context of Context
         | Extern of Extern
         | Measure
         | Unit
         | UnitSystem
         | UnitConversion
         | ModuleExport of string list
+
+    and public Context =
+        { Name: string WithPos
+          Using: Identifier WithPos list
+          Content: TopLevelWithPos list } // NOTE: not all top levels are valids, but we can detect this after parsing
 
     and public Extern =
         { Language: ExternLanguageTarget
@@ -379,6 +390,8 @@ module Replace =
             { expwp with Node = ResumeWith { rw with Node = { rw.Node with Value = replaceExpr rw.Node.Value; HandlerState = replaceExpr rw.Node.HandlerState } } }
         | Substitution(env, inExpr) ->
             { expwp with Node = Substitution(List.map (fun (a, b) -> a, replaceExpr b) env, replaceExpr inExpr) }
+        | UsingContext u ->
+            { expwp with Node = UsingContext { u with ContentExpr = replaceExpr u.ContentExpr } }
 
     and public replacePatternVariable (map: Map<string, ExpressionWithPos>) (patwp: PatternWithPos) : PatternWithPos =
         let replaceExpr = replaceVariable map

@@ -91,7 +91,6 @@ module public CoreTermSubstitution =
                     Resume { r with Rewrite = newRewrite; State = newState }
 
             | Handle h ->
-                let newHandler = h.Handler // string, inchangé
                 let newState = replaceCoreTerm substitutions h.State
                 let newToHandle = replaceCoreTerm substitutions h.ToHandle
                 if newState = h.State && newToHandle = h.ToHandle then
@@ -122,5 +121,8 @@ module public CoreTermSubstitution =
                 Substitution
                     { Env = newEnv
                       InExpr = newInExpr }
+
+            | UsingContext ctx ->
+                UsingContext { ctx with Expr = replaceCoreTerm substitutions ctx.Expr }
 
             | Wildcard -> term

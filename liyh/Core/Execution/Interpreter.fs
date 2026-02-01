@@ -249,6 +249,7 @@ module Interpreter =
                 | Rule r -> addRule rm r, hm, ex
                 | Handler h -> rm, addHandler hm h, ex
                 | Extern e -> rm, hm, addExtern ex e
+                | other -> failwithf "TODO: %A" other
 
             ) (rmInit, hmInit, exInit)
 
@@ -456,6 +457,9 @@ module Interpreter =
 
         | Substitution sub ->
             failwithf "TODO: %A" sub
+        
+        | UsingContext ctx ->
+            failwithf "TODO: %A" ctx
 
         | AsClause(p, v) -> AsClause(substitute env p, v)
         | WhenClause(p, w) -> WhenClause(substitute env p, substitute env w)

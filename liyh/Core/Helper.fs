@@ -95,6 +95,9 @@ module public Helper =
                 { Env = List.map (fun (a, b) -> (a, flattenTermSequence b)) env
                   InExpr = flattenTermSequence inExpr }
 
+        | UsingContext ctx ->
+            UsingContext { ctx with Expr = flattenTermSequence ctx.Expr }
+
         | Wildcard -> term
 
     /// Retrieves variables that are not defined in `term` nor present in `boundVars`.
@@ -194,6 +197,9 @@ module public Helper =
                 let a = List.foldBack (snd >> loop >> Set.union) sub.Env Set.empty
                 let b = loop sub.InExpr
                 Set.union a b
+
+            | UsingContext ctx ->
+                loop ctx.Expr
 
             | Wildcard
             | Literal _ -> Set.empty

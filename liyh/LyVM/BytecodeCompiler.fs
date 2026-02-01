@@ -14,7 +14,8 @@ module public BytecodeCompiler =
           Env: Map<string, Reg>
           mutable PathCache: Map<Path, Reg>
           Arguments: Reg[]
-          Strategy: Strategy }
+          Strategy: Strategy
+          ActiveContexts: string list }
 
     let private runtimeError (msg: string) =
         let sb = new Text.StringBuilder()
@@ -90,18 +91,67 @@ module public BytecodeCompiler =
             nextLabelId <- nextLabelId + 1
             l
 
-        let coreRules =
+        let contextParents =
             program
-            |> List.choose (function Rule r -> Some r | _ -> None)
+            |> List.choose (function Context c -> Some (c.ContextName, c.Using) | _ -> None)
+            |> Map.ofList
+
+        // Retrieve all parents in order.
+        let getContextDependencies (contextName: string) =
+
+            let rec loop (contextName: string) (visited: Set<string>) =
+                if Set.contains contextName visited then []
+                else
+                    match Map.tryFind contextName contextParents with
+                    | Some parents ->
+                        let newVisited = Set.add contextName visited
+                        parents @ (parents |> List.collect (fun p -> loop p newVisited))
+                    | None -> []
+
+            loop contextName Set.empty
+
+        let inline createContextualName (symbolName: string) (contextName: string) =
+            symbolName + "$$" + contextName
+
+        let inline uncreateContextualName (symbolName: string) (contextName: string) =
+            symbolName.Replace("$$" + contextName, "")
+
+        let allRules =
+            program
+            |> List.collect (fun def ->
+                match def with
+                | Rule r -> [ (r.LHS, r, None) ]
+                | Context ctx ->
+                    ctx.Content
+                    |> List.choose (function Rule r -> Some r | _ -> None)
+                    |> List.map (fun r ->
+                        let newLhsSymbol =
+                            match r.LHS with
+                            | Symbol { Symbol = s } -> createContextualName s ctx.ContextName
+                            | _ -> failwithf "Invalid LHS" // should not happen
+
+                        let newLhs =
+                            match r.LHS with
+                            | Symbol s -> symbol newLhsSymbol s.Children
+                            | _ -> r.LHS
+
+                        let newRule = { r with LHS = newLhs }
+                        (newLhs, newRule, Some ctx.ContextName)
+                    )
+                | _ -> []
+            )
 
         let groupedRules =
-            coreRules
-            |> List.groupBy (fun rule ->
-                match rule.LHS with
+            allRules
+            |> List.groupBy (fun (lhs, _, _) ->
+                match lhs with
                 | Symbol { Symbol = symb; Children = children } -> (symb, List.length children)
                 | _ -> failwith "Invalid LHS")
 
-            |> List.map (fun ((name, arity), rules) ->
+            |> List.map (fun ((name, arity), items) ->
+                let (_, _, contextNameOpt) = List.head items
+                let rules = List.map (fun (_, r, _) -> r) items
+
                 let strategyWeight = function
                     | Outermost -> 2
                     | (Lazy | Strict | Memoize) -> 1
@@ -119,7 +169,8 @@ module public BytecodeCompiler =
                 let ruleInfo =
                     { Name = name
                       Arity = arity
-                      Strategy = unifiedStrategy }
+                      Strategy = unifiedStrategy
+                      ContextName = contextNameOpt }
 
                 (ruleInfo, sortedRules))
 
@@ -131,6 +182,39 @@ module public BytecodeCompiler =
 
         let globalContext =
             { SymbolLabels = globalLabels }
+
+        /// Resolves a symbol in the given compilation context, given its arity.
+        /// The search is first performed in active contexts (with implicit qualification),
+        /// then at the global level. Returns the resolved name and a boolean indicating whether the symbol
+        /// is used as a captured value (zero arity with existing rule).
+        let resolveSymbolForContext (context: CompilationContext) (symbolName: string) (arity: int) =
+            let dp = context.Global.SymbolLabels
+
+            let tryResolve name =
+                // Exact Match (function call)
+                if DispatchTable.contains (name, arity) dp then
+                    Some (name, false)
+
+                // Capture (symbol used as value, arity 0, but existing rule)
+                elif arity = 0 && DispatchTable.containsByName name dp then
+
+                    Some (name, true)
+
+                // Symbolic data
+                else
+                    None
+
+            let tryResolveInContext contextName =
+                let resolvedName = createContextualName symbolName contextName
+                tryResolve resolvedName
+
+            // search in active contexts
+            context.ActiveContexts
+            |> List.tryPick tryResolveInContext
+            // if no context claimed the symbol, try global
+            |> Option.orElseWith (fun () -> tryResolve symbolName)
+            // raw global data
+            |> Option.defaultValue (symbolName, false)
 
         let rec compilePath (context: CompilationContext) (path: Path) =
             match context.PathCache.TryGetValue path with
@@ -326,25 +410,32 @@ module public BytecodeCompiler =
                         // Outermost: each argument is reified in symbolic data.
                         List.map (compileAsData context) children
 
-                match DispatchTable.tryFindByNameArity (name, List.length children) context.Global.SymbolLabels with
-                | Some (label, strategy) ->
-                    if isTail then
-                        builder.Tailcall(label, argsRegs strategy)
-                        Reg 0 // dummy
-                    else
-                        builder.Call(label, argsRegs strategy)
+                let arity = List.length children
+                let (resolvedName, isCaptureWithinContext) = resolveSymbolForContext context name arity
 
-                | None ->
-                    let args =
-                        match context.Strategy with
-                        | Outermost ->
-                            // In the RHS of an outermost rule, we want to evaluate children
-                            // to allow function calls rather that a simple substitution.
-                            List.map (compileTerm context false) children
-                        | _ ->
-                            argsRegs context.Strategy
+                if isCaptureWithinContext then
+                    // Not a function call, but an "applicable" value
+                    builder.LoadAtom(resolvedName)
+                else
+                    match DispatchTable.tryFindByNameArity (resolvedName, List.length children) context.Global.SymbolLabels with
+                    | Some (label, strategy) ->
+                        if isTail then
+                            builder.Tailcall(label, argsRegs strategy)
+                            Reg 0 // dummy
+                        else
+                            builder.Call(label, argsRegs strategy)
 
-                    builder.AllocData(name, args)
+                    | None ->
+                        let args =
+                            match context.Strategy with
+                            | Outermost ->
+                                // In the RHS of an outermost rule, we want to evaluate children
+                                // to allow function calls rather that a simple substitution.
+                                List.map (compileTerm context false) children
+                            | _ ->
+                                argsRegs context.Strategy
+
+                        builder.AllocData(name, args)
 
             | FunctionalApplication { Base = b; Arguments = args } ->
                 let bReg = compileTerm context false b
@@ -590,6 +681,13 @@ module public BytecodeCompiler =
 
                 finalReg
 
+            | UsingContext { Context = contextName; Expr = expr } ->
+                let contextDependencies = getContextDependencies contextName
+                let addedContextDependencies = contextName :: contextDependencies @ context.ActiveContexts
+
+                let newCompilationContext = { context with ActiveContexts = addedContextDependencies }
+                compileTerm newCompilationContext isTail expr
+
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
 
         // Compiles an expression as a thunk (for the Lazy strategy)
@@ -638,9 +736,16 @@ module public BytecodeCompiler =
         and compileAsData (context: CompilationContext) (term: CoreTerm) =
             match term with
             | Symbol { Symbol = name; Children = children } ->
-                // We compile children as data recursively and allocate a symbolic object for it.
-                let childRegs = List.map (compileAsData context) children
-                builder.AllocData(name, childRegs)
+                let arity = List.length children
+                let (resolvedName, isCaptureWithinContext) = resolveSymbolForContext context name arity
+
+                if isCaptureWithinContext then
+                    // Not a function call, but an "applicable" value
+                    builder.LoadAtom(resolvedName)
+                else
+                    // A symbolic data structure
+                    let childRegs = List.map (compileAsData context) children
+                    builder.AllocData(resolvedName, childRegs)
 
             | RecordExtend { BaseRecord = base'; Extension = extensions } ->
                 // We compile fields as data recursively and allocate a symbolic object for it.
@@ -924,14 +1029,42 @@ module public BytecodeCompiler =
             let rulesArray = Array.ofList rules
             let tree = DecisionTreeCompiler.compileRules rulesArray
 
+            let activeContexts =
+                match key.ContextName with
+                | Some contextName -> contextName :: getContextDependencies contextName
+                | None -> []
+
             let context =
                 { Global = globalContext
                   Env = Map.empty
                   PathCache = Map.empty
                   Arguments = argRegs
-                  Strategy = strategy }
+                  Strategy = strategy
+                  ActiveContexts = activeContexts }
 
             let fallback () =
+
+                // The `tryFallbackToGlobal` mechanism prevents a local context from completely shadowing
+                // global functions that share the same name but do not satisfy the current context's rules.
+                // This ensures the implementation of the "overlay" resolution semantics: local definitions
+                // take precedence, followed by global ones, and finally symbolic data constructions.
+
+                let originalName =
+                    match key.ContextName with
+                    | Some contextName -> uncreateContextualName symbolName contextName
+                    | None -> symbolName
+
+                let tryFallbackToGlobal () =
+                    if DispatchTable.contains (originalName, arity) globalLabels then
+                        let globalLabel, _ = DispatchTable.get (originalName, arity) globalLabels
+                        if globalLabel = label then
+                            false // AllocData (don't loop forever)
+                        else
+                            builder.Tailcall(globalLabel, List.ofArray argRegs)
+                            true
+                    else
+                        false // AllocData
+
                 match strategy with
                 | Outermost ->
 
@@ -961,10 +1094,18 @@ module public BytecodeCompiler =
                     // STABLE label: a normal form has been reached (or blocked at the root),
                     // so we reconstruct the symbolic term.
                     builder.SetLabel(labelStable)
-                    builder.AllocData(symbolName, List.ofArray newArgs)
+                    if tryFallbackToGlobal() then
+                        // already jumped in `tryFallbackToGlobal`
+                        builder.Alloc() // dummy
+                    else
+                        builder.AllocData(originalName, List.ofArray newArgs)
 
                 | _ ->
-                    builder.AllocData(symbolName, List.ofArray argRegs)
+                    if tryFallbackToGlobal() then
+                        // already jumped in `tryFallbackToGlobal`
+                        builder.Alloc() // dummy
+                    else
+                        builder.AllocData(originalName, List.ofArray argRegs)
 
             let onMatch ruleIndex leafContext =
                 let rule = rulesArray.[ruleIndex]

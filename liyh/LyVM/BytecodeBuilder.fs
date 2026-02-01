@@ -365,7 +365,7 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.Delay, dstIdx, label, count, blockIdx))
         this.CompactStack(blockStart, count, dst)
 
-    member this.Force (Reg thunkReg) =
+    member public this.Force (Reg thunkReg) =
         let dst = this.Alloc()
         let (Reg dstIdx) = dst
 

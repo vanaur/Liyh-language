@@ -15,6 +15,7 @@ module Definitions =
         | Type
         | TypeAlias
         | Notation
+        | Context
 
         override this.ToString () =
             match this with
@@ -25,6 +26,7 @@ module Definitions =
             | Type -> "type"
             | TypeAlias -> "type alias"
             | Notation -> "notation"
+            | Context -> "context"
 
     /// Returns the definition type from the given top level definition.
     let private getDefinitionType { Node = node } =
@@ -36,6 +38,7 @@ module Definitions =
         | TopLevel.Type _ -> Some Type
         | TopLevel.TypeAlias _ -> Some TypeAlias
         | TopLevel.Notation _ -> Some Notation
+        | TopLevel.Context _ -> Some Context
         | _ -> None
 
     /// Classify the definitions in a Map.
@@ -75,6 +78,7 @@ module Definitions =
         | TopLevel.Type { Name = name } -> name
         | TopLevel.TypeAlias (name', _, _) -> name'
         | TopLevel.Notation notation -> notation.NotationName.Node
+        | TopLevel.Context ctx -> ctx.Name.Node
         | _ -> failwith "??"
 
     /// Try to return the definition according to its type and its name, if found.

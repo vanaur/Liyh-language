@@ -230,6 +230,8 @@ module private ParsingErorr =
             let whenErrors = defaultArg (handler.WhenClause |> Option.map collectParsingErrorsFromExpression) []
             let bodyErrors = collectParsingErrorsFromExpression handler.Body
             stateErrors @ patternErrors @ whenErrors @ bodyErrors
+        | Context { Content = content } ->
+            List.collect collectParsingErrorsFromTopLevel content
         | Effect _ | Type _ | TypeAlias _ | Extern _ | Measure | Unit | UnitSystem | UnitConversion | ModuleExport _ -> []
         | Notation notation -> collectParsingErrorsFromExpression notation.NotationIs
 
@@ -287,6 +289,8 @@ module private ParsingErorr =
             collectParsingErrorsFromExpression rw.Node.Value @ collectParsingErrorsFromExpression rw.Node.HandlerState
         | Substitution(env, inExpr) ->
             List.collect (snd >> collectParsingErrorsFromExpression) env @ collectParsingErrorsFromExpression inExpr
+        | UsingContext { ContentExpr = expr } ->
+            collectParsingErrorsFromExpression expr
 
     and private collectParsingErrorsFromPattern (pat: PatternWithPos) =
         match pat.Node with
@@ -422,7 +426,7 @@ module Parser =
         [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "as"; "_"; "->"; "["; "|>";
           "if"; "then"; "else"; "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "=";
           "notation"; "using"; "use"; "innermost"; "outermost"; "invalid"; "--"; "to"; "downto"; "type";
-          "type-alias"; "."; "extern" ]
+          "type-alias"; "."; "extern"; "context" ]
 
     let private reservedSet = System.Collections.Generic.HashSet<string>(reserved)
 
@@ -473,7 +477,7 @@ module Parser =
                     let! rest = manySatisfy (fun c -> c = '_' || System.Char.IsLetter c || isExtendedDigit c)
                     return string first + rest
                 } <?> "valid name (unicode string that does not begin with a number or '_')"
-            
+
             let parsePlainName =
                 between
                     (pchar '`' <?> "")
@@ -1163,6 +1167,17 @@ module Parser =
             parseRHS
             (fun a b -> Expression.Lambda { Patterns = a; Body = b })
 
+    let private parseUsingContext =
+        pipe4
+            (spacesOrComment >>. skipString "using" >>. spacesOrComment >>. skipString "context")
+            (spacesOrComment >>. parseWithPos NameParser.parseIdentifier)
+            (spacesOrComment >>. skipString "do")
+            (spacesOrComment >>. parseExpressionRef)
+            (fun _ contextName _ contextExpr ->
+                UsingContext
+                    { ContextName = contextName
+                      ContentExpr = contextExpr })
+
     // using <HANDLER>(<STATE>) handle <TO HANDLE>
     let private parseHandleEffect =
         pipe3
@@ -1252,6 +1267,7 @@ module Parser =
               parseWithPos parseForTo
               parseWithPos parseLetVar
               parseWithPos parseLambdaRule
+              parseWithPos parseUsingContext
               parseWithPos parseHandleEffect ]
 
         choice parsers <?> "valid expression" .>> spacesOrComment
@@ -1710,7 +1726,28 @@ module Parser =
         }
         |>> TopLevel.Notation
 
-    let private parseTopLevel =
+    let rec private parseContext () =
+        let using =
+            pipe2
+                (spacesOrComment >>. skipString "using")
+                (spacesOrComment >>.
+                    sepBy1
+                        (spacesOrComment >>. parseWithPos NameParser.parseIdentifier <?> "other inherited contexts")
+                        (spacesOrComment >>? skipChar ','))
+                (fun _ lst -> lst)
+
+        pipe4
+            (spaces >>. skipString "context")
+            (spacesOrComment >>. parseWithPos (NameParser.parseName true))
+            (spacesOrComment >>. attempt (opt using))
+            (spacesOrComment >>. parseTopLevelBlock)
+            (fun _ name using content ->
+                Context
+                    { Name = name
+                      Using = Option.defaultValue [] using
+                      Content = content })
+
+    and private parseTopLevel =
         let topLevelParsers =
             [ parseWithPos parseUse
               parseWithPos parseExport
@@ -1718,6 +1755,7 @@ module Parser =
               parseWithPos parseTypeAlias
               parseWithPos parseType
               parseWithPos parseNotation
+              parseWithPos (parseContext ())
               attempt (parseWithPos parseHandler)
               parseWithPos parseExtern
               parseWithPos parseRule ]
@@ -1736,7 +1774,7 @@ module Parser =
             parseComment
             parseWhitespace ]
 
-    let private blockOfTopLevel parser errorHandler =
+    and private blockOfTopLevel parser errorHandler =
         let itemParser = Recoverable.recover parser errorHandler
 
         parse {
@@ -1781,7 +1819,7 @@ module Parser =
             return head :: tail
         }
 
-    let private parseTopLevelBlock =
+    and private parseTopLevelBlock =
         fun (stream: CharStream<NotationState IndentState>) ->
             let sourceCode = stream.UserState.UserState.SourceCode
 
@@ -1798,7 +1836,7 @@ module Parser =
             
             parser stream
 
-    let private parseModule =
+    and private parseModule =
         pipe2
             (spaces >>. many (spaces >>? skipString "--|" >>. restOfLine false))
             (parseTopLevelBlock)

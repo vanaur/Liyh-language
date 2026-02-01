@@ -152,7 +152,8 @@ type public Strategy =
 type public RuleInfo =
     { Name: string
       Arity: int
-      Strategy: Strategy }
+      Strategy: Strategy
+      ContextName: string option }
 
 type public LabelIndex = int
 type public DispatchTable = Map<RuleInfo, LabelIndex>  // rule info : label
@@ -169,11 +170,22 @@ module public DispatchTable =
             then Some (label, ruleInfo.Strategy)
             else None)
 
+    /// Assuming the given key is present in the dispatch table, returns its associated value.
+    let public get (name: string, arity: int) (dispatchTable: DispatchTable) =
+        match tryFindByNameArity (name, arity) dispatchTable with
+        | Some value -> value
+        | None -> failwithf "Unfound key in the dispatch table: %A" (name, arity)
+
     /// Checks if the given key is found in the given dispatch table.
     let public contains (name: string, arity: int) (dispatchTable: DispatchTable) =
         dispatchTable
         |> tryFindByNameArity (name, arity)
         |> Option.isSome
+
+    /// Checks if the given dispatch table contains an entry with the given name.
+    let public containsByName (name: string) (dispatchTable: DispatchTable) =
+        dispatchTable
+        |> Map.exists (fun ruleInfo _ -> ruleInfo.Name = name)
 
     /// Gets the number of entry in the given dispatch table.
     let public count (dispatchTable: DispatchTable) =

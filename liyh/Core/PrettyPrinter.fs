@@ -159,7 +159,8 @@ module PrettyPrinter =
             let inExprStr = prettyPrintExprInternal inExpr depth
             sprintf "[%s] in %s" (System.String.Join(", ", envStr)) inExprStr
 
-        | other -> failwithf "Todo (pretty print): %A" other
+        | UsingContext { Context = ctx; Expr = expr } ->
+            sprintf "using context %s do %s" ctx (prettyPrintExprInternal expr depth)
 
     and private prettyPrintDefinitionInternal (def: CoreDefinition) : string =
         match def with

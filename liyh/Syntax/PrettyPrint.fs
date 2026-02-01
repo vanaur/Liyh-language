@@ -131,6 +131,11 @@ module PrettyPrint =
                 let envStr = List.map (fun (a, b) -> sprintf "%s -> %s" a (prettyPrintExpression b)) env
                 let inExprStr = prettyPrintExpression inExpr
                 sprintf "[%s] in %s" (System.String.Join(", ", envStr)) inExprStr
+            | UsingContext { ContextName = name; ContentExpr = expr } ->
+                sprintf
+                    "using context %s do %s"
+                    (string name)
+                    (prettyPrintExpression expr)
 
     and public prettyPrintLiteral =
         removePos

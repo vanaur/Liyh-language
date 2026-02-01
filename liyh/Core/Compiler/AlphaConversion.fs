@@ -192,9 +192,12 @@ module AlphaConversion =
                 { Env = List.map (fun (a, b) -> a, ac renaming b) sub.Env
                   InExpr = ac renaming sub.InExpr }
 
+        | UsingContext ctx ->
+            UsingContext { ctx with Expr = ac renaming ctx.Expr }
+
         | Wildcard -> term
 
-    let public alphaConversionDefinition (getUniqueVariable: string -> string) (def: CoreDefinition) =
+    let rec public alphaConversionDefinition (getUniqueVariable: string -> string) (def: CoreDefinition) =
         let ac = alphaConversion getUniqueVariable
 
         match def with
@@ -233,5 +236,9 @@ module AlphaConversion =
                     State = newState
                     RHS = newRHS
                     WhenClause = newWhen }
+
+        | Context ctx ->
+            let content = ctx.Content |> List.map (alphaConversionDefinition getUniqueVariable) 
+            Context { ctx with Content = content }
 
         | Extern _ -> def
