@@ -194,5 +194,5 @@ module public DispatchTable =
 type public CompiledProgram =
     { Program: ByteCodeInstr[]          // the compiled program
       EntryPointLabel: LabelIndex       // the entry point of the program (label)
-      DispatchTable: DispatchTable }
+      DispatchTable: DispatchTable }    // dispatch table (RuleInfo : LabelIndex)
 

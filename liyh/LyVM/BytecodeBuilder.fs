@@ -81,6 +81,8 @@ type public ByteCodeBuilder() =
             List.iteri (fun i (Reg src) -> instructions.Add(Instr(OpCode.Mov, start.Index + i, src, 0, 0))) regs
             (start, List.length regs)
 
+    /// Compacts the stack by removing unused slots between block start and result, moving the
+    /// result value down and updating stack top. This is mainly used at the end of blocks.
     member private __.CompactStack (blockStart: Reg, blockSize: int, result: Reg) =
         if blockSize > 0 then
             let (Reg startIndex) = blockStart
