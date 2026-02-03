@@ -430,8 +430,24 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.PPShow, dstIdx, src, 0, 0))
         dst
 
+    /// A smol peephole optimizer for a very common pattern that arise in the compiler.
+    member private __.OptimizePeephole() =
+        let mutable i = 0
+        while i < instructions.Count - 1 do
+            match instructions.[i], instructions.[i + 1] with
+            
+            // Pattern: r_x = op(...); r_y = mov r_x  =>  r_y = op(...)
+            | Instr(op, dst1, b, c, d), Instr(OpCode.Mov, dst2, src, _, _) 
+                when dst1 = src && op <> OpCode.Mov ->
+                instructions.[i] <- Instr(op, dst2, b, c, d)
+                instructions.RemoveAt(i + 1)
+
+            | _ -> i <- i + 1
+
     /// Generates F#-wise version of the final bytecode.
-    member public __.Compile(entryLabel: int, dispatchTable: DispatchTable) =
+    member public this.Compile(entryLabel: int, dispatchTable: DispatchTable) =
+        this.OptimizePeephole() // this is cheap
+
         { Program = instructions.ToArray()
           EntryPointLabel = entryLabel
           DispatchTable = dispatchTable }

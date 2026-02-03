@@ -140,7 +140,7 @@ module CoreCompiler =
 
         let runningVariableName =
             match variableNameSource with
-            | FromPattern pattern -> tryGetVariable pattern |> Option.defaultValue (UniqueName.get "")
+            | FromPattern pattern -> Option.defaultValue (UniqueName.get "itr") (tryGetVariable pattern)
             | FromString name -> name
 
         let runningVariable = Variable runningVariableName
@@ -151,10 +151,28 @@ module CoreCompiler =
                   Value = initVal
                   IsVariable = true }
 
-        let incrementExpr =
-            match stepValue with
-            | None -> symbol incrementation [ runningVariable; CoreTerm.Literal(CoreLiteral.Integer 1I) ]
-            | Some step -> symbol incrementation [ runningVariable; step ]
+        // Evaluate the end value once before the loop.
+        let limitName = UniqueName.get "limit"
+        let limitVariable = Variable limitName
+
+        let limitDeclaration = 
+            CoreLet
+                { Pattern = limitVariable
+                  Value = endVal
+                  IsVariable = false }
+
+        // Evaluate the step value once before the loop
+        let stepName = UniqueName.get "step"
+        let stepVariable = Variable stepName
+
+        let stepDeclaration = 
+            CoreLet 
+                { Pattern = stepVariable
+                  Value = stepValue |> Option.defaultValue (CoreTerm.Literal(CoreLiteral.Integer 1I))
+                  IsVariable = false }
+
+        let incrementExpr = 
+            symbol incrementation [ runningVariable; stepVariable ]
 
         let whileLoopBody =
             TermSequence
@@ -163,10 +181,14 @@ module CoreCompiler =
 
         let whileLoop =
             WhileLoop
-                { Predicate = symbol comparison [ runningVariable; endVal ]
+                { Predicate = symbol comparison [ runningVariable; limitVariable ]
                   Body = whileLoopBody }
 
-        TermSequence [ runningVariableDeclaration; whileLoop ]
+        TermSequence 
+            [ limitDeclaration
+              stepDeclaration
+              runningVariableDeclaration
+              whileLoop ]
 
     type private State =
         { Notations: Notation list

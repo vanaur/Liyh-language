@@ -8,6 +8,7 @@ namespace Liyh.LyVM
 
 module public BytecodeCompiler =
     open System
+    open System.Collections.Generic
     open Liyh.Core
     open Liyh.Core.DecisionTree
     open Liyh.Core.DecisionTree.DecisionTreeCompiler
@@ -21,7 +22,8 @@ module public BytecodeCompiler =
           mutable PathCache: Map<Path, Reg>     // cache for decision tree's path
           Arguments: Reg[]                      // arguments for closures
           Strategy: Strategy                    // the current evaluation strategy
-          ActiveContexts: string list }         // the stack of active Liyh's contexts
+          ActiveContexts: string list           // the stack of active Liyh's contexts
+          EvaluatedRegs: HashSet<int> }         // keep track of the "FORCED" registers
 
 
     // --- Helper modules --- //
@@ -249,14 +251,17 @@ module public BytecodeCompiler =
 
             sb.Append(header).Append(msg).ToString()
 
+        /// Marks the given registerd as "evaluated" not to "FORCE" it after.
+        let public markEvaluated (reg: Reg) (ctx: CompilationContext) =
+            ctx.EvaluatedRegs.Add(reg.Index) |> ignore
+            reg
 
     // --- The actual compiler class --- //
 
 
     /// Class containing all compilation logic, encapsulates mutable states and numerous functions using them.
     /// The only public member is `__.Compile` which returns the compiled bytecode of the given program.
-    /// The `optimize` flag has no effect, for now.
-    type private Compiler(program: CoreProgram, optimize: bool) =
+    type private Compiler(program: CoreProgram) =
         let builder = new ByteCodeBuilder()
         let mutable nextLabelId = 1000
 
@@ -296,6 +301,13 @@ module public BytecodeCompiler =
             builder.Mov(resReg, cmpRes)
             resReg
 
+        /// The `builder.Mov` instruction but updating the compilation context for tracking.
+        let emitMov (dest: Reg, src: Reg) (ctx: CompilationContext) =
+            builder.Mov(dest, src)
+
+            if ctx.EvaluatedRegs.Contains(src.Index)
+            then ctx.EvaluatedRegs.Add(dest.Index) |> ignore
+            else ctx.EvaluatedRegs.Remove(dest.Index) |> ignore
 
         // --- Path and decision tree compilation --- //
 
@@ -380,7 +392,9 @@ module public BytecodeCompiler =
             : Reg =
 
             let inline branchContext (ctx': CompilationContext) =
-                { ctx' with PathCache = ctx'.PathCache }
+                { ctx' with
+                    PathCache = ctx'.PathCache
+                    EvaluatedRegs = new HashSet<int>(ctx'.EvaluatedRegs) }
 
             match tree with
             | Fail -> fallback()
@@ -427,7 +441,7 @@ module public BytecodeCompiler =
                         let ctxBranch = branchContext ctx
                         let res = compileTree ctxBranch subTree onMatch fallback
 
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctxBranch
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
 
@@ -435,11 +449,11 @@ module public BytecodeCompiler =
                     | Some def ->
                         let ctxDefault = branchContext ctx
                         let res = compileTree ctxDefault def onMatch fallback
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctxDefault
 
                     | None ->
                         let res = fallback()
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctx
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -459,7 +473,7 @@ module public BytecodeCompiler =
 
                     for KeyValue(lit, subTree) in cases do
                         let nextLbl = freshLabel()
-                        let litReg = compileLiteral lit
+                        let litReg = compileLiteral lit ctx
 
                         let eq = builder.Eq(testReg, litReg)
                         builder.JumpFalse(eq, nextLbl)
@@ -467,7 +481,7 @@ module public BytecodeCompiler =
                         let ctxBranch = branchContext ctx
                         let res = compileTree ctxBranch subTree onMatch fallback
 
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctxBranch
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
                     
@@ -475,11 +489,11 @@ module public BytecodeCompiler =
                     | Some def ->
                         let ctxDefault = branchContext ctx
                         let res = compileTree ctxDefault def onMatch fallback
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctxDefault
 
                     | None ->
                         let res = fallback()
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctx
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -506,7 +520,7 @@ module public BytecodeCompiler =
                     let ctxBranch = branchContext ctx
                     let res = compileTree ctxBranch successTree onMatch fallback
 
-                    builder.Mov(phiReg, res)
+                    emitMov (phiReg, res) ctxBranch
                     builder.Jump(endLabel)
                     builder.SetLabel(failLabel)
 
@@ -514,11 +528,11 @@ module public BytecodeCompiler =
                     | Some failTree ->
                         let ctxDefault = branchContext ctx
                         let res = compileTree ctxDefault failTree onMatch fallback
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctxDefault
 
                     | None ->
                         let res = fallback()
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctx
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -553,11 +567,11 @@ module public BytecodeCompiler =
                     | Some d ->
                         let ctxDefault = branchContext ctx
                         let res = compileTree ctxDefault d onMatch fallback
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctxDefault
 
                     | None ->
                         let res = fallback()
-                        builder.Mov(phiReg, res)
+                        emitMov (phiReg, res) ctx
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -568,7 +582,12 @@ module public BytecodeCompiler =
         /// Compiles a term using a strict evaluation strategy.
         and compileTermStrict (context: CompilationContext) (term: CoreTerm) =
             let reg = compileTerm context false term
-            builder.Force(reg) 
+
+            if context.EvaluatedRegs.Contains(reg.Index) then
+                reg
+            else
+                let forcedReg = builder.Force(reg)
+                MiscHelpers.markEvaluated forcedReg context
 
         /// Helper to compile the call to the internals functions for boolean comparisons.
         /// Returns a raw result (0 or 1). This is used when the user does not need the boolean result.
@@ -597,7 +616,9 @@ module public BytecodeCompiler =
         /// Returns a symbolic result (true or false). This is used when the user needs the boolean result.
         and tryCompileIntrinsicBoolSymbolic (context: CompilationContext) (term: CoreTerm) =
             match tryCompileIntrinsicBoolRaw context term with
-            | Some rawReg -> Some (convertBoolToAtom rawReg)
+            | Some rawReg ->
+                let atomReg = convertBoolToAtom rawReg
+                Some (MiscHelpers.markEvaluated atomReg context)
             | None -> None
 
         /// Helper to compile the call to the internals functions for arithmetic.
@@ -617,8 +638,8 @@ module public BytecodeCompiler =
                     | Internals.Div -> builder.Div(rLeft, rRight)
                     | Internals.Mod -> builder.Mod(rLeft, rRight)
                     | _ -> failwith "??" // this may not happen
-                
-                Some rawResult
+
+                Some (MiscHelpers.markEvaluated rawResult context)
             | _ -> None
 
         /// Helper to compile the call to the internals functions for primitive type checking.
@@ -641,13 +662,14 @@ module public BytecodeCompiler =
                 let lblEnd = freshLabel()
 
                 builder.TestTag(rArg, targetTag, lblFail)
-                builder.Mov(rRes, builder.LoadAtom(Builtin.True))
+                emitMov (rRes, builder.LoadAtom(Builtin.True)) context
                 builder.Jump(lblEnd)
                 builder.SetLabel(lblFail)
-                builder.Mov(rRes, builder.LoadAtom(Builtin.False))
+                emitMov (rRes, builder.LoadAtom(Builtin.False)) context
                 builder.SetLabel(lblEnd)
-                Some rRes
-            
+
+                Some (MiscHelpers.markEvaluated rRes context)
+
             | _ -> None
 
         /// Helper to compile the call to the internals functions for other primitives.
@@ -839,7 +861,7 @@ module public BytecodeCompiler =
             let rootReg =
                 if let'.IsVariable then
                     let r = builder.Alloc()
-                    builder.Mov(r, valReg)
+                    emitMov (r, valReg) context
                     r
                 else
                     valReg
@@ -882,7 +904,7 @@ module public BytecodeCompiler =
                         let finalReg =
                             if isVar then
                                 let newReg = builder.Alloc()
-                                builder.Mov(newReg, valReg)
+                                emitMov (newReg, valReg) context
                                 newReg
                             else
                                 valReg
@@ -895,7 +917,7 @@ module public BytecodeCompiler =
                         let rootReg =
                             if isVar then
                                 let r = builder.Alloc()
-                                builder.Mov(r, valReg)
+                                emitMov (r, valReg) context
                                 r
                             else valReg
                         
@@ -927,10 +949,19 @@ module public BytecodeCompiler =
             compileSeq context.Env terms
 
         and compileWhileLoop (whileLoop: CoreWhile) (context: CompilationContext) =
-            let startLabel = freshLabel()
+            let loopLabel = freshLabel()
+            let testLabel = freshLabel()
             let endLabel = freshLabel()
 
-            builder.SetLabel(startLabel)
+            // Loop Inversion: Jump to the test first.
+            builder.Jump(testLabel)
+
+            // The body of the loop.
+            builder.SetLabel(loopLabel)
+            builder.Scope(fun _ -> compileTerm context false whileLoop.Body |> ignore)
+
+            // The predicate check.
+            builder.SetLabel(testLabel)
 
             // Attempts to compile the predicate as a native comparison.
             let predBool =
@@ -940,10 +971,9 @@ module public BytecodeCompiler =
                     let predReg = compileTerm context false whileLoop.Predicate
                     convertAtomToBool predReg
 
-            builder.JumpFalse(predBool, endLabel)
+            // If true, jump back to the body.
+            builder.JumpTrue(predBool, loopLabel)
 
-            builder.Scope(fun _ -> compileTerm context false whileLoop.Body |> ignore)
-            builder.Jump(startLabel)
             builder.SetLabel(endLabel)
             builder.Unit()
 
@@ -972,7 +1002,8 @@ module public BytecodeCompiler =
 
             | { Symbol = "force"; Children = [ expr ] } ->
                 let thunkReg = compileTerm context isTail expr
-                builder.Force(thunkReg)
+                let res = builder.Force(thunkReg)
+                MiscHelpers.markEvaluated res context
 
             | _ ->
 
@@ -1060,15 +1091,18 @@ module public BytecodeCompiler =
             match Map.tryFind name context.Env with
             | None -> failwithf "Cannot compile the variable update '%s'." name
             | Some targetReg ->
-                builder.Mov(targetReg, valReg)
+                emitMov (targetReg, valReg) context
                 builder.Unit()
 
-        and compileLiteral (lit: CoreLiteral) =
-            match lit with
-            | Integer i -> builder.LoadInt (int i)
-            | Float f -> builder.LoadFloat f
-            | String s -> builder.LoadString s
-            | Char c -> builder.LoadChar c
+        and compileLiteral (lit: CoreLiteral) (context: CompilationContext) =
+            let reg =
+                match lit with
+                | Integer i -> builder.LoadInt (int i)
+                | Float f -> builder.LoadFloat f
+                | String s -> builder.LoadString s
+                | Char c -> builder.LoadChar c
+
+            MiscHelpers.markEvaluated reg context
 
         and compileVariable (name: string) (context: CompilationContext) =
             match Map.tryFind name context.Env with
@@ -1079,7 +1113,7 @@ module public BytecodeCompiler =
             match term with
             | Intrinsic context reg -> reg
             | Variable name -> compileVariable name context
-            | Literal lit -> compileLiteral lit
+            | Literal lit -> compileLiteral lit context
             | RecordExtend record -> compileRecordExtend record context
             | CoreLet let' -> compileLet let' context
             | Match match' -> compileMatch match' context isTail
@@ -1092,8 +1126,6 @@ module public BytecodeCompiler =
             | Substitution sub -> compileSubstitution sub context
             | UsingContext usingContext -> compileUsingContext usingContext context isTail
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
-
-        new(program: CoreProgram) = new Compiler(program, false)
 
         member public __.Compile() =
 
@@ -1157,7 +1189,8 @@ module public BytecodeCompiler =
                       PathCache = Map.empty
                       Arguments = argRegs
                       Strategy = strategy
-                      ActiveContexts = activeContexts }
+                      ActiveContexts = activeContexts
+                      EvaluatedRegs = new HashSet<int>() }
 
                 let fallback () =
 
@@ -1261,7 +1294,7 @@ module public BytecodeCompiler =
 
     /// Compiles a LiyhCore program into a LyVM's bytecode equivalent program.
     /// The `optimize` flag has no effect, for now.
-    let public compile (program: CoreProgram) (optimize: bool) =
-        let compiler = new Compiler(program, optimize)
+    let public compile (program: CoreProgram) =
+        let compiler = new Compiler(program)
         compiler.Compile()
 
