@@ -49,6 +49,32 @@ type public ByteCodeBuilder() =
     let mutable maxStackTop = 0
     let mutable stackTop = 0
 
+    member private this.IsUnreachable() =
+        if instructions.Count = 0 then false
+        else
+            match instructions.[instructions.Count - 1] with
+            | Instr(OpCode.Ret, _, _, _, _)
+            | Instr(OpCode.Halt, _, _, _, _)
+            | Instr(OpCode.Tailcall, _, _, _, _) 
+            | Instr(OpCode.Jump, _, _, _, _) -> true
+            | _ -> false
+
+    /// Checks whether a list of registers forms a contiguous block (rᵢ, rᵢ₊₁, ...).
+    /// Returns the starting register if this is the case, otherwise None.
+    member private __.TryGetContiguousBlock (regs: Reg list) =
+        match regs with
+        | [] -> Some (Reg 0)
+        | (Reg first) :: tail ->
+            let rec check current rest =
+                match rest with
+                | [] -> true
+                | (Reg next) :: xs -> 
+                    if next = current + 1 then check next xs
+                    else false
+            
+            if check first tail then Some (Reg first)
+            else None
+
     /// Allocates a new register.
     member public __.Alloc() =
         let reg = Reg stackTop
@@ -176,35 +202,66 @@ type public ByteCodeBuilder() =
     member public __.JumpTrue (Reg cond, label: int) =
         instructions.Add(Instr(OpCode.JumpTrue, cond, label, 0, 0))
 
-    member public __.Ret (Reg r) =
-        instructions.Add(Instr(OpCode.Ret, r, 0, 0, 0))
-    
+    member public this.Ret (Reg r) =
+        // Sometime, the compiler emit a `ret` instruction, but it is unreachable.
+        if not (this.IsUnreachable()) then
+            instructions.Add(Instr(OpCode.Ret, r, 0, 0, 0))
+
     member public __.Mov (Reg dst, Reg src) =
         instructions.Add(Instr(OpCode.Mov, dst, src, 0, 0))
 
     member public this.Call (label: int, args: Reg list) =
-        let (blockStart, count) = this.PrepareBlock args
-        let dst = this.Alloc()
-        let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
+        // The VM needs the arguments to be continious, so we detect if the given registers
+        // are already continious not the emit useless `mov` instructions.
+        match this.TryGetContiguousBlock args with
+        | Some (Reg startIdx) ->
+            let dst = this.Alloc()
+            let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.Call, label, blockIdx, count, dstIdx))
-        this.CompactStack(blockStart, count, dst)
+            instructions.Add(Instr(OpCode.Call, label, startIdx, args.Length, dstIdx))
+            dst
+
+        | None ->
+            let (blockStart, count) = this.PrepareBlock args
+            let dst = this.Alloc()
+            let (Reg blockIdx) = blockStart
+            let (Reg dstIdx) = dst
+
+            instructions.Add(Instr(OpCode.Call, label, blockIdx, count, dstIdx))
+            this.CompactStack(blockStart, count, dst)
 
     member public this.Tailcall (label: int, args: Reg list) =
-        let (blockStart, count) = this.PrepareBlock args
-        let (Reg blockIdx) = blockStart
+        // The VM needs the arguments to be continious, so we detect if the given registers
+        // are already continious not the emit useless `mov` instructions.
+        match this.TryGetContiguousBlock args with
+        | Some (Reg startIdx) ->
+            instructions.Add(Instr(OpCode.Tailcall, label, startIdx, args.Length, 0))
 
-        instructions.Add(Instr(OpCode.Tailcall, label, blockIdx, count, 0))
+        | None ->
+            let (blockStart, count) = this.PrepareBlock args
+            let (Reg blockIdx) = blockStart
+
+            instructions.Add(Instr(OpCode.Tailcall, label, blockIdx, count, 0))
 
     member public this.Apply (Reg fnReg, args: Reg list) =
-        let (blockStart, count) = this.PrepareBlock(args)
-        let dst = this.Alloc()
-        let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
+        // The VM needs the arguments to be continious, so we detect if the given registers
+        // are already continious not the emit useless `mov` instructions.
+        match this.TryGetContiguousBlock args with
+        | Some (Reg startIdx) ->
+            let dst = this.Alloc()
+            let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.Apply, fnReg, blockIdx, count, dstIdx))
-        this.CompactStack(blockStart, count, dst)
+            instructions.Add(Instr(OpCode.Apply, fnReg, startIdx, args.Length, dstIdx))
+            dst
+
+        | None ->
+            let (blockStart, count) = this.PrepareBlock args
+            let dst = this.Alloc()
+            let (Reg blockIdx) = blockStart
+            let (Reg dstIdx) = dst
+
+            instructions.Add(Instr(OpCode.Apply, fnReg, blockIdx, count, dstIdx))
+            this.CompactStack(blockStart, count, dst)
 
     member public this.LoadInt (value: int) =
         let dst = this.Alloc()
