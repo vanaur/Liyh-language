@@ -864,11 +864,26 @@ module Parser =
         do parseTypeRef.Value <-
             spacesOrComment >>. parseTypeWithContext .>> spacesOrComment
 
-    module private PatternParser =
+    module private rec PatternParser =
         // Forward reference to resolve recursion
         let private parsePatternRefHolder = createParserForwardedToRef<PatternWithPos, NotationState IndentState>()
         let private parsePatternRef = fst parsePatternRefHolder
         let private parsePatternImpl = snd parsePatternRefHolder
+
+        let private parsePatternTerm () =
+            parseAtomicPattern
+            .>>.
+            many (
+                between
+                    (skipChar '[' >>. spacesOrComment)
+                    (spacesOrComment >>. skipChar ']')
+                    (sepBy parsePatternRef (spacesOrComment >>. skipChar ',' >>. spacesOrComment))
+            )
+            |>> fun (basePattern, postfixesList) ->
+                List.fold (fun pattern args ->
+                    { Node = Pattern.ApplyPattern(pattern, args)
+                      Pos = pattern.Pos
+                      Pos' = pattern.Pos' }) basePattern postfixesList
 
         // 'x, 'myVar
         let private parseVariablePattern =
@@ -943,19 +958,7 @@ module Parser =
                 let engine = state.MixfixPatternEngine
                 let operators = state.MixfixOperators
 
-                engine.CreateParser operators parseAtomicPattern stream
-
-        let private parsePatternWithPostfixInternal () =
-            parsePatternWithMixfixInternal ()
-            .>>. many (
-                between (skipChar '[' >>. spacesOrComment) (spacesOrComment >>. skipChar ']')
-                    (sepBy parsePatternRef (spacesOrComment >>. skipChar ',' >>. spacesOrComment))
-            )
-            |>> fun (basePattern, postfixesList) ->
-                List.fold (fun pattern args ->
-                    { Node = Pattern.ApplyPattern(pattern, args)
-                      Pos = pattern.Pos
-                      Pos' = pattern.Pos' }) basePattern postfixesList
+                engine.CreateParser operators (parsePatternTerm ()) stream
 
         // as, when, `x : Type`
         let private parsePatternWithModifiersInternal () =
@@ -980,7 +983,7 @@ module Parser =
                       Pos = basePattern.Pos
                       Pos' = basePattern.Pos' }
 
-            parsePatternWithPostfixInternal ()
+            parsePatternWithMixfixInternal ()
             >>= fun basePattern ->
                 choice [
                     attempt (parseAs basePattern)
