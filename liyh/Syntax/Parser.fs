@@ -476,7 +476,7 @@ module Parser =
                     let! first = satisfy (fun c -> c = '_' || System.Char.IsLetter c)
                     let! rest = manySatisfy (fun c -> c = '_' || System.Char.IsLetter c || isExtendedDigit c)
                     return string first + rest
-                } <?> "valid name (unicode string that does not begin with a number or '_')"
+                } <?> "valid name (unicode string that does not begin with a number)"
 
             let parsePlainName =
                 between
@@ -928,9 +928,9 @@ module Parser =
         let private parseAtomicPattern =
             choice [
                 attempt (parseWithPos parseVariablePattern)
+                attempt (parseWithPos parseSymbolPattern)
                 attempt (parseWithPos parseWildcard)
                 attempt (parseWithPos parseLiteralPattern)
-                attempt (parseWithPos parseSymbolPattern)
                 attempt (parseWithPos parseTuplePattern)
                 attempt (parseWithPos parseListPattern)
                 attempt (parseWithPos parseRecordPattern)
