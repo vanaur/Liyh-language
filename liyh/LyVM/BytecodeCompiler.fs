@@ -9,6 +9,7 @@ namespace Liyh.LyVM
 module public BytecodeCompiler =
     open System
     open System.Collections.Generic
+    open Liyh.Utils
     open Liyh.Core
     open Liyh.Core.DecisionTree
     open Liyh.Core.DecisionTree.DecisionTreeCompiler
@@ -1265,8 +1266,11 @@ module public BytecodeCompiler =
                     | Strategy.Invalid ->
                         let errorValReg = compileTerm leafContext false rule.RHS
                         let errorStrReg = builder.PPShow(errorValReg)
-                        let prefixReg = builder.LoadString "Invalid rule matched: "
-                        let fullMsgReg = builder.StrCat(prefixReg, errorStrReg)
+                        let header = ColorTerm.colorize (ColorTerm.Color.Basic "red") "Invalid rule matched: "
+                        let prefixReg = builder.LoadString header
+                        let eolReg = builder.LoadString "\n"
+
+                        let fullMsgReg = builder.ConcatMany [ prefixReg; errorStrReg; eolReg ]
 
                         builder.Print(fullMsgReg)
                         builder.Halt(1) // error
