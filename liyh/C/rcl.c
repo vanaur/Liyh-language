@@ -919,7 +919,14 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
             APPEND("%s", (char *)header->children[0]);
 
         else if (header->id == SYM_FLOAT_NATIVE)
-            APPEND("%.*g", DBL_DIG, get_float(term));
+        {
+            const double value = get_float(term);
+
+            if (value == floor(value) && fabs(value) < 1e15)
+                APPEND("%.1f", value);
+            else
+                APPEND("%.*g", DBL_DIG, value);
+        }
 
         else if (header->id == SYM_RECORD_NATIVE)
         {
