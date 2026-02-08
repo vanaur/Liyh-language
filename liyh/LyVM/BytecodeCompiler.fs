@@ -178,7 +178,10 @@ module public BytecodeCompiler =
                    |> Array.map (makeIntrinsicRule 1)
 
                    [| Internals.Strcat |]
-                   |> Array.map (makeIntrinsicRule 2) |]
+                   |> Array.map (makeIntrinsicRule 2)
+                   
+                   Internals.primitiveTypeCastingInternals
+                   |> Array.map (makeIntrinsicRule 1) |]
 
         /// Returns all the rules defined in the given program.
         let private getAllRules (program: CoreProgram) =
@@ -692,12 +695,39 @@ module public BytecodeCompiler =
             
             | _ -> None
 
+        and tryCompileIntrinsicTypeCast (context: CompilationContext) (term: CoreTerm) =
+
+            let emitRawCast srcTerm targetType sourceType =
+                let srcReg = compileTermStrict context srcTerm
+                let resReg = builder.Cast(srcReg, targetType, sourceType) 
+                Some resReg
+
+            match term with
+            | Internals.Internal_cast_itf(x) -> emitRawCast x BindingRCL.SYM_FLOAT_NATIVE BindingRCL.SYM_INT_NATIVE
+            | Internals.Internal_cast_itc(x) -> emitRawCast x BindingRCL.SYM_CHAR_NATIVE BindingRCL.SYM_INT_NATIVE
+            | Internals.Internal_cast_its(x) -> emitRawCast x BindingRCL.SYM_STRING_NATIVE BindingRCL.SYM_INT_NATIVE
+
+            | Internals.Internal_cast_fti(x) -> emitRawCast x BindingRCL.SYM_INT_NATIVE BindingRCL.SYM_FLOAT_NATIVE
+            | Internals.Internal_cast_ftc(x) -> emitRawCast x BindingRCL.SYM_CHAR_NATIVE BindingRCL.SYM_FLOAT_NATIVE
+            | Internals.Internal_cast_fts(x) -> emitRawCast x BindingRCL.SYM_STRING_NATIVE BindingRCL.SYM_FLOAT_NATIVE
+
+            | Internals.Internal_cast_cti(x) -> emitRawCast x BindingRCL.SYM_INT_NATIVE BindingRCL.SYM_CHAR_NATIVE
+            | Internals.Internal_cast_ctf(x) -> emitRawCast x BindingRCL.SYM_FLOAT_NATIVE BindingRCL.SYM_CHAR_NATIVE
+            | Internals.Internal_cast_cts(x) -> emitRawCast x BindingRCL.SYM_STRING_NATIVE BindingRCL.SYM_CHAR_NATIVE
+
+            | Internals.Internal_cast_sti(x) -> emitRawCast x BindingRCL.SYM_INT_NATIVE BindingRCL.SYM_STRING_NATIVE
+            | Internals.Internal_cast_stf(x) -> emitRawCast x BindingRCL.SYM_FLOAT_NATIVE BindingRCL.SYM_STRING_NATIVE
+            | Internals.Internal_cast_stc(x) -> emitRawCast x BindingRCL.SYM_CHAR_NATIVE BindingRCL.SYM_STRING_NATIVE
+
+            | _ -> None
+
         /// Helper to compile internals if applyable.
         and tryCompileIntrinsic (context: CompilationContext) (term: CoreTerm) =
             [ tryCompileIntrinsicBoolSymbolic
               tryCompileIntrinsicArithmetic
               tryCompileIntrinsicTypeCheck
-              tryCompileIntrinsicMisc ]
+              tryCompileIntrinsicMisc
+              tryCompileIntrinsicTypeCast ]
 
             |> List.tryPick (fun tryCompile -> tryCompile context term)
 

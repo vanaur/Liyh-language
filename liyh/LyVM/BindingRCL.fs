@@ -113,8 +113,9 @@ type public OpCode =
     | Deconstruct = 38
     | Delay = 39
     | Force = 40
-    | PPShow = 41
-    | Print = 42
+    | Cast = 41
+    | PPShow = 42
+    | Print = 43
 
 [<Struct>]
 type public ByteCodeInstr =

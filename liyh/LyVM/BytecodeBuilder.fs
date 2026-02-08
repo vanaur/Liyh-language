@@ -301,6 +301,12 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.LoadAtom, dstIdx, atomId, 0, 0))
         dst
 
+    member public this.Cast (src: Reg, targetType: int, srcType: int) =
+        let dst = this.Alloc()
+
+        instructions.Add(Instr(OpCode.Cast, dst.Index, src.Index, targetType, srcType))
+        dst
+
     /// Used when the end of a computation require a register but no value. This method allows to avoid
     /// allocating the symbol unit for nothing.
     member public this.Unit () =
@@ -671,6 +677,20 @@ module public PrettyPrinter =
 
         | Instr(OpCode.Force, dst, src, _, _) ->
             $"    {reg dst} = force {reg src}"
+
+        | Instr(OpCode.Cast, dst, src, targetType, srcType) ->
+            let nativeTypeToString =
+                function
+                | n when n = BindingRCL.SYM_INT_NATIVE -> "Int"
+                | n when n = BindingRCL.SYM_CHAR_NATIVE -> "Char"
+                | n when n = BindingRCL.SYM_FLOAT_NATIVE -> "Float"
+                | n when n = BindingRCL.SYM_STRING_NATIVE -> "String"
+                | _ -> "??" // this may not happen
+
+            let srcTypeStr = nativeTypeToString srcType
+            let dstTypeStr = nativeTypeToString targetType
+
+            $"    {reg dst} = cast {reg src} from {srcTypeStr} into {dstTypeStr}"
 
         | Instr(OpCode.PPShow, dst, src, _, _) ->
             $"    {reg dst} = ppshow {reg src}"

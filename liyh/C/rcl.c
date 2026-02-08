@@ -168,6 +168,10 @@ typedef enum
     INSTR_DELAY,                                        // DELAY dst_reg, label, capture_count, capture_start
     INSTR_FORCE,                                        // FORCE dst_reg, src_reg, _, _
 
+    // type conversion instruction
+
+    INSTR_CAST,                                         // CAST dst_reg, src_reg, target_type_id, _
+
     // debugging instruction
 
     INSTR_PPSHOW,                                       // PPSHOW dst_reg, src_reg, _, _
@@ -220,6 +224,7 @@ static const char* opcode_names[] = {
     [INSTR_DECONSTRUCT] =   "DECONSTRUCT",
     [INSTR_DELAY] =         "DELAY",
     [INSTR_FORCE] =         "FORCE",
+    [INSTR_CAST] =          "CAST",
     [INSTR_PPSHOW] =        "PPSHOW",
     [INSTR_PRINT] =         "PRINT",
 };
@@ -1245,6 +1250,20 @@ static inline void perform_call_heap_args(
     *pc = target_label;
 }
 
+/// Helper to create a { Success, Value } record for cast operations.
+static term_t make_cast_result(vm_env_t *env, const bool success, const term_t value)
+{
+    record_field_t pairs[2];
+
+    pairs[0].key = intern_symbol(env, "success"); 
+    pairs[0].value = MAKE_INT(success ? 1 : 0);
+
+    pairs[1].key = intern_symbol(env, "value");
+    pairs[1].value = value;
+
+    return make_record_from_pairs(pairs, 2);
+}
+
 /// We can collect statistics for the VM. This collect the number of times each opcode is called
 /// and the average time each opcode took to execute.
 typedef struct
@@ -2135,6 +2154,192 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             if (!found)
                 pc = labels[instr.d];
+            break;
+        }
+
+        case INSTR_CAST:
+        {
+            // instr.a = dst register
+            // instr.b = src register
+            // instr.c = target type id
+            // instr.d = source type id (expected type of the entry to cast)
+
+            const term_t src = resolve_indirection(regs[instr.b]);
+            const sym_id_t target_type = (sym_id_t)instr.c;
+            const sym_id_t source_type = (sym_id_t)instr.d;
+
+            // Check if the expected types are consistent.
+            bool type_match = false;
+
+            if (source_type == SYM_INT_NATIVE)
+                type_match = IS_INT(src);
+
+            else if (source_type == SYM_CHAR_NATIVE)
+                type_match = IS_CHAR(src);
+
+            else if (IS_PTR(src))
+                type_match = (AS_HEADER(src)->id == source_type);
+
+            if (!type_match)
+            {
+                // Mismatch between compiler expectation and runtime reality.
+                regs[instr.a] = make_cast_result(vm_ptr->env_ptr, false, MAKE_INT(0)); 
+                break;
+            }
+
+            term_t result_val = MAKE_INT(0); // default value when success = false
+            bool success = true;
+
+            if (source_type == SYM_INT_NATIVE)
+            {
+                int64_t val = GET_INT(src);
+
+                // Int to Float
+                if (target_type == SYM_FLOAT_NATIVE)
+                {
+                    result_val = make_float((double)val);
+                }
+
+                // Int to Char
+                else if (target_type == SYM_CHAR_NATIVE)
+                {
+                    if (val < 0 || val > 0x10FFFF) success = false; // Invalid Unicode code point
+                    else result_val = MAKE_CHAR((uint32_t)val);
+                }
+
+                // Int to String
+                else if (target_type == SYM_STRING_NATIVE)
+                {
+                    char buffer[64];
+                    snprintf(buffer, 64, "%lld", (long long)val);
+                    result_val = make_string(buffer);
+                }
+
+                // Int to Int
+                else if (target_type == SYM_INT_NATIVE) {
+                    result_val = src;
+                }
+
+                // Error
+                else
+                {
+                    success = false;
+                }
+            }
+
+            else if (source_type == SYM_FLOAT_NATIVE)
+            {
+                double val = get_float(src);
+
+                // Float to Int
+                if (target_type == SYM_INT_NATIVE)
+                {
+                    if (isnan(val) || isinf(val)) success = false;
+                    else if (val > (double)INT64_MAX || val < (double)INT64_MIN) success = false;
+                    else result_val = MAKE_INT((int64_t)val);
+                }
+
+                // Float to String
+                else if (target_type == SYM_STRING_NATIVE)
+                {
+                    char buffer[64];
+                    snprintf(buffer, 64, "%.*g", DBL_DIG, val);
+                    result_val = make_string(buffer);
+                }
+
+                // Float to Float
+                else if (target_type == SYM_FLOAT_NATIVE)
+                {
+                    result_val = src;
+                }
+
+                // Error
+                else
+                {
+                    success = false;
+                }
+            }
+
+            else if (source_type == SYM_CHAR_NATIVE)
+            {
+                uint32_t val = GET_CHAR(src);
+
+                // Char to Int
+                if (target_type == SYM_INT_NATIVE)
+                {
+                    result_val = MAKE_INT((int64_t)val);
+                }
+
+                // Char to String
+                else if (target_type == SYM_STRING_NATIVE)
+                {
+                    char buffer[2] = { (char)val, '\0' };
+                    result_val = make_string(buffer);
+                }
+
+                // Char to Char
+                else if (target_type == SYM_CHAR_NATIVE)
+                {
+                    result_val = src;
+                }
+
+                // Error
+                else
+                {
+                    success = false;
+                }
+            }
+
+            else if (source_type == SYM_STRING_NATIVE)
+            {
+                const char *str = get_string_ptr(src);
+
+                // String to Int
+                if (target_type == SYM_INT_NATIVE)
+                {
+                    char *endptr;
+                    long long res = strtoll(str, &endptr, 10);
+
+                    if (*str != '\0' && *endptr == '\0') result_val = MAKE_INT(res);
+                    else success = false;
+                }
+
+                // String to Float
+                else if (target_type == SYM_FLOAT_NATIVE)
+                {
+                    char *endptr;
+                    double res = strtod(str, &endptr);
+
+                    if (*str != '\0' && *endptr == '\0') result_val = make_float(res);
+                    else success = false;
+                }
+
+                // String to Char
+                else if (target_type == SYM_CHAR_NATIVE)
+                {
+                    if (str[0] != '\0' && str[1] == '\0') result_val = MAKE_CHAR((uint32_t)str[0]);
+                    else success = false;
+                }
+
+                // String to String
+                else if (target_type == SYM_STRING_NATIVE)
+                {
+                    result_val = src;
+                }
+
+                else
+                {
+                    success = false;
+                }
+            }
+
+            else 
+            {
+                success = false;
+            }
+
+            // The result is a record { Success = (0 | 1), Value = <converted value or default> }
+            regs[instr.a] = make_cast_result(vm_ptr->env_ptr, success, success ? result_val : MAKE_INT(0));
             break;
         }
 

@@ -131,6 +131,86 @@ module Internals =
         | Symbol { Symbol = Ppshow; Children = [ a ] } -> Some(a)
         | _ -> None
 
+    // --- Primitive types casting internals --- //
+
+    let [<Literal>] public CastSti = "__internal_cast_sti"  // String to Int
+    let [<Literal>] public CastStf = "__internal_cast_stf"  // String to Float
+    let [<Literal>] public CastStc = "__internal_cast_stc"  // String to Char
+
+    let [<Literal>] public CastIts = "__internal_cast_its"  // Int to String
+    let [<Literal>] public CastItf = "__internal_cast_itf"  // Int to Float
+    let [<Literal>] public CastItc = "__internal_cast_itc"  // Int to Char
+
+    let [<Literal>] public CastFts = "__internal_cast_fts"  // Float to String
+    let [<Literal>] public CastFti = "__internal_cast_fti"  // Float to Int
+    let [<Literal>] public CastFtc = "__internal_cast_ftc"  // Float to Char
+
+    let [<Literal>] public CastCts = "__internal_cast_cts"  // Char to String
+    let [<Literal>] public CastCti = "__internal_cast_cti"  // Char to Int
+    let [<Literal>] public CastCtf = "__internal_cast_ctf"  // Char to Float
+
+    let public primitiveTypeCastingInternals =
+        [| CastSti
+           CastStf
+           CastStc
+           CastIts
+           CastItf
+           CastItc
+           CastFts
+           CastFti
+           CastFtc
+           CastCts
+           CastCti
+           CastCtf |]
+
+    let public (|Internal_cast_sti|_|) = function
+        | Symbol { Symbol = CastSti; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_stf|_|) = function
+        | Symbol { Symbol = CastStf; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_stc|_|) = function
+        | Symbol { Symbol = CastStc; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_its|_|) = function
+        | Symbol { Symbol = CastIts; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_itf|_|) = function
+        | Symbol { Symbol = CastItf; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_itc|_|) = function
+        | Symbol { Symbol = CastItc; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_fts|_|) = function
+        | Symbol { Symbol = CastFts; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_fti|_|) = function
+        | Symbol { Symbol = CastFti; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_ftc|_|) = function
+        | Symbol { Symbol = CastFtc; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_cts|_|) = function
+        | Symbol { Symbol = CastCts; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_cti|_|) = function
+        | Symbol { Symbol = CastCti; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Internal_cast_ctf|_|) = function
+        | Symbol { Symbol = CastCtf; Children = [ a ] } -> Some a
+        | _ -> None
+
 /// The "builtins" are built-in functions of symbols for the runtime.
 [<RequireQualifiedAccess>]
 module rec Builtin =
@@ -399,3 +479,4 @@ module rec Builtin =
         function
         | Symbol { Symbol = BuiltinDebugBench; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
+
