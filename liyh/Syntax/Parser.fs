@@ -454,10 +454,10 @@ module Parser =
 
     let private spacesOrComment =
         skipMany (choice [
-            spaces1
-            inlineComment
-            multilineComment
-        ]) <?> ""
+            spaces1             <?> ""
+            inlineComment       <?> ""
+            multilineComment    <?> ""
+        ])
 
     module private NameParser =
         open System.Globalization
