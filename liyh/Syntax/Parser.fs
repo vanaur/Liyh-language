@@ -452,11 +452,12 @@ module Parser =
 
         skipString "{-" >>. commentContent 1
 
-    let private comments =
-        choice [ inlineComment; multilineComment ] <?> ""
-
     let private spacesOrComment =
-        spaces >>. optional comments >>. spaces
+        skipMany (choice [
+            spaces1
+            inlineComment
+            multilineComment
+        ]) <?> ""
 
     module private NameParser =
         open System.Globalization
