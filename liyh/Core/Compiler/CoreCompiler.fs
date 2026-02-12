@@ -624,12 +624,30 @@ module CoreCompiler =
     and private compileIfThenElse (cstate: State) (ifte: IfThenElse) =
         let condition = compileExpression cstate ifte.Condition
         let thenBranch = compileExpression cstate ifte.ThenBranch
-        let elseBranch = Option.map (compileExpression cstate) ifte.ElseBranch
+
+        let rec buildElseChain elifBranches finalElse =
+            match elifBranches with
+            | [] -> 
+                Option.map (compileExpression cstate) finalElse
+                |> Option.defaultValue Builtin.symbolUnit
+
+            | (elifCond, elifThen) :: rest ->
+                let elifCondCompiled = compileExpression cstate elifCond
+                let elifThenCompiled = compileExpression cstate elifThen
+                let restChain = buildElseChain rest finalElse
+
+                CoreTerm.Match
+                    { ToMatch = elifCondCompiled
+                      Cases = 
+                        [ (Builtin.symbolTrue, elifThenCompiled)
+                          (Builtin.symbolFalse, restChain) ] }
+
+        let elseBranch = buildElseChain ifte.ElifBranches ifte.ElseBranch
 
         let toMatch = condition
         let cases =
             [ (Builtin.symbolTrue, thenBranch)
-              (Builtin.symbolFalse, Option.defaultValue (Builtin.symbolUnit) elseBranch) ]
+              (Builtin.symbolFalse, elseBranch) ]
 
         CoreTerm.Match
             { ToMatch = toMatch

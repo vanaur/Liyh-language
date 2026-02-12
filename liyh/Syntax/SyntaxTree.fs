@@ -121,6 +121,7 @@ module SyntaxTree =
     and public IfThenElse =
         { Condition: ExpressionWithPos
           ThenBranch: ExpressionWithPos
+          ElifBranches: (ExpressionWithPos * ExpressionWithPos) list
           ElseBranch: ExpressionWithPos option }
 
     and public ForTo =
@@ -381,7 +382,7 @@ module Replace =
         | Match m ->
             { expwp with Node = Match { ToMatch = replaceExpr m.ToMatch; Cases = List.map (fun (pat, expr) -> (replacePattern pat, replaceExpr expr)) m.Cases } }
         | IfThenElse ifte ->
-            { expwp with Node = IfThenElse { Condition = replaceExpr ifte.Condition; ThenBranch = replaceExpr ifte.ThenBranch; ElseBranch = Option.map replaceExpr ifte.ElseBranch } }
+            { expwp with Node = IfThenElse { Condition = replaceExpr ifte.Condition; ThenBranch = replaceExpr ifte.ThenBranch; ElifBranches = List.map (fun (a, b) -> replaceExpr a, replaceExpr b) ifte.ElifBranches; ElseBranch = Option.map replaceExpr ifte.ElseBranch } }
         | Lambda lambda ->
             { expwp with Node = Lambda { Patterns = List.map replacePattern lambda.Patterns; Body = replaceExpr lambda.Body } }
         | HandleEffect handle ->

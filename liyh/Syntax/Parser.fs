@@ -426,7 +426,7 @@ module Parser =
         [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "as"; "_"; "->"; "["; "|>";
           "if"; "then"; "else"; "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "=";
           "notation"; "using"; "use"; "innermost"; "outermost"; "invalid"; "--"; "to"; "downto"; "type";
-          "type-alias"; "."; "extern"; "context" ]
+          "type-alias"; "."; "extern"; "context"; "elif" ]
 
     let private reservedSet = System.Collections.Generic.HashSet<string>(reserved)
 
@@ -1205,12 +1205,23 @@ module Parser =
             (fun expr cases -> Expression.Match { ToMatch = expr; Cases = cases })
 
     let private parseIfThenElse =
-        pipe3
+        let parseElif =
+            pipe2
+                (skipString "elif" >>. spacesOrComment >>. parseExpressionRef)
+                (skipString "then" >>. spacesOrComment >>. parseExpressionRef)
+                (fun condition thenBranch -> (condition, thenBranch))
+
+        pipe4
             (skipString "if" >>. spacesOrComment >>. parseExpressionRef)
             (skipString "then" >>. spacesOrComment >>. parseExpressionRef)
+            (many (spacesOrComment >>. parseElif))
             (opt (skipString "else" >>. spacesOrComment >>. parseExpressionRef))
-            (fun condition thenBranch elseBranch ->
-                IfThenElse { Condition = condition; ThenBranch = thenBranch; ElseBranch = elseBranch })
+            (fun condition thenBranch elifBranches elseBranch ->
+                IfThenElse
+                    { Condition = condition
+                      ThenBranch = thenBranch
+                      ElifBranches = elifBranches
+                      ElseBranch = elseBranch })
 
     // for <ITEM> in <COLLECTION> do <BODY>
     let private parseForIn =
