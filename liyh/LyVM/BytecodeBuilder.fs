@@ -509,7 +509,7 @@ type public ByteCodeBuilder() =
 
     /// Generates F#-wise version of the final bytecode.
     member public this.Compile(entryLabel: int, dispatchTable: DispatchTable) =
-        this.OptimizePeephole() // this is cheap
+        //this.OptimizePeephole() // it doesn't work well (example of `integral[3 * cos[x]]`)
 
         { Program = instructions.ToArray()
           EntryPointLabel = entryLabel
