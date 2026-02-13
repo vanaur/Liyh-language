@@ -285,26 +285,6 @@ module public BytecodeCompiler =
         let globalContext =
             { SymbolLabels = globalLabels }
 
-        let convertBoolToAtom (boolReg: Reg) =
-            let resReg = builder.Alloc()
-            let trueAtom = builder.LoadAtom(Builtin.True)
-            let falseAtom = builder.LoadAtom(Builtin.False)
-            let lblEnd = freshLabel()
-
-            builder.Mov(resReg, trueAtom)
-            builder.JumpTrue(boolReg, lblEnd)
-            builder.Mov(resReg, falseAtom)
-            builder.SetLabel(lblEnd)
-            resReg
-
-        let convertAtomToBool (atomReg: Reg) =
-            let resReg = builder.Alloc()
-            let trueAtom = builder.LoadAtom(Builtin.True)
-            let cmpRes = builder.Eq(atomReg, trueAtom)
-
-            builder.Mov(resReg, cmpRes)
-            resReg
-
         /// The `builder.Mov` instruction but updating the compilation context for tracking.
         let emitMov (dest: Reg, src: Reg) (ctx: CompilationContext) =
             builder.Mov(dest, src)
@@ -312,6 +292,7 @@ module public BytecodeCompiler =
             if ctx.EvaluatedRegs.Contains(src.Index)
             then ctx.EvaluatedRegs.Add(dest.Index) |> ignore
             else ctx.EvaluatedRegs.Remove(dest.Index) |> ignore
+
 
         // --- Path and decision tree compilation --- //
 
@@ -438,9 +419,21 @@ module public BytecodeCompiler =
                 builder.Scope(fun _ ->
                     let phiReg = builder.Alloc()
 
-                    for KeyValue((tag, _), subTree) in cases do
+                    for KeyValue((tagName, arity), subTree) in cases do
                         let nextLbl = freshLabel()
-                        builder.TestTag(testReg, tag, nextLbl)
+
+                        if tagName = "true" && arity = 0 then
+                            let trueReg = builder.LoadBool(true)
+                            let isEq = builder.Eq(testReg, trueReg)
+                            builder.JumpFalse(isEq, nextLbl)
+
+                        elif tagName = "false" && arity = 0 then
+                            let falseReg = builder.LoadBool(false)
+                            let isEq = builder.Eq(testReg, falseReg)
+                            builder.JumpFalse(isEq, nextLbl)
+
+                        else
+                            builder.TestTag(testReg, tagName, nextLbl)
 
                         let ctxBranch = branchContext ctx
                         let res = compileTree ctxBranch subTree onMatch fallback
@@ -512,7 +505,7 @@ module public BytecodeCompiler =
                     let guardCtx = { ctx with Env = guardEnv }
 
                     let guardReg = compileTerm guardCtx false guardExpr
-                    let trueAtom = builder.LoadAtom(Builtin.True)
+                    let trueAtom = builder.LoadBool(true)
                     let isTrue = builder.Eq(guardReg, trueAtom)
 
                     let failLabel = freshLabel()
@@ -593,9 +586,55 @@ module public BytecodeCompiler =
                 let forcedReg = builder.Force(reg)
                 MiscHelpers.markEvaluated forcedReg context
 
+        and compileOr (context: CompilationContext) (left: CoreTerm) (right: CoreTerm) =
+            let rRes = builder.Alloc()
+            let labelTrue = freshLabel()
+            let labelFalse = freshLabel()
+            let labelEnd = freshLabel()
+
+            let rLeft = compileTermStrict context left
+            builder.JumpTrue(rLeft, labelTrue)
+
+            let rRight = compileTermStrict context right
+            builder.JumpTrue(rRight, labelTrue)
+
+            builder.SetLabel(labelFalse)
+            emitMov (rRes, builder.LoadBool(false)) context
+            builder.Jump(labelEnd)
+
+            builder.SetLabel(labelTrue)
+            emitMov (rRes, builder.LoadBool(true)) context
+
+            builder.SetLabel(labelEnd)
+
+            MiscHelpers.markEvaluated rRes context
+
+        and compileAnd (context: CompilationContext) (left: CoreTerm) (right: CoreTerm) =
+            let rRes = builder.Alloc()
+            let labelTrue = freshLabel()
+            let labelFalse = freshLabel()
+            let labelEnd = freshLabel()
+
+            let rLeft = compileTermStrict context left
+            builder.JumpFalse(rLeft, labelFalse)
+
+            let rRight = compileTermStrict context right
+            builder.JumpFalse(rRight, labelFalse)
+
+            builder.SetLabel(labelTrue)
+            emitMov (rRes, builder.LoadBool(true)) context
+            builder.Jump(labelEnd)
+
+            builder.SetLabel(labelFalse)
+            emitMov (rRes, builder.LoadBool(false)) context
+
+            builder.SetLabel(labelEnd)
+
+            MiscHelpers.markEvaluated rRes context
+
         /// Helper to compile the call to the internals functions for boolean comparisons.
         /// Returns a raw result (0 or 1). This is used when the user does not need the boolean result.
-        and tryCompileIntrinsicBoolRaw (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsicBoolean (context: CompilationContext) (term: CoreTerm) =
             match term with
             | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.booleanInternals) ->
@@ -603,7 +642,7 @@ module public BytecodeCompiler =
                 let rLeft = compileTermStrict context left
                 let rRight = compileTermStrict context right
 
-                let rawResult =
+                let resReg =
                     match op with
                     | Internals.Eq  -> builder.Eq(rLeft, rRight)
                     | Internals.Neq -> builder.NotEqual(rLeft, rRight)
@@ -611,19 +650,12 @@ module public BytecodeCompiler =
                     | Internals.Leq -> builder.Leq(rLeft, rRight)
                     | Internals.Ge  -> builder.Ge(rLeft, rRight)
                     | Internals.Geq -> builder.Geq(rLeft, rRight)
-                    | _ -> failwith "??"
+                    | Internals.Or -> compileOr context left right
+                    | Internals.And -> compileAnd context left right
+                    | other -> failwithf "Unknown: %s" other
 
-                Some rawResult
+                Some (MiscHelpers.markEvaluated resReg context)
             | _ -> None
-
-        /// Helper to compile the call to the internals functions for boolean comparisons.
-        /// Returns a symbolic result (true or false). This is used when the user needs the boolean result.
-        and tryCompileIntrinsicBoolSymbolic (context: CompilationContext) (term: CoreTerm) =
-            match tryCompileIntrinsicBoolRaw context term with
-            | Some rawReg ->
-                let atomReg = convertBoolToAtom rawReg
-                Some (MiscHelpers.markEvaluated atomReg context)
-            | None -> None
 
         /// Helper to compile the call to the internals functions for arithmetic.
         and tryCompileIntrinsicArithmetic (context: CompilationContext) (term: CoreTerm) =
@@ -658,6 +690,8 @@ module public BytecodeCompiler =
                     | Internals.IsFloat -> BindingRCL.SYM_FLOAT_NATIVE
                     | Internals.IsChar -> BindingRCL.SYM_CHAR_NATIVE
                     | Internals.IsString -> BindingRCL.SYM_STRING_NATIVE
+                    | Internals.IsBool -> BindingRCL.SYM_BOOL_NATIVE
+                    | Internals.IsNumeric -> BindingRCL.SYM_NUM_NATIVE
                     | _ -> failwith "??" // this may not happen
 
                 let rArg = compileTermStrict context arg
@@ -665,11 +699,18 @@ module public BytecodeCompiler =
                 let lblFail = freshLabel()
                 let lblEnd = freshLabel()
 
+                // TEST_TAG instruction
                 builder.TestTag(rArg, targetTag, lblFail)
-                emitMov (rRes, builder.LoadAtom(Builtin.True)) context
+
+                // Success -> true
+                emitMov (rRes, builder.LoadBool(true)) context
                 builder.Jump(lblEnd)
+
+                // Failure -> false
                 builder.SetLabel(lblFail)
-                emitMov (rRes, builder.LoadAtom(Builtin.False)) context
+                emitMov (rRes, builder.LoadBool(false)) context
+
+                // End label
                 builder.SetLabel(lblEnd)
 
                 Some (MiscHelpers.markEvaluated rRes context)
@@ -723,7 +764,7 @@ module public BytecodeCompiler =
 
         /// Helper to compile internals if applyable.
         and tryCompileIntrinsic (context: CompilationContext) (term: CoreTerm) =
-            [ tryCompileIntrinsicBoolSymbolic
+            [ tryCompileIntrinsicBoolean
               tryCompileIntrinsicArithmetic
               tryCompileIntrinsicTypeCheck
               tryCompileIntrinsicMisc
@@ -799,6 +840,12 @@ module public BytecodeCompiler =
         /// Compiles an expression as Data / AST (for the Outermost strategy)
         and compileAsData (context: CompilationContext) (term: CoreTerm) =
             match term with
+            | Symbol { Symbol = "true"; Children = [] } ->
+                MiscHelpers.markEvaluated (builder.LoadBool(true)) context
+
+            | Symbol { Symbol = "false"; Children = [] } ->
+                MiscHelpers.markEvaluated (builder.LoadBool(false)) context
+
             | Symbol { Symbol = name; Children = children } ->
                 let arity = List.length children
                 let (resolvedName, isCaptureWithinContext) =
@@ -996,11 +1043,9 @@ module public BytecodeCompiler =
 
             // Attempts to compile the predicate as a native comparison.
             let predBool =
-                match tryCompileIntrinsicBoolRaw context whileLoop.Predicate with
+                match tryCompileIntrinsicBoolean context whileLoop.Predicate with
                 | Some rawReg -> rawReg
-                | None ->
-                    let predReg = compileTerm context false whileLoop.Predicate
-                    convertAtomToBool predReg
+                | None -> compileTerm context false whileLoop.Predicate
 
             // If true, jump back to the body.
             builder.JumpTrue(predBool, loopLabel)
@@ -1028,6 +1073,12 @@ module public BytecodeCompiler =
             let arity = List.length children
 
             match symbol with
+            | { Symbol = "true"; Children = [] } ->
+                MiscHelpers.markEvaluated (builder.LoadBool(true)) context
+
+            | { Symbol = "false"; Children = [] } ->
+                MiscHelpers.markEvaluated (builder.LoadBool(false)) context
+
             | { Symbol = "lazy"; Children = [ body ] } ->
                 compileThunk context isTail body
 

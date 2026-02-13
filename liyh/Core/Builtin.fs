@@ -49,15 +49,19 @@ module Internals =
     let [<Literal>] public Leq = "__internal_leq"
     let [<Literal>] public Ge = "__internal_ge"
     let [<Literal>] public Geq = "__internal_geq"
+    let [<Literal>] public Or = "__internal_or"
+    let [<Literal>] public And = "__internal_and"
 
-    /// Internal boolean operations for comparison (eq, neq, le, leq, ge, geq).
+    /// Internal boolean operations for comparison (eq, neq, le, leq, ge, geq, or, and).
     let public booleanInternals =
         [| Eq
            Neq
            Le
            Leq
            Ge
-           Geq |]
+           Geq
+           Or
+           And |]
 
     let public (|Internal_eq|_|) = function
         | Symbol { Symbol = Eq; Children = [ a; b ] } -> Some(a, b)
@@ -83,19 +87,31 @@ module Internals =
         | Symbol { Symbol = Geq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
+    let public (|Internal_or|_|) = function
+        | Symbol { Symbol = Or; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_and|_|) = function
+        | Symbol { Symbol = And; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
     // --- Primitive types checking internals --- //
 
     let [<Literal>] public IsInt = "__internal_is_int"
     let [<Literal>] public IsFloat = "__internal_is_float"
     let [<Literal>] public IsChar = "__internal_is_char"
     let [<Literal>] public IsString = "__internal_is_string"
+    let [<Literal>] public IsBool = "__internal_is_bool"
+    let [<Literal>] public IsNumeric = "__internal_is_numeric"
 
     /// Internal primitive type checking (is_int, is_float, is_char, is_string).
     let public primitiveTypeCheckingInternals =
         [| IsInt
            IsFloat
            IsChar
-           IsString |]
+           IsString
+           IsBool
+           IsNumeric |]
 
     let public (|Internal_is_int|) = function
         | Symbol { Symbol = IsInt; Children = [ a ] } -> Some(a)
@@ -111,6 +127,14 @@ module Internals =
 
     let public (|Internal_is_string|) = function
         | Symbol { Symbol = IsString; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+    let public (|Internal_is_bool|) = function
+        | Symbol { Symbol = IsBool; Children = [ a ] } -> Some(a)
+        | _ -> None
+
+    let public (|Internal_is_numeric|) = function
+        | Symbol { Symbol = IsNumeric; Children = [ a ] } -> Some(a)
         | _ -> None
 
     // --- Pretty printing --- //

@@ -53,7 +53,11 @@ typedef uint32_t sym_id_t;
 #define TAG_PTR         0x0 // tagged pointer (ptr)
 #define TAG_INT         0x1 // tagged pointer (int)
 #define TAG_CHAR        0x2 // tagged pointer (char)
+#define TAG_BOOL        0x3 // tagged pointer (bool)
+
 #define TAG_MASK        0x3 // extract the 2 least significant bits
+
+#define GET_TAG_TYPE(x) ((IS_BOOL(x)) ? "bool" : (IS_CHAR(x)) ? "char" : (IS_INT(x)) ? "int" : "ptr")
 
 #define IS_PTR(x)       (((x) & TAG_MASK) == TAG_PTR)
 #define IS_INT(x)       (((x) & TAG_MASK) == TAG_INT)
@@ -63,6 +67,9 @@ typedef uint32_t sym_id_t;
 #define GET_INT(val)    (((int64_t)(val)) >> 2)
 #define MAKE_CHAR(val)  ((((uintptr_t)(val)) << 2) | TAG_CHAR)
 #define GET_CHAR(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
+#define IS_BOOL(x)      (((x) & TAG_MASK) == TAG_BOOL)
+#define MAKE_BOOL(val)  ((((uintptr_t)(val ? 1 : 0)) << 2) | TAG_BOOL)
+#define GET_BOOL(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
 
 #define SYM_CONTINUATION    0xFFFFFFFA  // continuation for symbolic computations and substitutions
 
@@ -72,6 +79,8 @@ typedef uint32_t sym_id_t;
 #define SYM_CLOSURE         0xFFFFFFFE  // closures
 #define SYM_INT_NATIVE      0xFFFFFFFF  // integers
 #define SYM_CHAR_NATIVE     0xFFFFFFF0  // characters
+#define SYM_BOOL_NATIVE     0xFFFFFFF5  // booleans
+#define SYM_NUM_NATIVE      0xFFFFFFF4  // numerical value (int or float)
 
 #define SYM_SUSPENDED_CALL  0xFFFFFFF6  // Indicates a function application that has been created dynamically.
 #define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
@@ -117,6 +126,7 @@ typedef enum
     INSTR_LOAD_FLOAT,                                   // LOAD_FLOAT dst_reg, hi_bits, lo_bits, _
     INSTR_LOAD_CHAR,                                    // LOAD_CHAR dst_reg, value, _, _
     INSTR_LOAD_STRING,                                  // LOAD_STRING dst_reg, str_index, _, _
+    INSTR_LOAD_BOOL,                                    // LOAD_BOOL dst_reg, bool (0|1)
 
     // native arithmetic instructions
 
@@ -198,6 +208,7 @@ static const char* opcode_names[] = {
     [INSTR_LOAD_FLOAT] =    "LOAD_FLOAT",
     [INSTR_LOAD_CHAR] =     "LOAD_CHAR",
     [INSTR_LOAD_STRING] =   "LOAD_STRING",
+    [INSTR_LOAD_BOOL] =     "LOAD_BOOL",
     [INSTR_ADD] =           "ADD",
     [INSTR_SUB] =           "SUB",
     [INSTR_MUL] =           "MUL",
@@ -915,6 +926,9 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
     else if (IS_CHAR(term))
         APPEND("'%c'", (char)GET_CHAR(term));
 
+    else if (IS_BOOL(term))
+        APPEND("%s", GET_BOOL(term) ? "true" : "false");
+
     else if (IS_PTR(term))
     {
         const term_header_t *header = AS_HEADER(term);
@@ -1409,11 +1423,22 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
             bool matches = false;
 
-            if (IS_INT(val))
+            if (toTest == SYM_NUM_NATIVE)
+            {
+                if (IS_INT(val))
+                    matches = true;
+                else if (IS_PTR(val))
+                    matches = (AS_HEADER(val)->id == SYM_FLOAT_NATIVE);
+            }
+
+            else if (IS_INT(val))
                 matches = (toTest == SYM_INT_NATIVE);
 
             else if (IS_CHAR(val))
                 matches = (toTest == SYM_CHAR_NATIVE);
+
+            else if (IS_BOOL(val))
+                matches = (toTest == SYM_BOOL_NATIVE);
 
             else if (IS_PTR(val))
                 matches = (AS_HEADER(val)->id == toTest);
@@ -1459,18 +1484,34 @@ int run_vm(vm_t *vm_ptr, const int entry)
         // jump if false, otherwise continue;
         case INSTR_JUMP_FALSE:
         {
-            if (IS_INT(regs[instr.a]) && GET_INT(regs[instr.a]) == 0)
-                pc = labels[instr.b];
+            const term_t val = regs[instr.a];
 
+            if (!IS_BOOL(val)) 
+            {
+                fprintf(stderr, "Runtime Error: Condition must be a boolean (got type '%s').\n", GET_TAG_TYPE(val));
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            if (GET_BOOL(val) == 0) pc = labels[instr.b];
             break;
         }
 
         // jump if true, otherwise continue;
         case INSTR_JUMP_TRUE:
         {
-            if (IS_INT(regs[instr.a]) && GET_INT(regs[instr.a]) != 0)
-                pc = labels[instr.b];
+            const term_t val = regs[instr.a];
 
+            if (!IS_BOOL(val)) 
+            {
+                fprintf(stderr, "Runtime Error: Condition must be a boolean (got type '%s').\n", GET_TAG_TYPE(val));
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            if (GET_BOOL(val) != 0) pc = labels[instr.b];
             break;
         }
 
@@ -1793,6 +1834,12 @@ int run_vm(vm_t *vm_ptr, const int entry)
             break;
         }
 
+        case INSTR_LOAD_BOOL:
+        {
+            regs[instr.a] = MAKE_BOOL(instr.b);
+            break;
+        }
+
         case INSTR_LOAD_FLOAT:
         {
             // floats are encoded as two 32 bits integers
@@ -1836,9 +1883,9 @@ int run_vm(vm_t *vm_ptr, const int entry)
             const term_t r = regs[instr.c];                                             \
                                                                                         \
             if (IS_INT(l) && IS_INT(r))                                                 \
-                regs[instr.a] = MAKE_INT((GET_INT(l) op GET_INT(r)) ? 1 : 0);           \
+                regs[instr.a] = MAKE_BOOL(GET_INT(l) op GET_INT(r));                    \
             else                                                                        \
-                regs[instr.a] = MAKE_INT((get_float(l) op get_float(r)) ? 1 : 0);       \
+                regs[instr.a] = MAKE_BOOL(get_float(l) op get_float(r));                \
                                                                                         \
         } while(0)
 
@@ -1930,8 +1977,17 @@ int run_vm(vm_t *vm_ptr, const int entry)
         case INSTR_NOT:
         {
             const term_t v = regs[instr.b];
-            const bool is_false = IS_INT(v) ? (GET_INT(v) == 0) : (get_float(v) == 0.0);
-            regs[instr.a] = MAKE_INT(is_false ? 1 : 0);
+            
+            if (IS_BOOL(v))
+            {
+                regs[instr.a] = MAKE_BOOL(GET_BOOL(v) == 0);
+            }
+            else
+            {
+                fprintf(stderr, "Fatal Error: Operator 'not' expects a boolean.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+            }
             break;
         }
 
@@ -1961,13 +2017,13 @@ int run_vm(vm_t *vm_ptr, const int entry)
 
         case INSTR_EQUAL:
         {
-            regs[instr.a] = MAKE_INT(term_equals(regs[instr.b], regs[instr.c]) ? 1 : 0);
+            regs[instr.a] = MAKE_BOOL(term_equals(regs[instr.b], regs[instr.c]));
             break;
         }
 
         case INSTR_NOT_EQUAL:
         {
-            regs[instr.a] = MAKE_INT(!term_equals(regs[instr.b], regs[instr.c]) ? 1 : 0);
+            regs[instr.a] = MAKE_BOOL(!term_equals(regs[instr.b], regs[instr.c]));
             break;
         }
 

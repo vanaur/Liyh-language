@@ -301,6 +301,14 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.LoadAtom, dstIdx, atomId, 0, 0))
         dst
 
+    member public this.LoadBool (value: bool) =
+        let dst = this.Alloc()
+        let (Reg dstIdx) = dst
+        let rawVal = if value then 1 else 0
+
+        instructions.Add(Instr(OpCode.LoadBool, dstIdx, rawVal, 0, 0))
+        dst
+
     member public this.Cast (src: Reg, targetType: int, srcType: int) =
         let dst = this.Alloc()
 
@@ -585,6 +593,10 @@ module public PrettyPrinter =
             let atom = InternTable.AtomTable.Get(atomId)
             $"    {reg dst} = atom :{atom}"
 
+        | Instr(OpCode.LoadBool, dst, value, _, _) ->
+            let b = if value <> 0 then "true" else "false"
+            $"    {reg dst} = bool {b}"
+
         | Instr(OpCode.Add, dst, l, r, _) ->
             $"    {reg dst} = add {reg l}, {reg r}"
 
@@ -661,6 +673,8 @@ module public PrettyPrinter =
                 | tagId when tagId = SYM_STRING_NATIVE -> "STRING"
                 | tagId when tagId = SYM_RECORD_NATIVE -> "RECORD"
                 | tagId when tagId = SYM_CHAR_NATIVE -> "CHAR"
+                | tagId when tagId = SYM_BOOL_NATIVE -> "BOOL"
+                | tagId when tagId = SYM_NUM_NATIVE -> "NUMERIC"
                 | other -> failwithf "testtag with %A" other    // this may not happen
 
             $"    testtag {reg term} is {tagName} or {lbl failLabel}"
