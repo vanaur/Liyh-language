@@ -575,7 +575,7 @@ module public PrettyPrinter =
         | Instr(OpCode.LoadFloat, dst, lo, hi, _) ->
             let bits = (int64 lo) ||| ((int64 hi) <<< 32)
             let value = System.BitConverter.Int64BitsToDouble(bits)
-            $"    {reg dst} = float {value}"
+            $"    {reg dst} = float {value.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
 
         | Instr(OpCode.LoadString, dst, strId, _, _) ->
             let str = InternTable.StringTable.Get(strId)
