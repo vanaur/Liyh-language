@@ -332,6 +332,15 @@ void destroy_env(vm_env_t *env_ptr)
 void gc_init()
 {
     GC_INIT();
+
+    /// Involves less pauses for the GC.
+    GC_set_free_space_divisor(1);
+    
+    // Reasonable initial heap for a language that allocates a lot.
+    GC_expand_hp(64 * 1024 * 1024);  // 64 Mo
+    
+    // Theoretically more suitable for many small objects.
+    GC_enable_incremental();
 }
 
 
@@ -2485,6 +2494,23 @@ int run_vm(vm_t *vm_ptr, const int entry)
         free(stats[i].times);
 
     #endif
+
+    /*
+
+    struct GC_prof_stats_s stats;
+    GC_get_prof_stats(&stats, sizeof(stats));
+
+    printf("=== GC Stats ===\n");
+    printf("Heap size: %zu bytes (%.2f Mo)\n", stats.heapsize_full, stats.heapsize_full / (1024.0 * 1024.0));
+    printf("Free bytes: %zu\n", stats.free_bytes_full);
+    printf("Unmapped bytes: %zu\n", stats.unmapped_bytes);
+    printf("Bytes allocd since GC: %zu\n", stats.bytes_allocd_since_gc);
+
+    size_t gc_no = GC_get_gc_no();
+
+    printf("Number of collections done: %zu\n", gc_no);
+
+    */
 
     return return_value;
 }
