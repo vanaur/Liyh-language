@@ -212,7 +212,9 @@ module private MixfixEngine =
                 let peekOp =
                     parse {
                         let cs = [| ' '; '\t'; '\n'; '\r'; '('; ')'; '['; ']'; '{'; '}'; ',' |] // stop when encounter this
-                        let! nextToken = lookAhead (many1Satisfy (fun c -> not (Array.contains c cs)))
+
+                        let! nextToken = lookAhead (many1Satisfy (fun c -> 
+                            not (Array.contains c cs) && not (System.Char.IsLetterOrDigit c)))
 
                         // Allows to handle ambiguities when operators contain parts of other operators.
 
