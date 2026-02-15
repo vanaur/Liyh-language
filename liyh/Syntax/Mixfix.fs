@@ -161,9 +161,23 @@ module private MixfixEngine =
                         lookAhead (attempt (symbolMatcher .>>. getPosition) |> opt)
 
                     let applyMixfixOperator (op: MixfixOperator) = parse {
+
+                        // Determines wether the operator enclose its arguments within fixed
+                        // parts (for example the mixfix operator `|arg|`).
+                        let hasClosingFixedParts =
+                            op.Pattern
+                            |> List.skipWhile _.IsFixed
+                            |> List.exists _.IsFixed
+
+                        // Adapts the precedence if the operator has closing parts.
+                        // This allows to isolate the parsing behaviour within the closed parts.
+                        let minPrecForArgs =
+                            if hasClosingFixedParts then 0u
+                            else op.Precedence
+
                         let! args =
                             parseRestOfPattern
-                                (parseExprWithMinPrec 0u)
+                                (parseExprWithMinPrec minPrecForArgs)
                                 startPos
                                 (List.tail op.Pattern)
                                 []
