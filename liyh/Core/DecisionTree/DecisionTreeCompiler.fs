@@ -3,7 +3,6 @@ namespace Liyh.Core.DecisionTree
 module DecisionTreeCompiler =
     open Liyh.Core.DecisionTree
     open Liyh.Core
-    open Liyh.Core.Helper
 
     type public PatternInfo =
         { Variables: Set<string>
@@ -43,6 +42,12 @@ module DecisionTreeCompiler =
                 match List.tryFind (fun (k, _) -> k = name) fields with
                 | Some (_, v) -> v
                 | None -> Wildcard
+            | Variable _ | Wildcard -> Wildcard
+            | _ -> Wildcard
+
+        | Tag parent ->
+            match safeAccess parent term with
+            | Symbol { Symbol = name } -> symbol name []
             | Variable _ | Wildcard -> Wildcard
             | _ -> Wildcard
 
@@ -117,16 +122,9 @@ module DecisionTreeCompiler =
         | _ -> (term, [])
 
     let private normalizeOccurrence (occ: PatternOccurrence) =
-        // 1. Extract Guards (WhenClauses)
-        // This lifts "when" conditions to the top level.
         let (cleanPatternGuard, extractedGuard) = extractGuards occ.Pattern
-        
-        // 2. Extract As-Bindings
-        // This lifts "as variable" bindings to the Bindings map and strips the AsClause wrapper.
-        // We start traversing at Root because occ.Pattern corresponds to the term at Root.
         let (cleanPatternStructure, extractedBindings) = extractAsBindings Root cleanPatternGuard
 
-        // 3. Merge results
         let finalGuard = 
             match extractedGuard with
             | None -> occ.WhenClause
@@ -155,7 +153,7 @@ module DecisionTreeCompiler =
                 let key = (sym, arity)
                 let existing = Map.tryFind key byConstructor |> Option.defaultValue []
                 byConstructor <- Map.add key (occ :: existing) byConstructor
-            
+
             | Literal lit ->
                 let existing = Map.tryFind lit byLiteral |> Option.defaultValue []
                 byLiteral <- Map.add lit (occ :: existing) byLiteral
@@ -208,23 +206,39 @@ module DecisionTreeCompiler =
         (occurrences: PatternOccurrence list)
         (remainingPaths: Path list) =
 
+        let mutable additionalPaths: Path list = List.empty
+
+        let nextOccurenceVariableAndVariableSymbol (occ: PatternOccurrence) (isVarSymbol: bool) (v: string) =
+            match Map.tryFind v occ.Bindings with
+            | None -> { occ with Bindings = Map.add v (if isVarSymbol then Tag path else path) occ.Bindings }
+            | Some _ ->
+                let tempVar = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
+                let newGuard = mergeGuards occ.WhenClause (mkEqualityGuard v tempVar)
+
+                { occ with Bindings = Map.add tempVar path occ.Bindings; WhenClause = Some newGuard }
+
         let nextOccurrences =
             occurrences
             |> List.map (fun occ ->
                 match safeAccess path occ.Pattern with
+
+                | Symbol { IsVariable = true; Symbol = v; Children = children } ->
+                    let childPaths = List.init children.Length (fun i -> path.Extend i)
+                    additionalPaths <- additionalPaths @ childPaths
+
+                    // Variable symbol helper
+                    nextOccurenceVariableAndVariableSymbol occ true v
+
                 | Variable v ->
-                    match Map.tryFind v occ.Bindings with
-                    | None -> { occ with Bindings = Map.add v path occ.Bindings }
-                    | Some _ ->
-                        let tempVar = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
-                        let newGuard = mergeGuards occ.WhenClause (mkEqualityGuard v tempVar)
-                        { occ with Bindings = Map.add tempVar path occ.Bindings; WhenClause = Some newGuard }
+                    // Binding variable helper
+                    nextOccurenceVariableAndVariableSymbol occ false v
+
                 | _ -> occ
             )
 
         let nextMatrix = {
             Occurrences = nextOccurrences
-            RemainingPaths = List.filter ((<>) path) remainingPaths
+            RemainingPaths = additionalPaths @ List.filter ((<>) path) remainingPaths
         }
         
         compileRec nextMatrix
@@ -382,7 +396,6 @@ module DecisionTreeCompiler =
             (specificOccs @ compatibleDefaults)
             |> List.sortBy _.RuleIndex
 
-        // On retourne les chemins filtrés et la liste fusionnée
         (filteredPaths, allOccs)
 
     and private compileSwitch

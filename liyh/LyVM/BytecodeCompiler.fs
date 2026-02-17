@@ -312,6 +312,15 @@ module public BytecodeCompiler =
                         else
                             failwithf "Index out of bounds: %d (arity %d)" idx context.Arguments.Length
 
+                    | Tag parent ->
+                        // We have to add an instruction to the VM that only gets
+                        // the head of a symbol, without its children. This is necessary
+                        // if we want to extract a variable symbol with children.
+                        //
+                        // For now, we return the whole binding. This is therefore a
+                        // semantic gap, but it is far from being the most important feature.
+                        compilePath context parent
+
                     | Child(parent, idx) ->
                         let parentReg = compilePath context parent
 

@@ -5,6 +5,7 @@ open Liyh.Core
 type public Path =
     | Child of Path * int
     | Field of Path * string    // for record fields
+    | Tag of Path               // head symbol
     | Root
 
     member this.Extend(index: int) = Child(this, index)
@@ -16,6 +17,7 @@ type public Path =
             | Root -> if List.isEmpty acc then "." else String.concat "" acc
             | Child(parent, idx) -> build parent (sprintf "[%d]" idx :: acc)
             | Field(parent, name) -> build parent (sprintf ".%s" name :: acc)
+            | Tag parent -> build parent (sprintf ":" :: acc)
         build this []
 
 type public DecisionTree =
@@ -97,5 +99,13 @@ module public PathAccess =
                 | None -> failwithf "Field '%s' not found in record." name
             | _ ->
                 failwithf "Path %O expects a record, but got '%s'"
+                    path (PrettyPrinter.prettyPrintExpr parentTerm)
+
+        | Tag parent ->
+            let parentTerm = access parent term
+            match parentTerm with
+            | Symbol { Symbol = name } -> simpleSymbol name
+            | _ ->
+                failwithf "Path %O expects a symbol to extract tag, but got '%s'"
                     path (PrettyPrinter.prettyPrintExpr parentTerm)
 
