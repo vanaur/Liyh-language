@@ -333,7 +333,9 @@ module ErrorReporter =
                 if not (errors.Contains enumerator.Current) then
                     errors.Add enumerator.Current
 
-            let (nError, nWarning) = this.Count()
+            let nError   = errors |> Seq.filter (fun e -> not e.ErrorType.IsWarning) |> Seq.length
+            let nWarning = errors |> Seq.filter (fun e -> e.ErrorType.IsWarning)     |> Seq.length
+
             if nError = 0 && nWarning = 0 then ()
             else
                 let parts = [
