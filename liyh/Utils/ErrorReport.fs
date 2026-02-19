@@ -103,6 +103,8 @@ module ErrorReporter =
         (mutedColor: ColorTerm.Color)
         =
 
+        if Array.forall String.IsNullOrWhiteSpace lines then "    <no code snippet>" else
+
         let getLine l =
             if l >= 0 && l < lines.Length then lines[l] else ""
 

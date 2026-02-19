@@ -167,7 +167,7 @@ module private ParsingErorr =
             |> String.concat " "
             //|> String.concat " Another possible error: "
 
-    let public createErrorReport str originalPosition relevantPosition errorMessage =
+    let public createErrorReport str originalPosition relevantPosition errorMessage isWarn =
         let informations =
             if originalPosition <> relevantPosition
             then [ "The parser backtracked several times, so the position indicated in the\nsnippet may not be at the actual source of the error." ]
@@ -177,7 +177,7 @@ module private ParsingErorr =
         let hint =
             "Syntax errors may be due to syntactic ambiguity, try using parentheses if you think this is the case."
 
-        { ErrorType = Liyh.Utils.ErrorReporter.Syntax
+        { ErrorType = if isWarn then Warning Syntax else Syntax
           ErrorCode = null // not for now, this is difficult to do
           EnclosingPosition = (relevantPosition, None)
           Description = errorMessage
@@ -1879,16 +1879,34 @@ module Parser =
             stream.Name <- streamName
             p stream
 
+    let private warningMessageEmptyFile =
+        "The file does not contain any declarations."
+
     let private finalParser (streamName: string) (p: Parser<_, _>) =
-        withStreamName streamName (opt (spacesOrComment >>? p .>> spaces .>> (eof <?> "")))
-        //withStreamName streamName (opt (p .>> spaces .>> (eof <?> "")))
+        // withStreamName streamName (opt (spacesOrComment >>? p .>> spaces .>> (eof <?> "")))
+
+        let checkNotEmpty : Parser<unit, _> =
+            fun stream ->
+                if stream.IsEndOfStream
+                then Reply(Error, messageError warningMessageEmptyFile)
+                else Reply(())
+
+        withStreamName streamName (
+            spacesOrComment >>.
+                checkNotEmpty >>.
+                (p .>> spaces .>> (eof <?> "") |>> Some)
+        )
 
     let private handleParseFailure (str: string) (err: ParserError) (position: Position) =
         let relevantPosition = ParsingErorr.findRelevantPosition err.Messages position
         let formattedErrors = ParsingErorr.groupAndFormatErrors err.Messages
         let errorMessage = ParsingErorr.formatErrorMessage formattedErrors
 
-        ParsingErorr.createErrorReport str (Some position) (Some relevantPosition) errorMessage
+        // An empty file should not be considered as an error.
+        let isWarn =
+            errorMessage = warningMessageEmptyFile
+
+        ParsingErorr.createErrorReport str (Some position) (Some relevantPosition) errorMessage isWarn
 
     /// Parses only 'use' statements from the text, ignoring everything else.
     let public parseUses (text: string) (streamName: string) (errorQueue: ErrorQueue) =
