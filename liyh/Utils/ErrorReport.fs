@@ -360,6 +360,14 @@ module ErrorReporter =
             if cleanAfter then
                 queue.Clear()
 
+        member public this.ReportIfNeeded(writer: TextWriter) =
+            if this.HasErrors() then
+                this.ReportAll(writer) true
+                exit 1
+            
+            if this.HasWarnings() then
+                this.ReportAll(writer) true
+
     let inline public immediateError (report: ErrorReport) = printfn "%s" (formatError report)
 
     let inline public immediateRuntimeError (errorType: ErrorType) (msg: string) =

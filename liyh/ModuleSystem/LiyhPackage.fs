@@ -440,6 +440,11 @@ module LiyhPackage =
         result
         |> Option.map (removePos >> function Rule r -> r.Body)
 
+    /// Checks if the project graph contains an entry point ("main function").
+    let public containsEntryPoint (pgraph: ProjectGraph) =
+        tryGetEntryPoint pgraph
+        |> Option.isSome
+
     // For debug purpose.
     let public getAllNotations (ProjectGraph pgraph) =
         let mutable result = []

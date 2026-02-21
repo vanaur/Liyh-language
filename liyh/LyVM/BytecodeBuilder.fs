@@ -1017,5 +1017,3 @@ module public AOT =
             failwith $"Compilation failed: {error}"
 
         File.Delete(tempCFile)
-        printfn $"Compiled successfully to: {outputFile}"
-
