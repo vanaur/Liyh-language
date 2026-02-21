@@ -73,8 +73,14 @@ Persons:
 
 # License 📜
 
-**Liyh** is licensed under [Apache-2.0 License](/LICENSE) but uses the following third-party libraries:
+**Liyh** is licensed under the [Apache-2.0 License](LICENSE).
 
- - [FParsec](https://github.com/stephan-tolksdorf/fparsec) — A parser combinator library for F#.
- - [BenchShark](https://github.com/JamesMenetrey/BenchShark) —  A lightweight library for benchmarking performance of your .NET applications.
- - [bdwgc](https://github.com/bdwgc/bdwgc) —  The Boehm-Demers-Weiser conservative C/C++ Garbage Collector (bdwgc, also known as bdw-gc, boehm-gc, libgc).
+This project uses the following third-party libraries:
+
+| Library | License | Description |
+| :--- | :--- | :--- |
+| [FParsec](https://github.com/stephan-tolksdorf/fparsec) | 2-clause BSD | A parser combinator library for F#. |
+| [BenchShark](https://github.com/JamesMenetrey/BenchShark) | MIT | A lightweight library for benchmarking performance of your .NET applications. |
+| [Argu](https://github.com/fsprojects/Argu) | MIT | A declarative CLI argument parser for F#. |
+| [bdwgc](https://github.com/bdwgc/bdwgc) | MIT | The Boehm-Demers-Weiser conservative C/C++ Garbage Collector (bdwgc, also known as bdw-gc, boehm-gc, libgc). |
+
