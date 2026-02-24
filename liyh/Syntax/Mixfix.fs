@@ -228,7 +228,10 @@ module private MixfixEngine =
                         let cs = [| ' '; '\t'; '\n'; '\r'; '('; ')'; '['; ']'; '{'; '}'; ',' |] // stop when encounter this
 
                         let! nextToken = lookAhead (many1Satisfy (fun c -> 
-                            not (Array.contains c cs) && not (System.Char.IsLetterOrDigit c)))
+                            not (Array.contains c cs)
+                            // && not (System.Char.IsLetterOrDigit c) // don't seem useful
+                                                                      // and don't allow e.g. `5 pm`
+                        ))
 
                         // Allows to handle ambiguities when operators contain parts of other operators.
 
