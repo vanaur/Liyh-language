@@ -154,7 +154,7 @@ module Program =
             vm.EmitFromCompiledProgram cp
 
             let compileTo (destFile: string) =
-                LyVM.AOT.compile cp destFile
+                LyVM.AOT.compile cp destFile doOptimize
                 printfn "Compiled %s to %s." rootFile destFile
 
             match output with

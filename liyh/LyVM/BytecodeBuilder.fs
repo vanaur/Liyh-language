@@ -840,7 +840,7 @@ module public AOT =
 
     /// Produces an executable at the given path.
     /// This executable contains the whole runtime and the compiled bytecode embedded as static arrays.
-    let public compile (cp: CompiledProgram) (fileName: string) =
+    let public compile (cp: CompiledProgram) (fileName: string) (optimize: bool) =
         let sb = StringBuilder()
 
         let inline appendLine (line: string) =
@@ -991,13 +991,14 @@ module public AOT =
         let outputFile = Path.Combine(Directory.GetCurrentDirectory(), fileName)
 
         let flags =
-            [ "-lm"              // Link math library (libm)
-              "-lgc"             // Link Boehm garbage collector
-              "-DEMBEDDED"       // Define EMBEDDED macro for standalone executable compilation
-              "-O3"              // Aggressive optimization
-              "-flto"            // Link-time optimization (whole-program analysis)
-              "-fno-plt"         // Avoid PLT indirection for shared libraries (faster calls)
-              "-march=native" ]  // Optimize for the current CPU architecture
+            [ "-lm"                                 // Link math library (libm)
+              "-lgc"                                // Link Boehm garbage collector
+              "-lffi"                               // Link libffi
+              "-DEMBEDDED"                          // Define EMBEDDED macro for standalone executable compilation
+              if optimize then "-O3"                // Aggressive optimization
+              "-flto"                               // Link-time optimization (whole-program analysis)
+              "-fno-plt"                            // Avoid PLT indirection for shared libraries (faster calls)
+              if optimize then "-march=native" ]    // Optimize for the current CPU architecture
 
             |> String.concat " "
 
