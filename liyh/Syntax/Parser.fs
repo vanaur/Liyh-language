@@ -430,34 +430,57 @@ module Parser =
 
     let private reservedSet = System.Collections.Generic.HashSet<string>(reserved)
 
-    /// Retrieves operator parts defined by user custom notations.
+    /// Checks if the given string is reserved by any mixfix operators.
+    /// Return None when it is not used anywhere.
     let private reservedByUser (id: string) (operators: MixfixOperator list) =
-        operators
-        |> List.map (fun { Pattern = pattern; Name = name } ->
-            pattern
-            |> List.filter _.IsFixed
-            |> List.map (function Fixed s -> s), name)
-        |> List.tryPick (fun (parts, opName) -> if List.contains id parts then Some opName else None)
 
-    let private inlineComment =
-        skipString "--" >>. skipRestOfLine true
+        let rec checkParts parts opName =
+            match parts with
+            | [] -> None
+            | Fixed s :: _ when s = id -> Some opName
+            | _ :: rest -> checkParts rest opName
 
-    let private multilineComment =
+        let rec checkOps ops =
+            match ops with
+            | [] -> None
+            | (op: MixfixOperator) :: rest ->
+                match checkParts op.Pattern op.Name with
+                | Some name -> Some name
+                | None -> checkOps rest
 
-        let rec commentContent (depth: int) =
-            choice [
-                skipString "{-" >>= fun _ -> commentContent (depth + 1)
-                skipString "-}" >>= fun _ -> if depth = 1 then preturn () else commentContent (depth - 1)
-                skipAnyChar     >>= fun _ -> commentContent depth ]
+        checkOps operators
 
-        skipString "{-" >>. commentContent 1
+    /// Fast parsing of spaces and comments (inline and multilines comments).
+    let private spacesOrComment : Parser<unit, _> =
+        fun stream ->
+            let mutable running = true
 
-    let private spacesOrComment =
-        skipMany (choice [
-            spaces1             <?> ""
-            inlineComment       <?> ""
-            multilineComment    <?> ""
-        ])
+            while running && not stream.IsEndOfStream do
+                stream.SkipCharsOrNewlinesWhile(System.Char.IsWhiteSpace) |> ignore
+
+                if stream.Match("--") then
+                    stream.SkipRestOfLine(true)
+
+                elif stream.Match("{-") then
+                    let mutable depth = 1
+
+                    stream.Skip("{-") |> ignore
+
+                    while depth > 0 && not stream.IsEndOfStream do
+                        if stream.Match("{-") then
+                            stream.Skip("{-") |> ignore
+                            depth <- depth + 1
+
+                        elif stream.Match("-}") then
+                            stream.Skip("-}") |> ignore
+                            depth <- depth - 1
+
+                        else
+                            stream.Skip()
+                else
+                    running <- false
+
+            Reply(())
 
     module private NameParser =
         open System.Globalization
@@ -948,15 +971,27 @@ module Parser =
 
         let private parseAtomicPattern =
             choice [
-                attempt (parseWithPos parseVariablePattern)
-                attempt (parseWithPos parseSymbolPattern)
-                attempt (parseWithPos parseWildcard)
-                attempt (parseWithPos parseLiteralPattern)
+                parseWithPos parseVariablePattern
+                parseWithPos parseWildcard
+                parseWithPos parseLiteralPattern
                 attempt (parseWithPos parseTuplePattern)
+                between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef
                 attempt (parseWithPos parseListPattern)
-                attempt (parseWithPos parseRecordPattern)
-                attempt (between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef)
+                parseWithPos parseRecordPattern
+                parseWithPos parseSymbolPattern
             ] <?> "atomic pattern" .>> spacesOrComment
+
+//        let private parseAtomicPattern =
+//            choice [
+//                attempt (parseWithPos parseVariablePattern)
+//                attempt (parseWithPos parseSymbolPattern)
+//                attempt (parseWithPos parseWildcard)
+//                attempt (parseWithPos parseLiteralPattern)
+//                attempt (parseWithPos parseTuplePattern)
+//                attempt (parseWithPos parseListPattern)
+//                attempt (parseWithPos parseRecordPattern)
+//                attempt (between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef)
+//            ] <?> "atomic pattern" .>> spacesOrComment
 
         let private parsePatternWithMixfixInternal () =
             fun (stream: CharStream<NotationState IndentState>) ->
@@ -1400,6 +1435,7 @@ module Parser =
                 return! blockParser
             }
             currentParser stream
+
 
     do parseExpressionImpl.Value <- spacesOrComment >>. parseMainExpression
 

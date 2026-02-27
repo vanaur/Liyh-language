@@ -397,6 +397,8 @@ module LiyhPackage =
                         |> Option.map (fun m -> m.MixfixOperators)
                         |> Option.defaultValue [])
 
+                //Liyh.Utils.Utils.Benchmark.bench (fun _ -> parse module'.Text currentPath directNotations errorQueue) 10
+
                 match parse module'.Text currentPath directNotations errorQueue with
                 | None ->
                     let updated = { module' with Done = true; MixfixOperators = [] }

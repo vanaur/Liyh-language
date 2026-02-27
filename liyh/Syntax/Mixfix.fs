@@ -142,85 +142,88 @@ module private MixfixEngine =
             // which conflicts with a negation operator. To do this, we explicitly check what to choose:
             // apply the operator or apply the basic parser? It's an inelegant heuristic, but it seems to work.
 
-            let parsePrefixOrAtom =
-                parse {
-                    let! startPos = getPosition
+            let parsePrefixOrAtom : Parser<'Node, _> =
+                fun stream ->
+                    let startState = stream.State
+                    let startPos = stream.Position
 
-                    // Looks ahead for an atom.
-                    let! atomMatch = lookAhead (attempt (baseAtomParser .>>. getPosition) |> opt)
+                    // Parse with the atomic parser.
+                    let atomReply = baseAtomParser stream
+                    let atomEndState = stream.State
+                    let atomEndPos = stream.Position
 
-                    // Looks for which operator symbol matches the current input.
-                    let! opMatch =
+                    // Backtrack to try to parse the mixfix operator.
+                    stream.BacktrackTo(startState)
 
-                        // Dynamically build a parser that tries operators.
-                        let symbolMatcher =
-                            prefixSymbolParsers
-                            |> List.map (fun (s, ops) -> skipString s >>% (s, ops))
-                            |> choice
+                    let symbolMatcher =
+                        prefixSymbolParsers
+                        |> List.map (fun (s, ops) -> skipString s >>% (s, ops))
+                        |> choice
 
-                        lookAhead (attempt (symbolMatcher .>>. getPosition) |> opt)
+                    let opReply = symbolMatcher stream
+                    let opEndPos = stream.Position
 
-                    let applyMixfixOperator (op: MixfixOperator) = parse {
+                    // Check for the longest match between the two previous parsing result.
+                    let atomOk = atomReply.Status = Ok
+                    let opOk = opReply.Status = Ok
 
-                        // Determines wether the operator enclose its arguments within fixed
-                        // parts (for example the mixfix operator `|arg|`).
-                        let hasClosingFixedParts =
-                            op.Pattern
-                            |> List.skipWhile _.IsFixed
-                            |> List.exists _.IsFixed
+                    if not atomOk && not opOk then
+                        // No success at all.
+                        stream.BacktrackTo(startState)
+                        Reply<'Node>(Error, messageError "Expected expression")
 
-                        // Adapts the precedence if the operator has closing parts.
-                        // This allows to isolate the parsing behaviour within the closed parts.
-                        let minPrecForArgs =
-                            if hasClosingFixedParts then 0u
-                            else op.Precedence
+                    elif atomOk && (not opOk || atomEndPos.Index > opEndPos.Index) then
+                        // The atom wins, we continue with its parsing state.
+                        stream.BacktrackTo(atomEndState)
 
-                        let! args =
-                            parseRestOfPattern
-                                (parseExprWithMinPrec minPrecForArgs)
-                                startPos
-                                (List.tail op.Pattern)
-                                []
-                                op.Name
-                                stopTokens
-
-                        return nodeFactory op.Name args startPos startPos
-                    }
-
-                    // Attempts to apply the operators that "match best" considering that the longest match wins.
-                    match atomMatch, opMatch with
-                    | Some (_, atomEnd), Some ((opStr, operators), opEnd) ->
-
-                        // if the atom is strictly longer, it wins (e.g., `-5` vs. `-`)
-                        // otherwise, the operator wins (e.g., `>>=` vs `>>`)
-
-                        if atomEnd.Index > opEnd.Index then
-                            // The atom wins, we do not consider mixfix parsing.
-                            return! baseAtomParser .>>? spaces
+                        let spaceReply = spaces stream
+                        if spaceReply.Status = FatalError then
+                            Reply<'Node>(spaceReply.Status, spaceReply.Error)
                         else
-                            // The operator wins, the symbol is consumed and the parsing of arguments is started.
+                            Reply(Ok, atomReply.Result, spaceReply.Error)
+
+                    else
+                        // The operator win, we continue with its parsing sate.
+                        stream.BacktrackTo(startState)
+                        let (opStr, operators) = opReply.Result
+
+                        let applyOpParser = parse {
                             do! pstringAligned startPos opStr (sprintf "operator '%s'" opStr) .>>? spaces
+
+                            let applyMixfixOperator (op: MixfixOperator) = parse {
+
+                                // Determines wether the operator enclose its arguments within fixed
+                                // parts (for example the mixfix operator `|arg|`).
+                                let hasClosingFixedParts =
+                                    op.Pattern
+                                    |> List.skipWhile _.IsFixed
+                                    |> List.exists _.IsFixed
+
+                                // Adapts the precedence if the operator has closing parts.
+                                // This allows to isolate the parsing behaviour within the closed parts.
+                                let minPrecForArgs =
+                                    if hasClosingFixedParts then 0u
+                                    else op.Precedence
+
+                                let! args =
+                                    parseRestOfPattern
+                                        (parseExprWithMinPrec minPrecForArgs)
+                                        startPos
+                                        (List.tail op.Pattern)
+                                        []
+                                        op.Name
+                                        stopTokens
+
+                                return nodeFactory op.Name args startPos startPos
+                            }
+
                             return!
                                 operators
                                 |> List.map (attempt << applyMixfixOperator)
                                 |> choice
+                        }
 
-                    | Some (_, _), None ->
-                        // only the atom matches
-                        return! baseAtomParser .>>? spaces
-
-                    | None, Some ((opStr, operators), _) ->
-                        // only the operator matches
-                        do! pstringAligned startPos opStr (sprintf "operator '%s'" opStr) .>>? spaces |>> ignore
-                        return!
-                            operators 
-                            |> List.map (attempt << applyMixfixOperator)
-                            |> choice
-
-                    | None, None ->
-                        // no match
-                        return! fail "Expected expression"
-                }
+                        applyOpParser stream
 
             let parseInfix (lhs: 'Node) =
                 let peekOp =
