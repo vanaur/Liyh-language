@@ -38,6 +38,7 @@ module ErrorReporter =
         | Package
         | RuntimeInternal
         | Runtime
+        | Tooling of string
         | Warning of ErrorType
 
         override this.ToString() =
@@ -48,6 +49,7 @@ module ErrorReporter =
             | Package -> "Package"
             | RuntimeInternal -> "Runtime internal"
             | Runtime -> "User triggered runtime"
+            | Tooling tool -> $"Tooling ({tool})"
             | Warning kind -> string kind
 
     let inline private paletteOfErrorType errorType =
@@ -301,6 +303,16 @@ module ErrorReporter =
           |> List.map (fun s -> s.TrimEnd())
           |> String.concat "\n\n"
           |> fun s -> s + "\n"
+
+    /// A simple report for no code snippet use cases.
+    let public simpleReport (errType: ErrorType) (description: string) (hint: string) =
+        { ErrorType = errType
+          ErrorCode = null
+          EnclosingPosition = None, None
+          Description = description
+          AllLines = Seq.empty
+          Informations = Seq.empty
+          Hint = hint }
 
     type public ErrorQueue() =
         let queue = ConcurrentQueue<ErrorReport>()
