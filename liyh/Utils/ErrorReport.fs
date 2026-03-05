@@ -7,6 +7,72 @@ module ErrorReporter =
     open System.IO
     open FParsec
 
+    type private SymbolSet =
+        { Ellipsis : string
+          VBar : string
+          VerticalGutter : string
+          HorizontalGutter : string
+          Carret : string
+          Bullet : string
+          Corner : string }
+
+        /// Supported only on recent systems.
+        /// This require `LIYH_FANCY_SYMBOLS` in the PATH.
+        static member UnicodeSetCool =
+            { Ellipsis  = "⋮"
+              VBar = "│"
+              VerticalGutter = "𜰊"
+              HorizontalGutter = "𜰉"
+              Carret = "^"
+              Bullet = "𜲂"
+              Corner = "└" }
+
+        /// Supported on most systems.
+        static member UnicodeSetClassical =
+            { Ellipsis  = "⋮"
+              VBar = "│"
+              VerticalGutter = "┃"
+              HorizontalGutter = "─"
+              Carret = "^"
+              Bullet = "▶"
+              Corner = "└" }
+
+        /// Supported on all systems.
+        static member AsciiSet =
+            { Ellipsis  = ":"
+              VBar = "|"
+              VerticalGutter = "+"
+              HorizontalGutter = "~"
+              Carret = "~"
+              Bullet = "-"
+              Corner = "\\" }
+
+    let private detectUnicodeSupport () =
+        let enc = Console.OutputEncoding
+        let isUtf8 = enc.WebName = "utf-8" || enc.CodePage = 65001
+
+        let langUtf8 =
+            [ "LANG"; "LC_ALL"; "LC_CTYPE" ]
+            |> List.exists (fun v ->
+                Environment.GetEnvironmentVariable(v)
+                |> Option.ofObj
+                |> Option.exists (fun s -> s.Contains("UTF-8", StringComparison.OrdinalIgnoreCase)))
+
+        let isWindowsUtf8 =
+            Runtime.InteropServices.RuntimeInformation.IsOSPlatform(Runtime.InteropServices.OSPlatform.Windows)
+            && Console.OutputEncoding.CodePage = 65001
+
+        isUtf8 || langUtf8 || isWindowsUtf8
+
+    let private sym =
+        let isCool =
+            true // let's be cool until someone complain
+            || Environment.GetEnvironmentVariable("LIYH_FANCY_SYMBOLS") = "1"
+
+        if isCool then SymbolSet.UnicodeSetCool
+        elif detectUnicodeSupport() then SymbolSet.UnicodeSetClassical
+        else SymbolSet.AsciiSet
+
     type private SeverityPalette =
         { Primary   : ColorTerm.Color
           Accent    : ColorTerm.Color
@@ -142,12 +208,12 @@ module ErrorReporter =
         let cleaned = compress [] trimmed
 
         let sb = StringBuilder()
-        sb.Append(indent 9 "⋮") |> ignore
+        sb.Append(indent 9 sym.Ellipsis) |> ignore
         sb.AppendLine() |> ignore
 
         for (lineNum, line) in cleaned do
             let lineNumStr = sprintf "%4d" lineNum
-            sb.AppendFormat("    {0} {1}  {2}\n", lineNumStr, "│", line) |> ignore
+            sb.AppendFormat("    {0} {1}  {2}\n", lineNumStr, sym.VBar, line) |> ignore
 
             if lineNum >= startL && lineNum <= endL then
                 
@@ -164,22 +230,22 @@ module ErrorReporter =
                         else line.Length
 
                     let len = max 1 (endIndex - startIndex)
-                    let cursorSymbol = if len <= 1 then "^" else "𜰉"
+                    let cursorSymbol = if len <= 1 then sym.Carret else sym.HorizontalGutter
                     let cursor = ColorTerm.colorize mutedColor cursorSymbol
-                    let glyph = String.replicate 9 " " + "𜰊" + " "
+                    let glyph = String.replicate 9 " " + sym.VerticalGutter + " "
                     let padding = String.replicate (1 + startIndex) " "
                     let underline = String.replicate len cursor
 
                     sb.Append(glyph + padding + underline + "\n") |> ignore
 
-        sb.Append(indent 9 "⋮") |> ignore
+        sb.Append(indent 9 sym.Ellipsis) |> ignore
         sb.ToString()
 
     let private formatListItems (items: string seq) =
         items
         |> Seq.map (fun s ->
             let indentedContent = s.Replace("\n", "\n      ")
-            "    𜲂 " + indentedContent)
+            $"    {sym.Bullet} " + indentedContent)
         |> String.concat "\n"
 
     let private simpleWrap (text: string) (max: int) (indent: int) : string =
@@ -367,7 +433,7 @@ module ErrorReporter =
                     (if nError > 0 then "them" else "it"))
 
                 for error in errors do
-                    writer.WriteLine("└ " + formatError error)
+                    writer.WriteLine(sym.Corner + formatError error)
 
             if cleanAfter then
                 queue.Clear()
