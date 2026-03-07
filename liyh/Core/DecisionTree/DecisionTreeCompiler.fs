@@ -348,7 +348,8 @@ module DecisionTreeCompiler =
         (path: Path)
         (remainingPaths: Path list)
         (specificOccs: PatternOccurrence list)
-        (defaults: PatternOccurrence list) =
+        (defaults: PatternOccurrence list)
+        (hasChildren: bool) =
 
         //
         // A default case must be kept in a specific branch if:
@@ -365,7 +366,7 @@ module DecisionTreeCompiler =
 
         // We have to check whether we have reached the end of the analysis for this path.
         let filteredPaths = List.filter ((<>) path) remainingPaths
-        let isPathExhausted = List.isEmpty filteredPaths
+        let isPathExhausted = List.isEmpty filteredPaths && not hasChildren
 
         // We check for guards (that we have to include).
         let hasGuards = specificOccs |> List.exists _.WhenClause.IsSome
@@ -408,7 +409,7 @@ module DecisionTreeCompiler =
             byConstructor
             |> Map.map (fun (symbolName, arity) occs ->
                 let (filteredPaths, allOccs) = 
-                    resolveDefaultsAndMerge path remainingPaths occs defaults
+                    resolveDefaultsAndMerge path remainingPaths occs defaults (arity > 0)
 
                 let specialized =
                     allOccs 
@@ -437,7 +438,7 @@ module DecisionTreeCompiler =
             byLiteral
             |> Map.map (fun lit occs ->
                 let (filteredPaths, allOccs) = 
-                    resolveDefaultsAndMerge path remainingPaths occs defaults
+                    resolveDefaultsAndMerge path remainingPaths occs defaults false
 
                 let specialized =
                     allOccs
