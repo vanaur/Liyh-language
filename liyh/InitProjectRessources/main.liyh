@@ -1,0 +1,9 @@
+use Liyh
+
+greeting[name] ->
+    "Oh, hello {name}! And welcome to Liyh!"
+
+main[] ->
+    using Terminal() handle
+        let greet = greeting["<author>"]
+        println["Message: {greet}"]

@@ -61,6 +61,12 @@
 
   <ItemGroup>
     <EmbeddedResource Include="C/rcl.c" />
+
+    <EmbeddedResource Include="InitProjectRessources/Apache" />
+    <EmbeddedResource Include="InitProjectRessources/GPL" />
+    <EmbeddedResource Include="InitProjectRessources/MIT" />
+    <EmbeddedResource Include="InitProjectRessources/README.md" />
+    <EmbeddedResource Include="InitProjectRessources/main.liyh" />
   </ItemGroup>
 
   <PropertyGroup>
