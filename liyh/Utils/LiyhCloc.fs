@@ -117,8 +117,9 @@ module public LiyhCloc =
                 let totalBlank   = successes |> Array.sumBy (snd >> _.Blank)
                 let totalComment = successes |> Array.sumBy (snd >> _.Comment)
                 let totalCode    = successes |> Array.sumBy (snd >> _.Code)
+                let fileTotal    = successes |> Array.sumBy (snd >> fun stats -> stats.Blank + stats.Comment + stats.Code)
 
-                let hBlank, hComment, hCode = "blank", "comment", "code"
+                let hBlank, hComment, hCode, hTotal = "blank", "comment", "code", "total"
 
                 let largestName =
                     stats |> Array.map (fst >> _.Length) |> Array.max
@@ -126,8 +127,9 @@ module public LiyhCloc =
                 let widthBlank   = max hBlank.Length   (string totalBlank).Length
                 let widthComment = max hComment.Length (string totalComment).Length
                 let widthCode    = max hCode.Length    (string totalCode).Length
+                let widthTotal   = max hTotal.Length   (string fileTotal).Length
 
-                let separatorLength = largestName + widthBlank + widthComment + widthCode + 6
+                let separatorLength = largestName + widthBlank + widthComment + widthCode + widthTotal + 8
 
                 if not (Array.isEmpty failures) then
                     errorQueue.AddErrors failures
@@ -135,25 +137,28 @@ module public LiyhCloc =
                 printfn "%d liyh file%s found.\n" stats.Length (if stats.Length > 1 then "s" else "")
                 printfn "%s" (String.replicate separatorLength "-")
 
-                printfn "%-*s  %*s  %*s  %*s"
+                printfn "%-*s  %*s  %*s  %*s  %*s"
                     largestName "file"
                     widthBlank   hBlank
                     widthComment hComment
                     widthCode    hCode
+                    widthTotal   hTotal
 
                 printfn "%s" (String.replicate separatorLength "-")
 
                 for (fileName, stat) in successes do
-                    printfn "%-*s  %*d  %*d  %*d"
+                    printfn "%-*s  %*d  %*d  %*d  %*d"
                         largestName fileName
                         widthBlank   stat.Blank
                         widthComment stat.Comment
                         widthCode    stat.Code
+                        widthTotal   (stat.Blank + stat.Comment + stat.Code)
 
                 printfn "%s" (String.replicate separatorLength "-")
-                printfn "%-*s  %*d  %*d  %*d"
-                    largestName  "total"
+                printfn "%-*s  %*d  %*d  %*d  %*d"
+                    largestName  "sum"
                     widthBlank   totalBlank
                     widthComment totalComment
                     widthCode    totalCode
+                    widthTotal   fileTotal
                 printfn "%s" (String.replicate separatorLength "-")
