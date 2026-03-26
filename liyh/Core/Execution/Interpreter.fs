@@ -28,6 +28,8 @@ namespace Liyh.Core.Execution.Core
 //  - track deep recursion
 //
 
+(*
+
 module Interpreter =
     open System.Collections.Generic
     open System.Runtime.InteropServices
@@ -1487,3 +1489,4 @@ module Interpreter =
         //printRuleCallCounts ruleCallCounts
         r
 
+*)

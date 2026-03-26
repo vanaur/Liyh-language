@@ -1,5 +1,7 @@
 namespace Liyh.Core.Execution
 
+(*
+
 module FFI =
     open System
     open System.Reflection
@@ -199,3 +201,4 @@ module FFI =
 
         nativeToCore result signature.ReturnType
 
+*)
