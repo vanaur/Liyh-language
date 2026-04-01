@@ -71,6 +71,8 @@ typedef uint32_t sym_id_t;
 #define MAKE_BOOL(val)  ((((uintptr_t)(val ? 1 : 0)) << 2) | TAG_BOOL)
 #define GET_BOOL(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
 
+#define IS_NUMERIC(t)   (IS_INT(t) || (IS_PTR(t) && AS_HEADER(t)->id == SYM_FLOAT_NATIVE))
+
 #define SYM_CONTINUATION    0xFFFFFFFA  // continuation for symbolic computations and substitutions
 
 #define SYM_STRING_NATIVE   0xFFFFFFFB  // strings
@@ -1879,11 +1881,18 @@ int run_vm(vm_t *vm_ptr, const int entry)
             const term_t l = regs[instr.b];                                             \
             const term_t r = regs[instr.c];                                             \
                                                                                         \
-            if (IS_INT(l) && IS_INT(r))                                                 \
+            if (IS_INT(l) && IS_INT(r)) {                                               \
                 regs[instr.a] = MAKE_INT(GET_INT(l) op GET_INT(r));                     \
-            else                                                                        \
+            }                                                                           \
+            else if (IS_NUMERIC(l) && IS_NUMERIC(r)) {                                  \
                 regs[instr.a] = make_float(get_float(l) op get_float(r));               \
-                                                                                        \
+            }                                                                           \
+            else {                                                                      \
+                fprintf(stderr, "Runtime Error: Invalid operands for arithmetic operation. Expected numbers, got '%s' and '%s'.\n", \
+                        GET_TAG_TYPE(l), GET_TAG_TYPE(r));                              \
+                return_value = EXIT_FAILURE;                                            \
+                run = false;                                                            \
+            }                                                                           \
         } while(0)
 
         // native comparison operations
@@ -1891,11 +1900,18 @@ int run_vm(vm_t *vm_ptr, const int entry)
             const term_t l = regs[instr.b];                                             \
             const term_t r = regs[instr.c];                                             \
                                                                                         \
-            if (IS_INT(l) && IS_INT(r))                                                 \
+            if (IS_INT(l) && IS_INT(r)) {                                               \
                 regs[instr.a] = MAKE_BOOL(GET_INT(l) op GET_INT(r));                    \
-            else                                                                        \
+            }                                                                           \
+            else if (IS_NUMERIC(l) && IS_NUMERIC(r)) {                                  \
                 regs[instr.a] = MAKE_BOOL(get_float(l) op get_float(r));                \
-                                                                                        \
+            }                                                                           \
+            else {                                                                      \
+                fprintf(stderr, "Runtime Error: Type mismatch in comparison. Expected numbers, got '%s' and '%s'.\n", \
+                        GET_TAG_TYPE(l), GET_TAG_TYPE(r));                              \
+                return_value = EXIT_FAILURE;                                            \
+                run = false;                                                            \
+            }                                                                           \
         } while(0)
 
         case INSTR_ADD:
