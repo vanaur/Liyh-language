@@ -181,6 +181,7 @@ module SyntaxTree =
                                                                // parsing, so as not to stop at the first error encountered
         | Use of Use WithPos
         | Rule of Rule
+        | LetRule of Rule       // a rule with no pattern is sugared into a `let`-like expression
         | Handler of Handler
         | Effect of string * vartypes: string list * (Signature WithPos) list
         | Type of SumType

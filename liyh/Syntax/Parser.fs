@@ -224,6 +224,7 @@ module private ParsingErorr =
             let whenErrors = defaultArg (rule.WhenClause |> Option.map collectParsingErrorsFromExpression) []
             let bodyErrors = collectParsingErrorsFromExpression rule.Body
             patternErrors @ whenErrors @ bodyErrors
+        | LetRule rule -> collectParsingErrorsFromTopLevel (withPosOf topLevel (Rule rule))
         | Handler handler ->
             let stateErrors = collectParsingErrorsFromPattern handler.State
             let patternErrors = collectParsingErrorsFromPattern handler.Pattern
@@ -1487,6 +1488,22 @@ module Parser =
                       Strategy = strategy
                       Body = rewriting })
 
+    let private parseLetRule =
+        pipe4
+            (spaces >>. keyword "let")
+            (spacesOrComment >>. parseWithPos (NameParser.parseName false))
+            (spacesOrComment >>. pchar '=')
+            (spacesOrComment >>. parseExpressionRef)
+            (fun _ name _ expr ->
+                TopLevel.LetRule
+                    {
+                        Name = name
+                        Patterns = []
+                        WhenClause = None
+                        Type = None
+                        Strategy = None
+                        Body = expr })
+
     let private parseMixfixRule =
         fun (stream: CharStream<IndentState<NotationState>>) ->
             let state = stream.UserState.UserState
@@ -1812,6 +1829,7 @@ module Parser =
               parseWithPos parseType
               parseWithPos parseNotation
               parseWithPos (parseContext ())
+              parseWithPos parseLetRule
               attempt (parseWithPos parseHandler)
               parseWithPos parseExtern
               parseWithPos parseRule ]

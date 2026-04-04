@@ -443,7 +443,7 @@ module LiyhPackage =
             else
                 Definitions.classifyDefinitions modl
                 |> Map.tryFind Definitions.DefinitionType.Rule
-                |> Option.map (List.tryFind (removePos >> function Rule { Name = name } -> name.Node = "main"))
+                |> Option.map (List.tryFind (removePos >> function Rule { Name = name } -> name.Node = "main" | _ -> false))
                 |> Option.map (fun r -> result <- r)
                 |> ignore
 

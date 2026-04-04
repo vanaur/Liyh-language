@@ -32,6 +32,7 @@ module Definitions =
     let private getDefinitionType { Node = node } =
         match node with
         | TopLevel.Rule _ -> Some Rule
+        | TopLevel.LetRule _ -> Some Rule
         | TopLevel.Handler _ -> Some Handler
         | TopLevel.Extern _ -> Some Extern
         | TopLevel.Effect _ -> Some Effect
@@ -73,6 +74,7 @@ module Definitions =
     let private getName (tlwp: TopLevelWithPos) =
         match tlwp.Node with
         | TopLevel.Rule { Name = name } -> name.Node
+        | TopLevel.LetRule { Name = name } -> name.Node
         | TopLevel.Handler { Name = name } -> name
         | TopLevel.Effect (name', _, _) -> name'
         | TopLevel.Type { Name = name } -> name

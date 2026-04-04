@@ -694,6 +694,7 @@ module CoreCompiler =
         let compiled =
             match removePos definition with
             | TopLevel.Rule rule -> Some (compileRule cstate rule)
+            | TopLevel.LetRule letRule -> Some (compileRule cstate letRule)
             | TopLevel.Handler handler -> Some (compileHandler cstate handler)
             | TopLevel.Extern extrn -> None
             | TopLevel.Context context -> Some (compileContext cstate context)
