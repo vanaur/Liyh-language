@@ -107,6 +107,10 @@ module Program =
 
     module private CompilationProcess =
 
+        let private showTimeTaken (ms: int64) =
+            if ms < 1000 then sprintf "\nTime taken: %dms." ms
+            else sprintf "\nTime taken: %gs." (double ms / 1000.0)
+
         let public runOrCompile
             (rootFile: string)
             (doOptimize: bool)
@@ -115,6 +119,8 @@ module Program =
             (emitBytecode: string option)
 
             =
+
+            let sw = Diagnostics.Stopwatch.StartNew()
 
             let errorQueue = new ErrorQueue()
 
@@ -130,7 +136,7 @@ module Program =
                 //
                 // Testing...
                 //
-                // let ffiBindings = FFI.GeneralFFI.getFFIBindings rootModule.Value errorQueue
+                // let ffiBindings = FFI.GeneralFFI.getFFIBindings rootModule.Value errorQueue false
                 // errorQueue.ReportIfNeeded Console.Error
                 //
 
@@ -188,7 +194,7 @@ module Program =
 
                 | None when run ->
                     let ms = vm.Run()
-                    printfn "\nTime taken: %d ms." ms
+                    printfn "%s" (showTimeTaken ms)
 
                 | Some output when not run ->
                     compileTo output
@@ -196,7 +202,8 @@ module Program =
                 | _ ->
                     failwith "??"
 
-                ()
+                if not run then
+                    printfn "%s" (showTimeTaken sw.ElapsedMilliseconds)
 
     module private ProjectInitialization =
         open System.IO
