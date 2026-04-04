@@ -1,5 +1,7 @@
 namespace Liyh.FFI
 
+(*
+
 /// Loads useful functions for Windows.
 module private Kernel32 =
     open System.Runtime.InteropServices
@@ -119,7 +121,6 @@ module private StructureMarshaller =
         { name: string
           fieldType: Type
           offset: int option
-          // NOUVEAU : On spécifie le type de marshalling (ByValArray ou ByValTStr)
           marshalType: UnmanagedType option
           sizeConst: int option }
 
@@ -578,3 +579,5 @@ module public CFFI =
                         Kernel32.FreeLibrary handle |> ignore
 
                     disposed <- true
+
+*)

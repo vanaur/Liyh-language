@@ -17,6 +17,7 @@ module public BindingRCL =
     let public SYM_CHAR_NATIVE = int 0xFFFFFFF0u
     let public SYM_BOOL_NATIVE = int 0xFFFFFFF5u
     let public SYM_NUM_NATIVE = int 0xFFFFFFF4u
+    let public SYM_PTR_NATIVE = int 0xFFFFFFEFu
 
     let inline isSystemTag (id: int) = (uint32 id) >= 0xFFFFFFF0u
 
@@ -61,6 +62,14 @@ module public BindingRCL =
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
     extern void public emit(EnvPtr env, int op, int a, int b, int c, int d)
 
+    /// Loads a dynamic library into the VM.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)>]
+    extern bool public rcl_env_load_library(EnvPtr env, string path)
+
+    /// Loads an external function from a dynamic library via the FFI.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)>]
+    extern int public rcl_env_register_ffi(EnvPtr env, string func_name, int arity, int[] arg_types, int ret_type)
+
     /// Creates a new virtual machine given an execution environment.
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
     extern VMPtr public create_vm(EnvPtr env)
@@ -72,6 +81,29 @@ module public BindingRCL =
     /// Execute the program at the given starting point.
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
     extern void public run_vm(VMPtr vm, int entryLabel)
+
+[<RequireQualifiedAccess>]
+type public RclType =
+    | Int64 = 0
+    | Int32 = 1
+    | Float64 = 2
+    | Float32 = 3
+    | Char = 4
+    | String = 5
+    | Pointer = 6
+    | Void = 7
+
+module public RclType =
+
+    let public RclTypeToInt32 (rclType: RclType) =
+        int32 rclType
+
+type public RCLFFIBinding =
+    { Library: string
+      FunctionName: string
+      Arity: int
+      ArgTypes: RclType[]
+      RetType: RclType }
 
 type public OpCode =
     | Halt = 0
@@ -117,8 +149,13 @@ type public OpCode =
     | Delay = 40
     | Force = 41
     | Cast = 42
-    | PPShow = 43
-    | Print = 44
+    | CallFFI = 43
+    | BufferAlloc = 44
+    | BufferGet = 45
+    | BufferSet = 46 
+    | BufferRealloc = 47
+    | PPShow = 48
+    | Print = 49
 
 [<Struct>]
 type public ByteCodeInstr =
@@ -198,5 +235,5 @@ module public DispatchTable =
 type public CompiledProgram =
     { Program: ByteCodeInstr[]          // the compiled program
       EntryPointLabel: LabelIndex       // the entry point of the program (label)
-      DispatchTable: DispatchTable }    // dispatch table (RuleInfo : LabelIndex)
-
+      DispatchTable: DispatchTable      // dispatch table (RuleInfo : LabelIndex)
+      FFIBinding: RCLFFIBinding[] }     // bindings for the foreign function interface

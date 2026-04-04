@@ -241,4 +241,3 @@ module AlphaConversion =
             let content = ctx.Content |> List.map (alphaConversionDefinition getUniqueVariable) 
             Context { ctx with Content = content }
 
-        | Extern _ -> def

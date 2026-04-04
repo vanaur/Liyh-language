@@ -9,13 +9,65 @@ namespace Liyh.LyVM
 module public BytecodeCompiler =
     open System
     open System.Collections.Generic
+    open Liyh.Module
+    open Liyh.FFI.GeneralFFI
+    open Liyh.Module.LiyhPackage
     open Liyh.Utils
     open Liyh.Core
     open Liyh.Core.DecisionTree
     open Liyh.Core.DecisionTree.DecisionTreeCompiler
 
+    /// A registry/dispatch table for the foreign function interfaces.
+    type private FFIRegistry(globalFFIBindings: GlobalFFIBindings) =
+
+        let mapCTypeToRclType (ctype: CType) =
+            match ctype with
+            | CType.Int64 -> RclType.Int64
+            | CType.Int32 -> RclType.Int32
+            | CType.Float64 -> RclType.Float64
+            | CType.Float32 -> RclType.Float32
+            | CType.Char -> RclType.Char
+            | CType.String -> RclType.String
+            | CType.Pointer _ -> RclType.Pointer
+            | CType.Void -> RclType.Void
+
+        let flatBindings =
+            globalFFIBindings
+            |> Map.values
+            |> Seq.collect id
+            |> Seq.map (fun info ->
+
+                let argTypes = info.ArgumentsType |> Seq.map mapCTypeToRclType |> Array.ofSeq
+                let retType = mapCTypeToRclType info.ReturnType
+
+                // External functions are always qualified by their library FFI's name.
+                let qualifiedName = sprintf "%s.%s" info.ExternalQualifier info.FunctionName
+
+                let rclBinding =
+                    { Library = info.LibraryPath
+                      FunctionName = info.FunctionName
+                      Arity = info.Arity
+                      ArgTypes = argTypes
+                      RetType = retType }
+
+                (qualifiedName, rclBinding)
+            ) |> Array.ofSeq
+
+        let entries = Array.map snd flatBindings
+        let indices =
+            flatBindings
+            |> Array.mapi (fun idx (qualName, _) -> (qualName, idx))
+            |> Map.ofArray
+
+        /// Returns the array of `RCLFFIBinding` associated to the global FFI bindings.
+        member public _.Entries = entries
+
+        /// Attempts to return the associated label index to an FFI function.
+        member public _.TryGetIndex(qualName: string) = Map.tryFind qualName indices
+
     type private GlobalContext =
-        { SymbolLabels: DispatchTable }         // dispatch table (RuleInfo : LabelIndex)
+        { SymbolLabels: DispatchTable           // dispatch table (RuleInfo : LabelIndex)
+          FFIRegistery: FFIRegistry }           // ffi registry (dispatch table-like for foreign functions)
 
     type private CompilationContext =
         { Global: GlobalContext                 // the static global context of compilation
@@ -265,9 +317,11 @@ module public BytecodeCompiler =
 
     /// Class containing all compilation logic, encapsulates mutable states and numerous functions using them.
     /// The only public member is `__.Compile` which returns the compiled bytecode of the given program.
-    type private Compiler(program: CoreProgram) =
+    type private Compiler(globalFFIBindings: GlobalFFIBindings, program: CoreProgram) =
         let builder = new ByteCodeBuilder()
         let mutable nextLabelId = 1000
+
+        let ffiRegistery = FFIRegistry(globalFFIBindings)
 
 
         // --- General helpers --- //
@@ -283,7 +337,8 @@ module public BytecodeCompiler =
             |> Map.map (fun _ _ -> freshLabel ())
 
         let globalContext =
-            { SymbolLabels = globalLabels }
+            { SymbolLabels = globalLabels
+              FFIRegistery = ffiRegistery }
 
         /// The `builder.Mov` instruction but updating the compilation context for tracking.
         let emitMov (dest: Reg, src: Reg) (ctx: CompilationContext) =
@@ -1096,6 +1151,32 @@ module public BytecodeCompiler =
                 let res = builder.Force(thunkReg)
                 MiscHelpers.markEvaluated res context
 
+            | { Symbol = "__buffer_alloc"; Children = [ sizeExpr ] } ->
+                let sizeReg = compileTermStrict context sizeExpr
+                let res = builder.BufferAlloc(sizeReg)
+                MiscHelpers.markEvaluated res context
+
+            | { Symbol = "__buffer_get"; Children = [ bufExpr; indexExpr ] } ->
+                let bufReg = compileTermStrict context bufExpr
+                let indexReg = compileTermStrict context indexExpr
+                let res = builder.BufferGet(bufReg, indexReg)
+                MiscHelpers.markEvaluated res context
+            
+            | { Symbol = "__buffer_set"; Children = [ bufExpr; indexExpr; valExpr ] } ->
+                let bufReg = compileTermStrict context bufExpr
+                let indexReg = compileTermStrict context indexExpr
+                let valReg = compileTermStrict context valExpr
+
+                builder.BufferSet(bufReg, indexReg, valReg) // in-place modification but still return the pointer
+                MiscHelpers.markEvaluated bufReg context
+
+            | { Symbol = "__buffer_realloc"; Children = [ bufExpr; newSizeExpr ] } ->
+                let bufReg = compileTermStrict context bufExpr
+                let newSizeReg = compileTermStrict context newSizeExpr
+
+                builder.BufferRealloc(bufReg, newSizeReg) // in-place modification but still return the pointer
+                MiscHelpers.markEvaluated bufReg context
+
             | _ ->
 
                 // Arguments are prepared differently depending on the main strategy associated
@@ -1121,28 +1202,36 @@ module public BytecodeCompiler =
                     // Not a function call, but an "applicable" value
                     builder.LoadAtom(resolvedName)
                 else
-                    let dp = context.Global.SymbolLabels
-                    let resolvedInfo = DispatchTable.tryFindByNameArity (resolvedName, List.length children) dp
-
-                    match resolvedInfo with
-                    | Some (label, strategy) ->
-                        if isTail then
-                            builder.Tailcall(label, argsRegs strategy)
-                            Reg 0 // dummy
-                        else
-                            builder.Call(label, argsRegs strategy)
+                    // Check in the FFI first
+                    match context.Global.FFIRegistery.TryGetIndex(resolvedName) with
+                    | Some ffiIndex ->
+                        let strictArgs = List.map (compileTermStrict context) children
+                        builder.CallFFI(ffiIndex, strictArgs)
 
                     | None ->
-                        let args =
-                            match context.Strategy with
-                            | Outermost ->
-                                // In the RHS of an outermost rule, we want to evaluate children
-                                // to allow function calls rather that a simple substitution.
-                                List.map (compileTerm context false) children
-                            | _ ->
-                                argsRegs context.Strategy
 
-                        builder.AllocData(name, args)
+                        let dp = context.Global.SymbolLabels
+                        let resolvedInfo = DispatchTable.tryFindByNameArity (resolvedName, List.length children) dp
+
+                        match resolvedInfo with
+                        | Some (label, strategy) ->
+                            if isTail then
+                                builder.Tailcall(label, argsRegs strategy)
+                                Reg 0 // dummy
+                            else
+                                builder.Call(label, argsRegs strategy)
+
+                        | None ->
+                            let args =
+                                match context.Strategy with
+                                | Outermost ->
+                                    // In the RHS of an outermost rule, we want to evaluate children
+                                    // to allow function calls rather that a simple substitution.
+                                    List.map (compileTerm context false) children
+                                | _ ->
+                                    argsRegs context.Strategy
+
+                            builder.AllocData(name, args)
 
         and compileSubstitution (substitution: CoreSubstitution) (context: CompilationContext) =
             let astReg = compileTermStrict context substitution.InExpr
@@ -1269,6 +1358,9 @@ module public BytecodeCompiler =
                 let rulesArray = Array.ofList rules
                 let tree = DecisionTreeCompiler.compileRules rulesArray
 
+                // if symbolName = "transpose_list" then
+                //     Liyh.Core.DecisionTree.RenderDecisionTree.renderAndOpen tree
+
                 let activeContexts =
                     match ruleInfo.ContextName with
                     | Some contextName -> contextName :: ContextResolution.getContextDependencies program contextName
@@ -1384,11 +1476,11 @@ module public BytecodeCompiler =
                 builder.FinalizeFunction(patchIndex, savedMaxStack)
 
             let dispatchTable = globalLabels
-            builder.Compile(entryPointLabel, dispatchTable)
+            builder.Compile(entryPointLabel, dispatchTable, ffiRegistery.Entries)
 
     /// Compiles a LiyhCore program into a LyVM's bytecode equivalent program.
     /// The `optimize` flag has no effect, for now.
-    let public compile (program: CoreProgram) =
-        let compiler = new Compiler(program)
+    let public compile (ffiBindings: LiyhPackage.GlobalFFIBindings) (program: CoreProgram) =
+        let compiler = new Compiler(ffiBindings, program)
         compiler.Compile()
 

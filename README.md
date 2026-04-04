@@ -83,4 +83,5 @@ This project uses the following third-party libraries:
 | [BenchShark](https://github.com/JamesMenetrey/BenchShark) | MIT | A lightweight library for benchmarking performance of your .NET applications. |
 | [Argu](https://github.com/fsprojects/Argu) | MIT | A declarative CLI argument parser for F#. |
 | [bdwgc](https://github.com/bdwgc/bdwgc) | MIT | The Boehm-Demers-Weiser conservative C/C++ Garbage Collector (bdwgc, also known as bdw-gc, boehm-gc, libgc). |
+| [libffi](https://github.com/libffi/libffi) | MIT |  A portable foreign-function interface library. |
 

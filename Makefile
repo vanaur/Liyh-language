@@ -48,7 +48,7 @@ all: build
 
 build-clib:
 	@echo "Building C library ($(CLIB_NAME))..."
-	@$(CC) $(SHARED_FLAG) -o $(PROJECT_DIR)/$(CLIB_NAME) $(CLIB_SOURCE) -lgc -lm -fPIC -O3 $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
+	@$(CC) $(SHARED_FLAG) -o $(PROJECT_DIR)/$(CLIB_NAME) $(CLIB_SOURCE) -lgc -lffi -lm -fPIC -O3 $(EXTRA_CFLAGS) $(EXTRA_LDFLAGS)
 
 build: build-clib
 	@echo "Building .NET project for $(RID) (ReadyToRun)..."

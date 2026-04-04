@@ -140,7 +140,6 @@ and public CoreUsingContext =
 type public CoreDefinition =
     | Rule of CoreRule
     | Handler of CoreHandler
-    | Extern of CoreExtern
     | Context of CoreContext
 
 and public CoreRule =
@@ -156,11 +155,6 @@ and public CoreHandler =
       State: CoreTerm
       WhenClause: CoreTerm option
       Strategy: Liyh.Syntax.SyntaxTree.RewritingStrategy }
-
-and public CoreExtern =
-    { LibraryName: string
-      Library: Liyh.FFI.CFFI.DynLib
-      Functions: Map<string, Liyh.FFI.CFFI.FunctionSignature> }
 
 and public CoreContext =
     { ContextName: string

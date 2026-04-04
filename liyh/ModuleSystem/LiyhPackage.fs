@@ -8,6 +8,7 @@ module LiyhPackage =
     open Liyh.Syntax.Parser
     open Liyh.Utils.ErrorReporter
     open Liyh.Module
+    open Liyh.FFI.GeneralFFI
 
     [<RequireQualifiedAccess>]
     module private ErrorCodes =
@@ -408,8 +409,8 @@ module LiyhPackage =
                     let newNotations =
                         result.MixfixOperators
                         |> List.filter (fun n -> not (List.contains n directNotations))
-                    
-                    let updated =
+
+                    let updatedModuleInfo =
                         { module' with
                             ModuleDescription = result.Module.ModuleDescription
                             ModuleContent = result.Module.ModuleContent
@@ -417,8 +418,15 @@ module LiyhPackage =
                             Done = true
                             MixfixOperators = newNotations }
 
-                    if checkExports updated errorQueue = true then
-                        let finalGraph = ProjectGraph.updateModule module' updated pgraph'
+                    let rawBindings = Definitions.tryGetByType Definitions.Extern updatedModuleInfo
+                    let allLines = NodeInfo.getLines updatedModuleInfo.Text
+                    let ffiBindings = getFFIBindingsFromAST rawBindings errorQueue allLines false
+
+                    let updatedModuleInfo =
+                        { updatedModuleInfo with FFIBinings = ffiBindings }
+
+                    if checkExports updatedModuleInfo errorQueue = true then
+                        let finalGraph = ProjectGraph.updateModule module' updatedModuleInfo pgraph'
                         finalGraph, newNotations
                     else
                         pgraph, []
@@ -459,3 +467,110 @@ module LiyhPackage =
             |> ignore
 
         result
+
+    /// The Global FFI Bindings is a Map of keys 'Module Name' and value 'Module FFI Bindings'.
+    type public GlobalFFIBindings = Map<string, FFIBinding list>
+
+    [<RequireQualifiedAccess>]
+    module public GlobalFFIBindings =
+
+        let public asGlobalArrayIgnoreModules (gfb: GlobalFFIBindings) =
+            Map.fold (fun acc _ v -> v :: acc) List.empty gfb
+            |> List.collect id
+            |> Array.ofList
+
+    /// Returns the list of FFI bindings for each module of the project.
+    /// The returned value is a Map of module's name and FFI bindings.
+    let public getFFIBindings (ProjectGraph pgraph) =
+        let mutable result: GlobalFFIBindings = Map.empty
+
+        for modl in pgraph.Keys do
+            let key = string modl.Identifier
+            let value = modl.FFIBinings
+
+            result <- Map.add key value result
+
+        result
+
+    /// Checks the following:
+    ///  - no duplicate import of the same library
+    ///  - no duplicate 'as name'
+    ///  - no duplicate external functions within the same FFI
+    /// 
+    /// Returns `true` or `false` updating the error queue.
+    let public checkGlobalFFIBindings (ffiBindings: GlobalFFIBindings) (allLines: string seq) (errorQueue: ErrorQueue) =
+        let mutable isValid = true
+
+        for KeyValue(moduleName, bindings) in ffiBindings do
+
+            // Check 1 - No duplicate import of the same library:
+            // A given LibraryPath must always be bound to exactly one ExternalQualifier.
+
+            bindings
+            |> List.groupBy _.LibraryPath
+            |> List.iter (fun (libPath, entries) ->
+                let qualifiers =
+                    entries
+                    |> List.map _.ExternalQualifier
+                    |> List.distinct
+
+                if qualifiers.Length > 1 then
+                    let report =
+                        { ErrorType = ErrorType.Package
+                          ErrorCode = null
+                          EnclosingPosition = None, None
+                          Description = $"Library '{libPath}' is imported multiple times under different names in the module {moduleName}"
+                          AllLines = allLines
+                          Informations = []
+                          Hint = null }
+
+                    errorQueue.AddError report
+                    isValid <- false)
+
+            // Check 2 - No duplicate 'as name':
+            // A given ExternalQualifier must always refer to exactly one LibraryPath.
+
+            bindings
+            |> List.groupBy _.ExternalQualifier
+            |> List.iter (fun (qualifier, entries) ->
+                let libs =
+                    entries
+                    |> List.map _.LibraryPath
+                    |> List.distinct
+
+                if libs.Length > 1 then
+                    let report =
+                        { ErrorType = ErrorType.Package
+                          ErrorCode = null
+                          EnclosingPosition = None, None
+                          Description = $"The external qualifier '{qualifier}' refers to multiple libraries."
+                          AllLines = allLines
+                          Informations = []
+                          Hint = null }
+
+                    errorQueue.AddError report
+                    isValid <- false)
+
+            // Check 3 - No duplicate external function within the same FFI:
+            // Within a given ExternalQualifier, the pair (FunctionName, Arity) must be unique.
+
+            bindings
+            |> List.groupBy _.ExternalQualifier
+            |> List.iter (fun (qualifier, entries) ->
+                entries
+                |> List.groupBy _.FunctionName
+                |> List.iter (fun (funcName, dups) ->
+                    if dups.Length > 1 then
+                        let report =
+                            { ErrorType = ErrorType.Package
+                              ErrorCode = null
+                              EnclosingPosition = None, None
+                              Description = $"The external function '{funcName}' is declared {dups.Length} times in the FFI '{qualifier}'."
+                              AllLines = allLines
+                              Informations = []
+                              Hint = null }
+
+                        errorQueue.AddError report
+                        isValid <- false))
+
+        isValid

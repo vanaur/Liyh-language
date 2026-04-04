@@ -161,7 +161,14 @@ module Program =
                     errorQueue.ReportAll Console.Error true
                     exit 1
 
-                let cp = LyVM.BytecodeCompiler.compile coreDefinitions
+                // We add the Foreign Function Interface bindings to the pipeline for the compiler.
+
+                let ffiBindings = getFFIBindings pgraph
+                checkGlobalFFIBindings ffiBindings [] errorQueue |> ignore
+                errorQueue.ReportIfNeeded Console.Error
+
+                // The compiled program.
+                let cp = LyVM.BytecodeCompiler.compile ffiBindings coreDefinitions
 
                 Option.iter
                     (LyVM.PrettyPrinter.saveToFile cp)

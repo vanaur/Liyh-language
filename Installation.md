@@ -19,3 +19,6 @@ You can clean up build files with `make clean` and `make distclean`.
 
 If everything went well, then you should be able to use `liyh` in a terminal!
 
+## Windows
+
+Windows is not yet supported. 😕

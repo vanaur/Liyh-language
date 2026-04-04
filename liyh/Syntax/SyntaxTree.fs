@@ -252,7 +252,7 @@ module SyntaxTree =
           HandlerState: ExpressionWithPos }
 
     and public Signature =
-        { Name: string
+        { Name: string WithPos
           ArgumentsType: TypeWithPos list
           ReturnType: TypeWithPos option }
 

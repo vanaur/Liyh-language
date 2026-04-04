@@ -1569,7 +1569,7 @@ module Parser =
         let parseRetType = (skipChar ':' <|> skipString "->") >>. spaces >>. TypeParser.parseType
 
         pipe3
-            (spaces >>. NameParser.parseName false)
+            (spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>.
                 choice [
                     between

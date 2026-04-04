@@ -22,13 +22,14 @@
     <Compile Include="Syntax/Parser.fs" />
     <Compile Include="Syntax/PrettyPrint.fs" />
 
+    <Compile Include="FFI/GeneralFFI.fs" />
+    <Compile Include="FFI/C/CFFI.fs" />
+
     <Compile Include="ModuleSystem/Module.fs" />
     <Compile Include="ModuleSystem/Definition.fs" />
     <Compile Include="ModuleSystem/LiyhPackage.fs" />
 
     <Compile Include="Typecheck/TypeCheck.fs" />
-
-    <Compile Include="FFI/C/CFFI.fs" />
 
     <Compile Include="Core/Core.fs" />
     <Compile Include="Core/Helper.fs" />

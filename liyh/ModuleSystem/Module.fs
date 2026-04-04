@@ -28,6 +28,9 @@ type public ModuleInfo =
         /// the whole file text as a string
         Text: string
 
+        /// the list of all external functions (FFI)
+        FFIBinings: Liyh.FFI.GeneralFFI.FFIBinding list
+
         /// check if this data has been processed, all fields are filled
         Done: bool }
 
@@ -52,4 +55,5 @@ type public ModuleInfo =
           ModuleContent = []
           MixfixOperators = []
           Text = null
+          FFIBinings = []
           Done = false }

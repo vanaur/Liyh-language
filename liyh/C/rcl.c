@@ -43,6 +43,166 @@
 #  error ‘Boehm GC (gc.h) not found: please install libgc-dev / bdw-gc.’
 #endif
 
+#if __has_include(<ffi.h>)
+#   include <ffi.h>
+#else
+#   error 'LibFFI (ffi.h) not found: please install'
+#endif
+
+#if defined(_WIN32) || defined(_WIN64)
+#   include <windows.h>
+    typedef HMODULE rcl_lib_handle;
+#   define RCL_LOAD_LIB(path) LoadLibraryA(path)
+#   define RCL_FIND_SYM(lib, name) GetProcAddress(lib, name)
+#   define RCL_CLOSE_LIB(lib) FreeLibrary(lib)
+#else
+#   include <dlfcn.h>
+    typedef void* rcl_lib_handle;
+#   define RCL_LOAD_LIB(path) dlopen(path, RTLD_LAZY | RTLD_GLOBAL)
+#   define RCL_FIND_SYM(lib, name) dlsym(lib, name)
+#   define RCL_CLOSE_LIB(lib) dlclose(lib)
+#endif
+
+enum rcl_type
+{
+    RCL_TYPE_INT64,     // int64
+    RCL_TYPE_INT32,     // int32
+    RCL_TYPE_FLOAT64,   // float64
+    RCL_TYPE_FLOAT32,   // float32
+    RCL_TYPE_CHAR,      // char (32 bits unicode in Liyh)
+    RCL_TYPE_STRING,    // string (ptr)
+    RCL_TYPE_PTR,       // void* (opaque pointer / buffer)
+    RCL_TYPE_VOID,      // void
+};
+
+/// Given a RCL type, return the associated FFI type representation for LibFFI.
+static ffi_type *rcl_type_to_ffi_type(const enum rcl_type rcl_ty)
+{
+    switch (rcl_ty)
+    {
+        case RCL_TYPE_INT64: return &ffi_type_sint64;
+        case RCL_TYPE_INT32: return &ffi_type_sint32;
+        case RCL_TYPE_FLOAT64: return &ffi_type_double;
+        case RCL_TYPE_FLOAT32: return &ffi_type_float;
+        case RCL_TYPE_CHAR: return &ffi_type_uint32;
+        case RCL_TYPE_STRING: return &ffi_type_pointer;
+        case RCL_TYPE_PTR: return &ffi_type_pointer;
+        case RCL_TYPE_VOID: return &ffi_type_void;
+    }
+}
+
+/// Returns the string version of the given RCL type.
+static const char *rcl_type_name(enum rcl_type type)
+{
+    switch (type)
+    {
+        case RCL_TYPE_INT64: return "int64";
+        case RCL_TYPE_INT32: return "int32";
+        case RCL_TYPE_FLOAT64: return "float64";
+        case RCL_TYPE_FLOAT32: return "float32";
+        case RCL_TYPE_CHAR: return "char";
+        case RCL_TYPE_STRING: return "string";
+        case RCL_TYPE_PTR: return "ptr";
+        case RCL_TYPE_VOID: return "void";
+        default: return "<unknown-type>";
+    }
+}
+
+struct ffi_info
+{
+    ffi_cif *cif;
+    void (*function_pointer)(void);
+
+    size_t arity;
+
+    enum rcl_type *arguments_types;
+    enum rcl_type return_type;
+    
+    ffi_type **ffi_arguments_types;
+};
+
+static void free_ffi_info(struct ffi_info *ffi_info)
+{
+    if (ffi_info == NULL)
+        return;
+
+    free(ffi_info->cif);
+    free(ffi_info->ffi_arguments_types);
+    free(ffi_info);
+}
+
+static struct ffi_info *new_ffi_info(
+    void (*function_pointer)(void),
+    size_t arity,
+    enum rcl_type *arguments_types,
+    enum rcl_type return_type)
+{
+    if (function_pointer == NULL)
+    {
+        fprintf(stderr, "Fatal error: NULL function pointer.\n");
+        exit(1);
+    }
+
+    struct ffi_info *result = malloc(sizeof(struct ffi_info));
+
+    ffi_type **ffi_arguments_types = malloc(arity * sizeof(ffi_type *));
+    ffi_type *ffi_return_type = rcl_type_to_ffi_type(return_type);
+
+    for (size_t i = 0; i < arity; i++)
+        ffi_arguments_types[i] = rcl_type_to_ffi_type(arguments_types[i]);
+
+    ffi_cif *cif_ptr = malloc(sizeof(ffi_cif));
+
+    if (ffi_prep_cif(cif_ptr, FFI_DEFAULT_ABI, arity, ffi_return_type, ffi_arguments_types) == FFI_OK)
+    {
+        *result = (struct ffi_info){ 
+            cif_ptr, 
+            function_pointer, 
+            arity, 
+            arguments_types, 
+            return_type, 
+            ffi_arguments_types
+        };
+        return result;
+    }
+
+    fprintf(stderr, "Fatal error: FFI CIF is not OK.\n");
+    exit(1);
+}
+
+static void *rcl_ffi_call(const struct ffi_info *ffi_info, void **arguments)
+{
+    size_t ret_size = sizeof(ffi_arg);
+
+    if (ffi_info->cif->rtype->size > ret_size)
+        ret_size = ffi_info->cif->rtype->size;
+
+    void *return_value = malloc(ret_size);
+    ffi_call(ffi_info->cif, ffi_info->function_pointer, return_value, arguments);
+
+    return return_value;
+}
+
+/*
+
+static int test_ffi()
+{
+    enum rcl_type args_types[] = { RCL_TYPE_FLOAT };
+    struct ffi_info *ffi_info = new_ffi_info((void(*)(void))sin, 1, args_types, RCL_TYPE_FLOAT);
+
+    double a = 2.71;
+    void *values[] = { &a };
+
+    void *result = rcl_ffi_call(ffi_info, values);
+    printf("Result: %f\n", *(double *)result);
+    free(result);
+
+    free_ffi_info(ffi_info);
+    return 0;
+}
+
+*/
+
 
 // --- Types, environment and useful macros --- //
 
@@ -83,11 +243,13 @@ typedef uint32_t sym_id_t;
 #define SYM_CHAR_NATIVE     0xFFFFFFF0  // characters
 #define SYM_BOOL_NATIVE     0xFFFFFFF5  // booleans
 #define SYM_NUM_NATIVE      0xFFFFFFF4  // numerical value (int or float)
+#define SYM_PTR_NATIVE      0xFFFFFFEF  // opaque pointer (for FFI)
 
 #define SYM_SUSPENDED_CALL  0xFFFFFFF6  // Indicates a function application that has been created dynamically.
 #define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
 #define SYM_THUNK           0xFFFFFFF8  // Thunk for lazy evaluation (delays)
 #define SYM_INDIRECT        0xFFFFFFF9  // Indirections in lazy evaluation
+#define SYM_BUFFER_NATIVE   0xFFFFFFEE  // Mutable & resizeable buffer (bytes).
 
 #define IS_SYSTEM_TAG(id)   ((id) >= SYM_CHAR_NATIVE)   // identify internal tags
 #define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)    // identify user defined data
@@ -184,6 +346,17 @@ typedef enum
 
     INSTR_CAST,                                         // CAST dst_reg, src_reg, target_type_id, _
 
+    // FFI
+
+    INSTR_CALL_FFI,                                     // CALL_FFI dst_reg, ffi_index, args_start_reg, _
+
+    // buffers and arrays
+
+    INSTR_BUFFER_ALLOC,                                 // BUFFER_ALLOC dst_reg, size_reg, _, _
+    INSTR_BUFFER_GET,                                   // BUFFER_GET dst_reg, buf_reg, index_reg, _
+    INSTR_BUFFER_SET,                                   // BUFFER_SET buf_reg, index_reg, val_reg, _
+    INSTR_BUFFER_REALLOC,                               // BUFFER_REALLOC buf_reg, new_size_reg, _, _
+
     // debugging instruction
 
     INSTR_PPSHOW,                                       // PPSHOW dst_reg, src_reg, _, _
@@ -238,6 +411,11 @@ static const char* opcode_names[] = {
     [INSTR_DELAY] =         "DELAY",
     [INSTR_FORCE] =         "FORCE",
     [INSTR_CAST] =          "CAST",
+    [INSTR_CALL_FFI] =      "CALL_FFI",
+    [INSTR_BUFFER_ALLOC] =  "BUFFER_ALLOC",
+    [INSTR_BUFFER_GET] =    "BUFFER_GET",
+    [INSTR_BUFFER_SET] =    "BUFFER_SET",
+    [INSTR_BUFFER_REALLOC] ="BUFFER_REALLOC",
     [INSTR_PPSHOW] =        "PPSHOW",
     [INSTR_PRINT] =         "PRINT",
 };
@@ -286,6 +464,17 @@ typedef struct
 
     dispatch_entry_t **dispatch_table;          // dispatch table of functions by symbol/arity
     size_t dispatch_table_capacity;             // allocated size for the dispatch table
+
+    // Foreign Function Interface.
+
+    rcl_lib_handle *loaded_libs;                // the loaded external dynamic libraries
+    size_t loaded_libs_count;                   // actual size of the loaded dynamic libraries
+    size_t loaded_libs_capacity;                // allocated size for the loaded dynamic libraries
+
+    struct ffi_info **ffi_table;                // table of external foreign functions 
+    size_t ffi_count;                           // actual size of the table of external functions
+    size_t ffi_capacity;                        // allocated size of the table of external functions
+
 } vm_env_t;
 
 #define INITIAL_CAPACITY    1024    // arbitrary
@@ -313,7 +502,15 @@ vm_env_t *create_env()
     env->symbol_counter = 0;
 
     env->dispatch_table_capacity = INITIAL_CAPACITY;
-    env->dispatch_table = GC_MALLOC(env->dispatch_table_capacity * sizeof(dispatch_entry_t*));
+    env->dispatch_table = GC_MALLOC(env->dispatch_table_capacity * sizeof(dispatch_entry_t *));
+
+    env->loaded_libs_capacity = 8;
+    env->loaded_libs = GC_MALLOC(env->loaded_libs_capacity * sizeof(rcl_lib_handle));
+    env->loaded_libs_count = 0;
+
+    env->ffi_capacity = INITIAL_CAPACITY;
+    env->ffi_table = GC_MALLOC(env->ffi_capacity * sizeof(struct ffi_info *));
+    env->ffi_count = 0;
 
     return env;
 }
@@ -326,6 +523,18 @@ void destroy_env(vm_env_t *env_ptr)
 
     for (size_t i = 0; i < env_ptr->string_pool_count; i++)
         free(env_ptr->string_pool[i]);
+
+    for (size_t i = 0; i < env_ptr->loaded_libs_count; i++)
+    {
+        if (env_ptr->loaded_libs[i])
+            RCL_CLOSE_LIB(env_ptr->loaded_libs[i]);
+    }
+
+    for (size_t i = 0; i < env_ptr->ffi_count; i++)
+    {
+        if (env_ptr->ffi_table[i])
+            free_ffi_info(env_ptr->ffi_table[i]);
+    }
 
     env_ptr = NULL;
 }
@@ -419,6 +628,81 @@ int intern_string(vm_env_t *env_ptr, const char *s)
 }
 
 
+// --- FFI --- //
+
+
+/// Loads a dynamic library. Returns `true` if the loading was successful.
+bool rcl_env_load_library(vm_env_t *env_ptr, const char *path)
+{
+    rcl_lib_handle lib = RCL_LOAD_LIB(path);
+
+    if (lib == NULL)
+    {
+        fprintf(stderr, "Fatal error: cannot load the dynamic library '%s'.\n", path);
+        return false;
+    }
+
+    if (env_ptr->loaded_libs_count >= env_ptr->loaded_libs_capacity)
+    {
+        const size_t new_cap = env_ptr->loaded_libs_capacity * 2;
+        rcl_lib_handle *new_libs = GC_MALLOC(new_cap * sizeof(rcl_lib_handle));
+        memcpy(new_libs, env_ptr->loaded_libs, env_ptr->loaded_libs_count * sizeof(rcl_lib_handle));
+        env_ptr->loaded_libs = new_libs;
+        env_ptr->loaded_libs_capacity = new_cap;
+    }
+
+    env_ptr->loaded_libs[env_ptr->loaded_libs_count++] = lib;
+
+    return true;
+}
+
+/// Registers a new foreign function.
+int rcl_env_register_ffi(
+    vm_env_t *env_ptr,
+    const char *func_name,
+    size_t arity,
+    enum rcl_type *arg_types,
+    enum rcl_type ret_type)
+{
+    void (*func_ptr)(void) = NULL;
+
+    for (size_t i = 0; i < env_ptr->loaded_libs_count; i++)
+    {
+        func_ptr = (void(*)(void))RCL_FIND_SYM(env_ptr->loaded_libs[i], func_name);
+        if (func_ptr) break;
+    }
+
+    #if !defined(_WIN32) && !defined(_WIN64)
+    if (!func_ptr)
+        func_ptr = (void(*)(void))dlsym(RTLD_DEFAULT, func_name);
+    #endif
+
+    if (!func_ptr)
+    {
+        fprintf(stderr, "Fatal error: cannot find the function '%s' in any dynamic library.\n", func_name);
+        exit(1);
+    }
+
+    struct ffi_info *info = new_ffi_info(func_ptr, arity, arg_types, ret_type);
+    if (!info) return -1;
+
+    if (env_ptr->ffi_count >= env_ptr->ffi_capacity) {
+        size_t new_cap = (env_ptr->ffi_capacity == 0) ? 16 : env_ptr->ffi_capacity * 2;
+        struct ffi_info **new_table = GC_MALLOC_ATOMIC(new_cap * sizeof(struct ffi_info*));
+        if (env_ptr->ffi_table) {
+            memcpy(new_table, env_ptr->ffi_table, env_ptr->ffi_count * sizeof(struct ffi_info*));
+        }
+        env_ptr->ffi_table = new_table;
+        env_ptr->ffi_capacity = new_cap;
+    }
+
+    int ffi_index = (int)env_ptr->ffi_count;
+    env_ptr->ffi_table[env_ptr->ffi_count++] = info;
+    
+    return ffi_index;
+}
+
+
 // --- Bytecode emit --- //
 
 
@@ -507,7 +791,7 @@ void emit_load_string(vm_env_t *env_ptr, const int dst_reg, const char *s)
 
 /// Follows a chain of indirection pointers until it reaches a concrete value or a term that
 /// is no longer an indirection, and returns that final term.
-static term_t resolve_indirection(term_t term)
+static inline term_t resolve_indirection(term_t term)
 {
     while (IS_PTR(term) && AS_HEADER(term)->id == SYM_INDIRECT)
         term = AS_HEADER(term)->children[0];
@@ -650,6 +934,32 @@ static term_t make_record_from_pairs(record_field_t *pairs, const int count)
     }
 
     return (term_t)header;
+}
+
+/// Creates an 'opaque pointer' from a given pointer, converting it into a term with a term id `SYM_PTR_NATIVE`.
+static term_t make_opaque_ptr(void *ptr)
+{
+    term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(void *));
+    term->id = SYM_PTR_NATIVE;
+    term->arity = 0;
+
+    memcpy(&term->children[0], &ptr, sizeof(void *));
+    return (term_t)term;
+}
+
+/// Given a term assuming its term id is `SYM_PTR_NATIVE`, returns a copy of its adress.
+static void *get_opaque_ptr(term_t term)
+{
+    term = resolve_indirection(term);
+    if (IS_PTR(term) && AS_HEADER(term)->id == SYM_PTR_NATIVE)
+    {
+        void *opaque_ptr;
+        memcpy(&opaque_ptr, &AS_HEADER(term)->children[0], sizeof(void *));
+        return opaque_ptr;
+    }
+
+    fprintf(stderr, "Fatal error: expected native pointer.\n");
+    exit(1);
 }
 
 typedef struct
@@ -978,6 +1288,12 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
 
         else if (header->id == SYM_CLOSURE)
             APPEND("<closure@%lld>", (long long)GET_INT(header->children[0]));
+
+        else if (header->id == SYM_PTR_NATIVE)
+            APPEND("<ptr%p>", get_opaque_ptr(term));
+
+        else if (header->id == SYM_BUFFER_NATIVE)
+            APPEND("<buff%p>", (void *) AS_HEADER(term)->children[0]);
 
         else if (header->id == SYM_THUNK)
             APPEND("<thunk@%lld>", (long long)GET_INT(header->children[0]));
@@ -1355,6 +1671,284 @@ static void display_vm_stats(const stats_t stats[], const char* opcode_names[])
     printf("%-*s\n", total_width, "──────────────────────────────────────────────────");
 }
 
+// static inline void *resolve_native_ptr(term_t term, const sym_id_t *accepted_ids, size_t n)
+// {
+//     if (!IS_PTR(term)) return NULL;
+// 
+//     const term_header_t *hdr = AS_HEADER(term);
+// 
+//     for (size_t k = 0; k < n; k++)
+//     {
+//         if (hdr->id != accepted_ids[k]) continue;
+// 
+//         if (hdr->id == SYM_BUFFER_NATIVE) return (void *)hdr->children[0];
+//         if (hdr->id == SYM_STRING_NATIVE) return (void *)get_string_ptr(term);
+//         if (hdr->id == SYM_PTR_NATIVE) return get_opaque_ptr(term);
+// 
+//         return NULL;
+//     }
+// 
+//     return NULL;
+// }
+// 
+// static const sym_id_t PTR_ACCEPTED[]    = { SYM_BUFFER_NATIVE, SYM_PTR_NATIVE, SYM_STRING_NATIVE };
+// static const sym_id_t STRING_ACCEPTED[] = { SYM_STRING_NATIVE, SYM_BUFFER_NATIVE };
+
+static const int instruction_call_ffi(
+    vm_t *vm_ptr,
+    term_t *regs,
+    const int dst_reg,
+    const int ffi_index,
+    const int args_start
+) {
+
+    if (ffi_index < 0 || ffi_index >= (int)vm_ptr->env_ptr->ffi_count)
+    {
+        fprintf(stderr, "Fatal error: Invalid FFI index: %d.\n", ffi_index);
+        return EXIT_FAILURE;
+    }
+
+    struct ffi_info *info = vm_ptr->env_ptr->ffi_table[ffi_index];
+    const size_t arity = info->arity;
+
+    union ffi_data {
+        int64_t i64;
+        int32_t i32;
+        double f64;
+        float f32;
+        uint32_t c;
+        const char *s;
+        void *p;
+    };
+
+    union ffi_data arg_values[arity];
+    void *ffi_args[arity];
+
+    bool has_arg_error = false;
+    bool has_bad_arity_error = false;
+    size_t arg_error_index = 0;
+    enum rcl_type arg_error_expected;
+
+    // Marshalling each arguments from `term_t` into a valid C type.
+
+    for (size_t arg_index = 0; arg_index < arity; arg_index++)
+    {
+        term_t arg_term = regs[args_start + arg_index];
+
+        if (arg_term == (term_t)NULL)
+        {
+            has_bad_arity_error = true;
+            break;
+        }
+
+        arg_term = resolve_indirection(regs[args_start + arg_index]);
+        ffi_args[arg_index] = &arg_values[arg_index];
+
+        switch (info->arguments_types[arg_index])
+        {
+            case RCL_TYPE_INT64:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].i64 = (int64_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_INT32:
+            {
+                if (!IS_INT(arg_term)) {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].i32 = (int32_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_FLOAT64:
+            {
+                if (AS_HEADER(arg_term)->id != SYM_FLOAT_NATIVE) {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].f64 = (double)get_float(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_FLOAT32:
+            {
+                if (AS_HEADER(arg_term)->id != SYM_FLOAT_NATIVE) {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].f32 = (float)get_float(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_CHAR:
+            {
+                if (!IS_CHAR(arg_term)) {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].c = (uint32_t)GET_CHAR(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_STRING:
+            {
+                if (!IS_PTR(arg_term) || AS_HEADER(arg_term)->id != SYM_STRING_NATIVE)
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].s = get_string_ptr(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_PTR:
+            {
+                // We distinguish between a few types of pointers:
+                //
+                //  - native buffers
+                //  - native pointers (opaques)
+                //  - strings
+                //
+
+                if (IS_PTR(arg_term))
+                {
+                    const sym_id_t id = AS_HEADER(arg_term)->id;
+
+                    if (id == SYM_BUFFER_NATIVE)
+                    {
+                        arg_values[arg_index].p = (void *)AS_HEADER(arg_term)->children[0];
+                        break;
+                    }
+                    else if (id == SYM_PTR_NATIVE)
+                    {
+                        arg_values[arg_index].p = get_opaque_ptr(arg_term);
+                        break;
+                    }
+                    else if (id == SYM_STRING_NATIVE)
+                    {
+                        arg_values[arg_index].p = (void*)get_string_ptr(arg_term);
+                        break;
+                    }
+                }
+                has_arg_error = true;
+                break;
+            }
+
+            case RCL_TYPE_VOID:
+                // Not sure how this should be handled.
+                // In practice, nobody does that anyway.
+                break;
+        }
+
+        if (has_arg_error)
+        {
+            arg_error_index = arg_index;
+            arg_error_expected = info->arguments_types[arg_index];
+            break;
+        }
+
+        if (has_bad_arity_error)
+        {
+            arg_error_index = arg_index;
+            break;
+        }
+    }
+
+    if (has_arg_error)
+    {
+        const term_t bas_term = resolve_indirection(regs[args_start + arg_error_index]);
+        size_t data_str_len = 0;
+        char *data_str = term_to_string(vm_ptr->env_ptr, bas_term, 3, &data_str_len);
+
+        fprintf(stderr,
+            "Fatal error: FFI argument type mismatch "
+            "(function '?', argument %zu): expected %s, got value `%s`.\n",
+            arg_error_index,
+            rcl_type_name(arg_error_expected),
+            data_str
+        );
+
+        return EXIT_FAILURE;
+    }
+
+    if (has_bad_arity_error)
+    {
+        fprintf(stderr,
+            "Fatal error: FFI function arity mismatch "
+            "(function '?'): expected %zu arguments, got `%zu` arguments.\n",
+            arity,
+            (arg_error_index + 1)
+        );
+
+        return EXIT_FAILURE;
+    }
+
+    // The result of the call of the function is boxed, we have to unbox it and
+    // to cast back the value from the heap to a `term_t` value.
+    void *raw_result = rcl_ffi_call(info, ffi_args);
+
+    switch (info->return_type)
+    {
+        case RCL_TYPE_INT64:
+        {
+            regs[dst_reg] = MAKE_INT(*(int64_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_INT32:
+        {
+            regs[dst_reg] = MAKE_INT(*(int32_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_FLOAT64:
+        {
+            regs[dst_reg] = make_float(*(double*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_FLOAT32:
+        {
+            regs[dst_reg] = make_float((double)*(float*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_CHAR:
+        {
+            regs[dst_reg] = MAKE_CHAR(*(uint32_t*)raw_result);
+            break;
+        }
+        
+        case RCL_TYPE_STRING:
+        {
+            const char *c_str = *(const char **)raw_result;
+            regs[dst_reg] = c_str ? make_string(c_str) : MAKE_INT(0);
+            break;
+        }
+
+        case RCL_TYPE_PTR:
+        {
+            regs[dst_reg] = make_opaque_ptr(*(void **)raw_result);
+            break;
+        }
+        
+        case RCL_TYPE_VOID:
+        {
+            break;
+        }
+    }
+
+    free(raw_result);
+    return EXIT_SUCCESS;
+}
+
 /// Evaluates the program at the given entry point. The return value is the return value of
 /// the entry point ("main") as usual, and 0 by default. After the VM stopped, it is still
 /// required to destroy the environment and the VM (`destroy_env` and `destroy_vm`).
@@ -1537,6 +2131,144 @@ int run_vm(vm_t *vm_ptr, const int entry)
                 instr.d,            // destination register
                 0                   // no closure
             );
+            break;
+        }
+
+        case INSTR_CALL_FFI:
+        {
+            const int dst_reg = instr.a;
+            const int ffi_index = instr.b;
+            const int args_start = instr.c;
+
+            if (instruction_call_ffi(vm_ptr, regs, dst_reg, ffi_index, args_start) != EXIT_SUCCESS)
+            {
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            break;
+        }
+
+        case INSTR_BUFFER_ALLOC:
+        {
+            // instr.a = dst
+            // instr.b = size_reg
+
+            const int64_t size = GET_INT(resolve_indirection(regs[instr.b]));
+
+            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + 2 * sizeof(term_t));
+            h->id = SYM_BUFFER_NATIVE;
+            h->arity = 2;
+
+            void *raw_mem = GC_MALLOC_ATOMIC(size);
+            memset(raw_mem, 0, size);
+
+            h->children[0] = (term_t)raw_mem;   // the buffer has a pointer adress
+            h->children[1] = MAKE_INT(size);    // as well a size
+
+            regs[instr.a] = (term_t)h;
+            break;
+        }
+
+        case INSTR_BUFFER_GET:
+        {
+            // instr.a = dst
+            // instr.b = buf_reg
+            // instr.c = index_reg
+
+            term_header_t *h = AS_HEADER(resolve_indirection(regs[instr.b]));
+            int64_t index = GET_INT(resolve_indirection(regs[instr.c]));
+
+            if (h->id == SYM_BUFFER_NATIVE)
+            {
+                uint8_t *buf_mem = (uint8_t *)h->children[0];
+                int64_t size = GET_INT(h->children[1]);
+
+                if (index >= 0 && index < size)
+                {
+                    regs[instr.a] = MAKE_INT(buf_mem[index]);
+                }
+                else
+                {
+                    fprintf(stderr, "Fatal error: Buffer Index Out of Bounds.\n");
+                    return_value = EXIT_FAILURE;
+                    run = false;
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Fatal error: Expected Buffer.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+            }
+            break;
+        }
+
+        case INSTR_BUFFER_SET:
+        {
+            // instr.a = buf_reg
+            // instr.b = index_reg;
+            // instr.c = val_reg;
+
+            term_header_t *h = AS_HEADER(resolve_indirection(regs[instr.a]));
+            int64_t index = GET_INT(resolve_indirection(regs[instr.b]));
+            int64_t val = GET_INT(resolve_indirection(regs[instr.c]));
+
+            if (h->id == SYM_BUFFER_NATIVE)
+            {
+                uint8_t *buf_mem = (uint8_t *)h->children[0];
+                int64_t size = GET_INT(h->children[1]);
+
+                if (index >= 0 && index < size)
+                {
+                    buf_mem[index] = (uint8_t)val;
+                }
+                else
+                {
+                    fprintf(stderr, "Fatal error: Bufer Index Out of Bounds.\n");
+                    return_value = EXIT_FAILURE;
+                    run = false;
+                }
+            }
+            else
+            {
+                fprintf(stderr, "Fatal error: Expected Buffer.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+            }
+            break;
+        }
+
+        case INSTR_BUFFER_REALLOC:
+        {
+            // instr.a = buf_reg
+            // instr.b = new_size_reg
+
+            term_header_t *h = AS_HEADER(resolve_indirection(regs[instr.a]));
+            int64_t new_size = GET_INT(resolve_indirection(regs[instr.b]));
+
+            if (h->id == SYM_BUFFER_NATIVE)
+            {
+                void *old_mem = (void *)h->children[0];
+                int64_t old_size = GET_INT(h->children[1]);
+
+                void *new_mem = GC_REALLOC(old_mem, new_size);
+
+                if (new_size > old_size)
+                {
+                    memset((uint8_t *)new_mem + old_size, 0, new_size - old_size);
+                }
+
+                h->children[0] = (term_t)new_mem;
+                h->children[1] = MAKE_INT(new_size);
+            }
+            else
+            {
+                fprintf(stderr, "Fatal error: Expected Buffer.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+            }
             break;
         }
 

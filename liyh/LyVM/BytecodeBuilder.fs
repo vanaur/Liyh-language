@@ -501,6 +501,31 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.PPShow, dstIdx, src, 0, 0))
         dst
 
+    member public this.CallFFI (ffiIndex: int, args: Reg list) =
+        let (blockStart, count) = this.PrepareBlock args
+        let dst = this.Alloc()
+        let (Reg blockIdx) = blockStart
+        let (Reg dstIdx) = dst
+
+        instructions.Add(Instr(OpCode.CallFFI, dstIdx, ffiIndex, blockIdx, 0))
+        this.CompactStack(blockStart, count, dst)
+
+    member public this.BufferAlloc (sizeReg: Reg) =
+        let dst = this.Alloc()
+        instructions.Add(Instr(OpCode.BufferAlloc, dst.Index, sizeReg.Index, 0, 0))
+        dst
+
+    member public this.BufferGet (bufReg: Reg, indexReg: Reg) =
+        let dst = this.Alloc()
+        instructions.Add(Instr(OpCode.BufferGet, dst.Index, bufReg.Index, indexReg.Index, 0))
+        dst
+
+    member public this.BufferSet (bufReg: Reg, indexReg: Reg, valReg: Reg) =
+        instructions.Add(Instr(OpCode.BufferSet, bufReg.Index, indexReg.Index, valReg.Index, 0))
+
+    member public this.BufferRealloc (bufReg: Reg, newSizeReg: Reg) =
+        instructions.Add(Instr(OpCode.BufferRealloc, bufReg.Index, newSizeReg.Index, 0, 0))
+
     /// A smol peephole optimizer for a very common pattern that arise in the compiler.
     member private __.OptimizePeephole() =
         let mutable i = 0
@@ -516,12 +541,13 @@ type public ByteCodeBuilder() =
             | _ -> i <- i + 1
 
     /// Generates F#-wise version of the final bytecode.
-    member public this.Compile(entryLabel: int, dispatchTable: DispatchTable) =
+    member public this.Compile(entryLabel: int, dispatchTable: DispatchTable, ffiBindings: RCLFFIBinding[]) =
         //this.OptimizePeephole() // it doesn't work well (example of `integral[3 * cos[x]]`)
 
         { Program = instructions.ToArray()
           EntryPointLabel = entryLabel
-          DispatchTable = dispatchTable }
+          DispatchTable = dispatchTable
+          FFIBinding = ffiBindings }
 
 /// A pretty printer for the bytecode.
 module public PrettyPrinter =
@@ -706,13 +732,28 @@ module public PrettyPrinter =
 
             $"    {reg dst} = cast {reg src} from {srcTypeStr} into {dstTypeStr}"
 
+        | Instr(OpCode.CallFFI, dst, ffiIndex, argsStart, _) ->
+            $"    {reg dst} = call_ffi [{ffiIndex}]({reg argsStart}..)"
+
+        | Instr(OpCode.BufferAlloc, dst, sizeReg, _, _) ->
+            $"    {reg dst} = buffer_alloc({reg sizeReg})"
+
+        | Instr(OpCode.BufferGet, dst, bufReg, indexReg, _) ->
+            $"    {reg dst} = buffer_get({reg bufReg}) at {reg indexReg}"
+
+        | Instr(OpCode.BufferSet, bufReg, indexReg, valReg, _) ->
+            $"    buffer {reg bufReg}[{reg indexReg}] = {reg valReg}"
+
+        | Instr(OpCode.BufferRealloc, bufReg, newSizeReg, _, _) ->
+            $"    buffer_realloc({reg bufReg}, {reg newSizeReg})"
+
         | Instr(OpCode.PPShow, dst, src, _, _) ->
             $"    {reg dst} = ppshow {reg src}"
 
         | Instr(OpCode.Print, r, _, _, _) ->
             $"    print {reg r}"
 
-        | _ -> failwith "??"
+        | other -> $"TODO: {other}"
 
     /// Generate a textual representation of the given compiled program.
     let public prettyPrint { Program = instructions } =
@@ -748,7 +789,8 @@ type public VM() =
     member public __.EmitFromCompiledProgram
         { Program = instructions
           EntryPointLabel = entryLabel
-          DispatchTable = dispatchTable } =
+          DispatchTable = dispatchTable
+          FFIBinding = ffiBinding } =
 
         entryPointLabel <- Some entryLabel
 
@@ -757,6 +799,13 @@ type public VM() =
         for KeyValue(ruleInfo, label) in dispatchTable do
             let symId = intern_symbol(env, ruleInfo.Name)
             intern_function(env, symId, ruleInfo.Arity, label)
+
+        for ffi in ffiBinding do
+            let argTypesInt32 = Array.map RclType.RclTypeToInt32 ffi.ArgTypes
+            let retTypeInt32 = RclType.RclTypeToInt32 ffi.RetType
+
+            rcl_env_load_library(env, ffi.Library)
+            rcl_env_register_ffi(env, ffi.FunctionName, ffi.Arity, argTypesInt32, retTypeInt32)
 
         for instr in instructions do
             match instr with
@@ -976,6 +1025,25 @@ module public AOT =
             let name = ruleInfo.Name
             let arity = ruleInfo.Arity
             appendLine($"    intern_function(env_ptr, intern_symbol(env_ptr, \"{name}\"), {arity}, {label});")
+
+        // Init FFI
+        appendLine("\n    // --- FFI Setup ---")
+        for i = 0 to cp.FFIBinding.Length - 1 do
+            let ffi = cp.FFIBinding.[i]
+            let lib = escapeCString ffi.Library
+            let func = escapeCString ffi.FunctionName
+
+            appendLine($"    rcl_env_load_library(env_ptr, \"{lib}\");")
+
+            if ffi.Arity > 0 then
+                let typesStr = ffi.ArgTypes |> Array.map (int >> string) |> String.concat ", "
+                appendLine($"    enum rcl_type ffi_args_{i}[] = {{ {typesStr} }};")
+                appendLine($"    rcl_env_register_ffi(env_ptr, \"{func}\", {ffi.Arity}, ffi_args_{i}, {int ffi.RetType});")
+            else
+                appendLine($"    rcl_env_register_ffi(env_ptr, \"{func}\", 0, NULL, {int ffi.RetType});")
+
+        // Note: maybe, for AOT compilation, launching the FFI can be avoided.
+
 
         // --- Final Assembly and Compilation --- //
 
