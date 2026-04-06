@@ -29,12 +29,14 @@ module Program =
         type ExecuteArgs =
             | [<MainCommand; ExactlyOnce>] File of string
             | [<AltCommandLine("-o")>] Optimize
+            | [<CustomCommandLine("--args")>] ProgramArgs of string list
 
             interface IArgParserTemplate with
                 member this.Usage =
                     match this with
                     | File _ -> "The root file of the program to run."
                     | Optimize -> "Activate the optimizations before running."
+                    | ProgramArgs _ -> "Arguments to pass to the Liyh program's main function."
 
         type ExplainArgs =
             | [<MainCommand; ExactlyOnce>] Code of string
@@ -117,6 +119,7 @@ module Program =
             (run: bool)
             (output: string option)
             (emitBytecode: string option)
+            (programArgs: string list)
 
             =
 
@@ -132,13 +135,6 @@ module Program =
             | Some(pgraph, rootModule) ->
                 let pgraph, rootModule = fillProjectGraph rootModule pgraph errorQueue
                 errorQueue.ReportIfNeeded Console.Error
-
-                //
-                // Testing...
-                //
-                // let ffiBindings = FFI.GeneralFFI.getFFIBindings rootModule.Value errorQueue false
-                // errorQueue.ReportIfNeeded Console.Error
-                //
 
                 let coreDefinitions =
                     pgraph
@@ -193,7 +189,7 @@ module Program =
                     compileTo output
 
                 | None when run ->
-                    let ms = vm.Run()
+                    let ms = vm.Run(programArgs)
                     printfn "%s" (showTimeTaken ms)
 
                 | Some output when not run ->
@@ -411,15 +407,17 @@ module Program =
                 | Run runArgs ->
                     let rootFile = runArgs.GetResult(ExecuteArgs.File)
                     let doOptimize = runArgs.Contains(ExecuteArgs.Optimize)
-                    CompilationProcess.runOrCompile rootFile doOptimize true None None
+                    let programArgs = runArgs.GetResult(ExecuteArgs.ProgramArgs, [])
+
+                    CompilationProcess.runOrCompile rootFile doOptimize true None None programArgs
                 
                 | Compile compileArgs ->
                     let rootFile = compileArgs.GetResult(CompileArgs.File)
                     let doOptimize = compileArgs.Contains(CompileArgs.Optimize)
                     let emit = compileArgs.TryGetResult(CompileArgs.Emit)
                     let output = compileArgs.TryGetResult(CompileArgs.Output)
-                    
-                    CompilationProcess.runOrCompile rootFile doOptimize false output emit
+
+                    CompilationProcess.runOrCompile rootFile doOptimize false output emit []
                 
                 | Explain explainArgs ->
                     let code = explainArgs.GetResult(ExplainArgs.Code)

@@ -1949,10 +1949,40 @@ static const int instruction_call_ffi(
     return EXIT_SUCCESS;
 }
 
+/// Converts a C string array (argv) into a symbolic linked list: `cons[str, cons[... nil]]`.
+/// This is used for the main arguments of the program.
+term_t rcl_make_string_list(vm_env_t *env_ptr, int argc, const char *argv[])
+{
+    const sym_id_t nil_id = intern_symbol(env_ptr, "nil");
+    const sym_id_t cons_id = intern_symbol(env_ptr, "cons");
+
+    term_header_t *nil_term = GC_MALLOC(sizeof(term_header_t));
+    nil_term->id = nil_id;
+    nil_term->arity = 0;
+
+    term_t current_list = (term_t)nil_term;
+
+    for (int i = argc - 1; i >= 0; i--)
+    {
+        term_t str_val = make_string(argv[i]);
+
+        term_header_t *cons_term = GC_MALLOC(sizeof(term_header_t) + 2 * sizeof(term_t));
+        cons_term->id = cons_id;
+        cons_term->arity = 2;
+
+        cons_term->children[0] = str_val;
+        cons_term->children[1] = current_list;
+
+        current_list = (term_t)cons_term;
+    }
+
+    return current_list;
+}
+
 /// Evaluates the program at the given entry point. The return value is the return value of
 /// the entry point ("main") as usual, and 0 by default. After the VM stopped, it is still
 /// required to destroy the environment and the VM (`destroy_env` and `destroy_vm`).
-int run_vm(vm_t *vm_ptr, const int entry)
+int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 {
     if (entry >= (int)vm_ptr->env_ptr->labels_capacity || vm_ptr->env_ptr->labels[entry] < 0)
     {
@@ -1976,6 +2006,7 @@ int run_vm(vm_t *vm_ptr, const int entry)
     int fp = 0;
 
     memset(stack, 0, stack_capacity * sizeof(term_t));
+    stack[0] = program_args;
 
     #ifdef STATS
 
@@ -3280,8 +3311,10 @@ int main(int argc, char *argv[])
 
     <FILL-PROGRAM>
 
+    term_t args_list = rcl_make_string_list(env_ptr, argc - 1, (const char **)(argv + 1));
+
     const int entry_point = <ENTRY-POINT>;
-    const int exit_value = run_vm(vm_ptr, entry_point);
+    const int exit_value = run_vm(vm_ptr, entry_point, args_list);
 
     destroy_env(env_ptr);
     destroy_vm(vm_ptr);

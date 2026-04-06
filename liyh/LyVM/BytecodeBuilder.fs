@@ -850,7 +850,7 @@ type public VM() =
                 emit (env, int opcode, arg1, arg2, arg3, arg4)
 
     /// Runs the program and returns the elapsed time in milliseconds.
-    member public _.Run() =
+    member public _.Run(programArgs: string list) =
         let vm = create_vm env
         gc_init()
 
@@ -858,8 +858,12 @@ type public VM() =
             match entryPointLabel with
             | None -> failwith "The program does not present any entry point"
             | Some entryLabel ->
+                let argsArray = Array.ofList programArgs
+                let argsTerm = rcl_make_string_list(env, argsArray.Length, argsArray)
                 let sw = Diagnostics.Stopwatch.StartNew()
-                run_vm (vm, entryLabel)
+
+                run_vm (vm, entryLabel, argsTerm)
+
                 sw.Stop()
                 sw.ElapsedMilliseconds
 

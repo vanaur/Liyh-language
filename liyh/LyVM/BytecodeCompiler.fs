@@ -1310,10 +1310,10 @@ module public BytecodeCompiler =
         member public __.Compile() =
 
             let entryPointLabel =
-                match DispatchTable.tryFindByNameArity ("main", 0) globalLabels with
+                match DispatchTable.tryFindByNameArity ("main", 1) globalLabels with
                 | Some (label, _) -> label
                 | None ->
-                    match DispatchTable.tryFindByNameArity ("main", 1) globalLabels with
+                    match DispatchTable.tryFindByNameArity ("main", 0) globalLabels with
                     | Some (label, _) -> label
                     | None -> failwith "No entry point (main) found."
 

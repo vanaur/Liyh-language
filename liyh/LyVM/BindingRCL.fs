@@ -78,9 +78,13 @@ module public BindingRCL =
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
     extern void public destroy_vm(VMPtr vm)
 
+    /// Creates a symbolic string list from an array of strings.
+    [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)>]
+    extern IntPtr public rcl_make_string_list(EnvPtr env, int argc, string[] argv)
+
     /// Execute the program at the given starting point.
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
-    extern void public run_vm(VMPtr vm, int entryLabel)
+    extern int public run_vm(VMPtr vm, int entryLabel, IntPtr programArgs)
 
 [<RequireQualifiedAccess>]
 type public RclType =
