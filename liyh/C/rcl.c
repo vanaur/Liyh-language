@@ -1979,6 +1979,20 @@ term_t rcl_make_string_list(vm_env_t *env_ptr, int argc, const char *argv[])
     return current_list;
 }
 
+static void print_stack_trace(vm_t *vm_ptr)
+{
+    fprintf(stderr, "\n----------------------------------------------------------");
+    fprintf(stderr, "\nStack trace:\n");
+    fprintf(stderr, "  at pc: %d  <-- Crash occurred here\n", vm_ptr->pc - 1);
+
+    for (int i = vm_ptr->fp - 1; i >= 0; i--)
+    {
+        frame_t *frame = &vm_ptr->frames[i];
+        fprintf(stderr, "  at pc: %d\n", frame->ret_pc - 1); 
+    }
+    fprintf(stderr, "----------------------------------------------------------\n");
+}
+
 /// Evaluates the program at the given entry point. The return value is the return value of
 /// the entry point ("main") as usual, and 0 by default. After the VM stopped, it is still
 /// required to destroy the environment and the VM (`destroy_env` and `destroy_vm`).
@@ -3290,6 +3304,16 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
     printf("Number of collections done: %zu\n", gc_no);
 
     */
+
+    if (return_value == EXIT_FAILURE) // we should add a real check for runtime error
+    {
+        vm_ptr->pc = pc;
+        vm_ptr->fp = fp;
+        vm_ptr->bp = bp;
+        vm_ptr->sp = sp;
+
+        print_stack_trace(vm_ptr);
+    }
 
     return return_value;
 }
