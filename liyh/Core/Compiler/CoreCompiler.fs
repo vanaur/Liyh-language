@@ -4,25 +4,14 @@
 namespace Liyh.Core
 
 [<RequireQualifiedAccess>]
-module private UniqueName =
-    open System.Collections.Concurrent
-    open System.Text
+module private FreshName =
+    open System.Threading
 
-    let private counters = ConcurrentDictionary<string,int>()
+    let private counter = ref 0
 
-    let private sanitize (s: string) =
-        if System.String.IsNullOrWhiteSpace s then "x"
-        else
-            let sb = StringBuilder()
-            for c in s do
-                if System.Char.IsLetterOrDigit c || c = '_' then sb.Append(c) |> ignore
-                else sb.Append('_') |> ignore
-            sb.ToString()
-
-    let public get (baseName: string) =
-        let baseName = sanitize baseName
-        let id = counters.AddOrUpdate(baseName, 1, fun _ old -> old + 1)
-        sprintf "_v%s%d" baseName id
+    let inline public get (baseName: string) =
+        let id = Interlocked.Increment(counter)
+        sprintf "_%s:%d" baseName id
 
 [<RequireQualifiedAccess>]
 module CoreCompiler =
@@ -53,7 +42,7 @@ module CoreCompiler =
 
         let runningVariableName =
             match variableNameSource with
-            | FromPattern pattern -> Option.defaultValue (UniqueName.get "itr") (tryGetVariable pattern)
+            | FromPattern pattern -> Option.defaultValue (FreshName.get "itr") (tryGetVariable pattern)
             | FromString name -> name
 
         let runningVariable = Variable runningVariableName
@@ -65,7 +54,7 @@ module CoreCompiler =
                   IsVariable = true }
 
         // Evaluate the end value once before the loop.
-        let limitName = UniqueName.get "limit"
+        let limitName = FreshName.get "limit"
         let limitVariable = Variable limitName
 
         let limitDeclaration = 
@@ -75,7 +64,7 @@ module CoreCompiler =
                   IsVariable = false }
 
         // Evaluate the step value once before the loop
-        let stepName = UniqueName.get "step"
+        let stepName = FreshName.get "step"
         let stepVariable = Variable stepName
 
         let stepDeclaration = 
@@ -182,10 +171,10 @@ module CoreCompiler =
             let compiledList = compileExpression cstate lc.ListExpr
             let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
 
-            let cursorVarName = UniqueName.get "lc_cursor"
-            let tailVarName = UniqueName.get "lc_tail"
-            let resultVarName = UniqueName.get "lc_result"
-            let nilVarName = UniqueName.get "lc_nil"
+            let cursorVarName = FreshName.get "lc_cursor"
+            let tailVarName = FreshName.get "lc_tail"
+            let resultVarName = FreshName.get "lc_result"
+            let nilVarName = FreshName.get "lc_nil"
             
             let cursorVar = Variable cursorVarName
             let tailVar = Variable tailVarName
@@ -231,7 +220,7 @@ module CoreCompiler =
     /// Specific optimized `for-in` loops over syntactic ranges.
     and private listComprehensionOverRange (cstate: State) (range: Range) (lc: ListComprehension) =
         let bind name value isVar =
-            let varName = UniqueName.get name
+            let varName = FreshName.get name
             let varTerm = Variable varName
             let binding = CoreLet { Pattern = varTerm; Value = value; IsVariable = isVar }
             (varName, varTerm, binding)
@@ -243,7 +232,7 @@ module CoreCompiler =
         let _, stopVar, bindStop   = bind "lc_stop"  stopExpr false
         let resultName, resultVar, bindResult = bind "lc_result" Builtin.symbolNil true
         
-        let loopName = UniqueName.get "lc_i"
+        let loopName = FreshName.get "lc_i"
         let loopCounterVar = Variable loopName
 
         let loopBody =
@@ -392,9 +381,9 @@ module CoreCompiler =
             let compiledList = compileExpression cstate loop.ListExpr
             let compiledBody = compileExpression cstate loop.Body
 
-            let cursorName = UniqueName.get "iter_cursor"
-            let tailName = UniqueName.get "iter_tail"
-            let nilName = UniqueName.get "iter_nil"
+            let cursorName = FreshName.get "iter_cursor"
+            let tailName = FreshName.get "iter_tail"
+            let nilName = FreshName.get "iter_nil"
 
             let cursorVar = Variable cursorName
             let tailVar = Variable tailName
@@ -445,7 +434,7 @@ module CoreCompiler =
         let bodyExpr = compileExpression cstate loopBody
 
         let bind name baseExpr =
-            let varName = UniqueName.get name
+            let varName = FreshName.get name
             let varTerm = Variable varName
             let binding = CoreLet { Pattern = varTerm; Value = baseExpr; IsVariable = false }
             (varTerm, binding)
@@ -490,7 +479,7 @@ module CoreCompiler =
                 match patt with
                 | Variable v -> (v, None)
                 | other ->
-                    let freshArgName = UniqueName.get "lam_arg"
+                    let freshArgName = FreshName.get "lam_arg"
                     let binding =
                         CoreLet
                             { Pattern = other
@@ -657,7 +646,7 @@ module CoreCompiler =
     and private compileAlternativePattern (alternatives: LiteralWithPos list) =
         // (A | B | C) -> 'x when 'x ∈ { A, B, C }
         let alternatives = Builtin.symbolList (List.map compileLiteral alternatives)
-        let uv = Variable (UniqueName.get "altp")
+        let uv = Variable (FreshName.get "altp")
 
         WhenClause(uv, Builtin.symbolContains alternatives uv)
 
@@ -700,7 +689,7 @@ module CoreCompiler =
             | TopLevel.Context context -> Some (compileContext cstate context)
             | other -> failwithf "Todo: %A" other
 
-        Option.map (AlphaConversion.alphaConversionDefinition UniqueName.get) compiled
+        Option.map (AlphaConversion.alphaConversionDefinition FreshName.get) compiled
 
     and private compileRule (cstate: State) (rule: Rule) =
         let body = compileExpression cstate rule.Body
