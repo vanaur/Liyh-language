@@ -18,51 +18,101 @@
 #include <float.h>
 #include <time.h>
 
-//
-// We use Boehm GC for the automatic memory management. It is assumed that the user or
-// installer has installed the required dependencies.
-//
-// We mainly make usage of
-//
-//  - `GC_MALLOC` : classical memory allocation.
-//  - `GC_MALLOC_ATOMIC` : allocation for pointerless data (more efficient for the mark and sweep phase).
-//
-// but we still use standard `malloc` and `free` where local and temporary computations have to be done, so that
-// the GC pressure is reduced and the program run faster at those spots.
-//
-// Known drawbacks:
-//
-//  - memory can leak sometime (because of the conservative nature of the GC)
-//  - acceptable performance, but generally less suitable for languages that allocate memory like crazy
-//  - high dependency of this external dependency
-//
-
 #if __has_include(<gc.h>)
 #  include <gc.h>
 #else
-#  error ‘Boehm GC (gc.h) not found: please install libgc-dev / bdw-gc.’
+#  error "Boehm GC (gc.h) not found: please install libgc-dev / bdw-gc."
 #endif
 
 #if __has_include(<ffi.h>)
 #   include <ffi.h>
 #else
-#   error 'LibFFI (ffi.h) not found: please install'
+#   error "LibFFI (ffi.h) not found: please install"
 #endif
 
 #if defined(_WIN32) || defined(_WIN64)
-#   include <windows.h>
-    typedef HMODULE rcl_lib_handle;
-#   define RCL_LOAD_LIB(path) LoadLibraryA(path)
-#   define RCL_FIND_SYM(lib, name) GetProcAddress(lib, name)
-#   define RCL_CLOSE_LIB(lib) FreeLibrary(lib)
+#include <windows.h>
+typedef HMODULE rcl_lib_handle;
+#define RCL_LOAD_LIB(path) LoadLibraryA(path)
+#define RCL_FIND_SYM(lib, name) GetProcAddress(lib, name)
+#define RCL_CLOSE_LIB(lib) FreeLibrary(lib)
 #else
-#   include <dlfcn.h>
-    typedef void* rcl_lib_handle;
-#   define RCL_LOAD_LIB(path) dlopen(path, RTLD_LAZY | RTLD_GLOBAL)
-#   define RCL_FIND_SYM(lib, name) dlsym(lib, name)
-#   define RCL_CLOSE_LIB(lib) dlclose(lib)
+#include <dlfcn.h>
+typedef void* rcl_lib_handle;
+#define RCL_LOAD_LIB(path) dlopen(path, RTLD_LAZY | RTLD_GLOBAL)
+#define RCL_FIND_SYM(lib, name) dlsym(lib, name)
+#define RCL_CLOSE_LIB(lib) dlclose(lib)
 #endif
 
+
+
+// --------------------------------------- //
+// ------------ HELPFUL MACRO ------------ //
+// --------------------------------------- //
+
+
+
+/// Tells the compiler that the condition is likely to be true.
+#define likely(x) __builtin_expect(!!(x), 1)
+
+/// Tells the compiler that the condition is unlikely to be true.
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
+typedef uintptr_t term_t;
+typedef uint32_t sym_id_t;
+
+#define TAG_PTR         0x0 // tagged pointer (ptr)
+#define TAG_INT         0x1 // tagged pointer (int)
+#define TAG_CHAR        0x2 // tagged pointer (char)
+#define TAG_BOOL        0x3 // tagged pointer (bool)
+#define TAG_MASK        0x3 // extract the 2 least significant bits
+
+#define IS_PTR(x)       (((x) & TAG_MASK) == TAG_PTR)
+
+#define IS_INT(x)       (((x) & TAG_MASK) == TAG_INT)
+#define MAKE_INT(val)   ((((int64_t)(val)) << 2) | TAG_INT)
+#define GET_INT(val)    (((int64_t)(val)) >> 2)
+
+#define MAKE_CHAR(val)  ((((uintptr_t)(val)) << 2) | TAG_CHAR)
+#define GET_CHAR(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
+#define IS_CHAR(x)      (((x) & TAG_MASK) == TAG_CHAR)
+
+#define IS_BOOL(x)      (((x) & TAG_MASK) == TAG_BOOL)
+#define MAKE_BOOL(val)  ((((uintptr_t)(val ? 1 : 0)) << 2) | TAG_BOOL)
+#define GET_BOOL(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
+
+#define IS_NUMERIC(t)   (IS_INT(t) || (IS_PTR(t) && AS_HEADER(t)->id == SYM_FLOAT_NATIVE))
+
+#define SYM_BUFFER_NATIVE   0xFFFFFFEE  // Mutable & resizeable buffer (bytes).
+#define SYM_PTR_NATIVE      0xFFFFFFEF  // opaque pointer (for FFI)
+#define SYM_CHAR_NATIVE     0xFFFFFFF0  // characters
+#define SYM_NUM_NATIVE      0xFFFFFFF4  // numerical value (int or float)
+#define SYM_BOOL_NATIVE     0xFFFFFFF5  // booleans
+#define SYM_SUSPENDED_CALL  0xFFFFFFF6  // Indicates a function application that has been created dynamically.
+#define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
+#define SYM_THUNK           0xFFFFFFF8  // Thunk for lazy evaluation (delays)
+#define SYM_INDIRECT        0xFFFFFFF9  // Indirections in lazy evaluation
+#define SYM_CONTINUATION    0xFFFFFFFA  // continuation for symbolic computations and substitutions
+#define SYM_STRING_NATIVE   0xFFFFFFFB  // strings
+#define SYM_RECORD_NATIVE   0xFFFFFFFC  // records
+#define SYM_FLOAT_NATIVE    0xFFFFFFFD  // floats
+#define SYM_CLOSURE         0xFFFFFFFE  // closures
+#define SYM_INT_NATIVE      0xFFFFFFFF  // integers
+
+#define IS_SYSTEM_TAG(id)   ((id) >= SYM_CHAR_NATIVE)   // identify internal tags
+#define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)    // identify user defined data
+
+#define INITIAL_CAPACITY 1024 // initial capacity for growing vectors
+
+
+
+// ---------------------------------------------------------------- //
+// ------------ FOREIGN FUNCTION INTERFACE DEFINITIONS ------------ //
+// ---------------------------------------------------------------- //
+
+
+
+/// C types for the FFI.
 enum rcl_type
 {
     RCL_TYPE_INT64,     // int64
@@ -108,17 +158,18 @@ static const char *rcl_type_name(enum rcl_type type)
     }
 }
 
+/// Structured information for calling an external function.
 struct ffi_info
 {
-    ffi_cif *cif;
-    void (*function_pointer)(void);
+    ffi_cif *cif;                       // call interface
+    void (*function_pointer)(void);     // external function pointer
 
-    size_t arity;
+    size_t arity;                       // number of arguments taken by the external function
 
-    enum rcl_type *arguments_types;
-    enum rcl_type return_type;
+    enum rcl_type *arguments_types;     // RCL ffi C types for the arguments
+    enum rcl_type return_type;          // RCL ffi C type for the return value
     
-    ffi_type **ffi_arguments_types;
+    ffi_type **ffi_arguments_types;     // libffi ffi C types for the arguments
 };
 
 static void free_ffi_info(struct ffi_info *ffi_info)
@@ -170,6 +221,8 @@ static struct ffi_info *new_ffi_info(
     exit(1);
 }
 
+/// Call the external function given its information and the actual arguments.
+/// The returned memory is handled by the caller.
 static void *rcl_ffi_call(const struct ffi_info *ffi_info, void **arguments)
 {
     size_t ret_size = sizeof(ffi_arg);
@@ -183,87 +236,13 @@ static void *rcl_ffi_call(const struct ffi_info *ffi_info, void **arguments)
     return return_value;
 }
 
-/*
-
-static int test_ffi()
-{
-    enum rcl_type args_types[] = { RCL_TYPE_FLOAT };
-    struct ffi_info *ffi_info = new_ffi_info((void(*)(void))sin, 1, args_types, RCL_TYPE_FLOAT);
-
-    double a = 2.71;
-    void *values[] = { &a };
-
-    void *result = rcl_ffi_call(ffi_info, values);
-    printf("Result: %f\n", *(double *)result);
-    free(result);
-
-    free_ffi_info(ffi_info);
-    return 0;
-}
-
-*/
 
 
-// --- Types, environment and useful macros --- //
+// ----------------------------------------- //
+// ------------ VM INSTRUCTIONS ------------ //
+// ----------------------------------------- //
 
 
-typedef uintptr_t term_t;
-typedef uint32_t sym_id_t;
-
-#define TAG_PTR         0x0 // tagged pointer (ptr)
-#define TAG_INT         0x1 // tagged pointer (int)
-#define TAG_CHAR        0x2 // tagged pointer (char)
-#define TAG_BOOL        0x3 // tagged pointer (bool)
-
-#define TAG_MASK        0x3 // extract the 2 least significant bits
-
-#define GET_TAG_TYPE(x) ((IS_BOOL(x)) ? "bool" : (IS_CHAR(x)) ? "char" : (IS_INT(x)) ? "int" : "ptr")
-
-#define IS_PTR(x)       (((x) & TAG_MASK) == TAG_PTR)
-#define IS_INT(x)       (((x) & TAG_MASK) == TAG_INT)
-
-#define IS_CHAR(x)      (((x) & TAG_MASK) == TAG_CHAR)
-#define MAKE_INT(val)   ((((int64_t)(val)) << 2) | TAG_INT)
-#define GET_INT(val)    (((int64_t)(val)) >> 2)
-#define MAKE_CHAR(val)  ((((uintptr_t)(val)) << 2) | TAG_CHAR)
-#define GET_CHAR(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
-#define IS_BOOL(x)      (((x) & TAG_MASK) == TAG_BOOL)
-#define MAKE_BOOL(val)  ((((uintptr_t)(val ? 1 : 0)) << 2) | TAG_BOOL)
-#define GET_BOOL(val)   ((uint32_t)(((uintptr_t)(val)) >> 2))
-
-#define IS_NUMERIC(t)   (IS_INT(t) || (IS_PTR(t) && AS_HEADER(t)->id == SYM_FLOAT_NATIVE))
-
-#define SYM_CONTINUATION    0xFFFFFFFA  // continuation for symbolic computations and substitutions
-
-#define SYM_STRING_NATIVE   0xFFFFFFFB  // strings
-#define SYM_RECORD_NATIVE   0xFFFFFFFC  // records
-#define SYM_FLOAT_NATIVE    0xFFFFFFFD  // floats
-#define SYM_CLOSURE         0xFFFFFFFE  // closures
-#define SYM_INT_NATIVE      0xFFFFFFFF  // integers
-#define SYM_CHAR_NATIVE     0xFFFFFFF0  // characters
-#define SYM_BOOL_NATIVE     0xFFFFFFF5  // booleans
-#define SYM_NUM_NATIVE      0xFFFFFFF4  // numerical value (int or float)
-#define SYM_PTR_NATIVE      0xFFFFFFEF  // opaque pointer (for FFI)
-
-#define SYM_SUSPENDED_CALL  0xFFFFFFF6  // Indicates a function application that has been created dynamically.
-#define SYM_BLACK_HOLE      0xFFFFFFF7  // Indicates that a thunk is currently being evaluated.
-#define SYM_THUNK           0xFFFFFFF8  // Thunk for lazy evaluation (delays)
-#define SYM_INDIRECT        0xFFFFFFF9  // Indirections in lazy evaluation
-#define SYM_BUFFER_NATIVE   0xFFFFFFEE  // Mutable & resizeable buffer (bytes).
-
-#define IS_SYSTEM_TAG(id)   ((id) >= SYM_CHAR_NATIVE)   // identify internal tags
-#define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)    // identify user defined data
-
-// This type represents the "header" for "structured terms", it serves as a basis for
-// each high level composed types (symbolic expressions, closures, records, ...)
-typedef struct
-{
-    sym_id_t id;            // Identify the symbol id
-    uint32_t arity;         // Number of children
-    term_t children[];      // Children array
-} term_header_t;
-
-#define AS_HEADER(val)  ((term_header_t *)(val))
 
 typedef enum
 {
@@ -344,7 +323,7 @@ typedef enum
 
     // type conversion instruction
 
-    INSTR_CAST,                                         // CAST dst_reg, src_reg, target_type_id, _
+    INSTR_CAST,                                         // CAST dst_reg, src_reg, target_type_id, source_type_id
 
     // FFI
 
@@ -425,20 +404,31 @@ typedef struct
 {
     opcode_t op;        // instruction opcode
     int a, b, c, d;     // arguments (some may be unset / unused (usualy set to 0 if so))
+                        // and some informations might also be encoded in the unused arguments (as for floats)
 } instr_t;
 
+
+
+// ------------------------------------------ //
+// ------------ VM ENVIRONNEMENT ------------ //
+// ------------------------------------------ //
+
+
+
+/// Table of atoms/symbols.
 typedef struct atom
 {
-    char *name;
-    sym_id_t id;
-    struct atom *next;
+    char *name;             // name of the atom/symbol
+    sym_id_t id;            // associated ID of the atom/symbol
+    struct atom *next;      // the next atom/symbol (linked-list)
 } atom_t;
 
+/// Dispatch table of functions by symbol/arity
 typedef struct dispatch_entry
 {
-    int arity;
-    int label;
-    struct dispatch_entry *next;
+    int arity;                      // arity of the entry
+    int label;                      // associated label of the entry
+    struct dispatch_entry *next;    // the next entry (linked-list)
 } dispatch_entry_t;
 
 typedef struct
@@ -477,9 +467,6 @@ typedef struct
 
 } vm_env_t;
 
-#define INITIAL_CAPACITY    1024    // arbitrary
-#define HASH_MAP_SIZE       4096    // arbitrary
-
 /// Initializes a new VM environment and returns a pointer to it.
 vm_env_t *create_env()
 {
@@ -497,7 +484,7 @@ vm_env_t *create_env()
     env->string_pool = GC_MALLOC(env->string_pool_capacity * sizeof(char *));
     env->string_pool_count = 0;
 
-    env->symbol_pool_count = HASH_MAP_SIZE;
+    env->symbol_pool_count = INITIAL_CAPACITY;
     env->symbol_pool = GC_MALLOC(env->symbol_pool_count * sizeof(atom_t *));
     env->symbol_counter = 0;
 
@@ -539,7 +526,7 @@ void destroy_env(vm_env_t *env_ptr)
     env_ptr = NULL;
 }
 
-/// Initialize the garbage collector.
+/// Initializes the garbage collector.
 void gc_init()
 {
     GC_INIT();
@@ -555,7 +542,11 @@ void gc_init()
 }
 
 
-// --- Symbols & strings --- //
+
+// ------------------------------------------- //
+// ------------ SYMBOLS & STRINGS ------------ //
+// ------------------------------------------- //
+
 
 
 /// FNV-1a hashing for strings.
@@ -586,6 +577,7 @@ sym_id_t intern_symbol(vm_env_t *env_ptr, const char *name)
 
     new_atom->name = malloc(strlen(name) + 1);
     strcpy(new_atom->name, name);
+
     new_atom->id = env_ptr->symbol_counter++;
     new_atom->next = env_ptr->symbol_pool[index];
 
@@ -628,8 +620,37 @@ int intern_string(vm_env_t *env_ptr, const char *s)
 }
 
 
-// --- FFI --- //
 
+// ------------------------------------------------------------------ //
+// ------------ (FOREIGN) FUNCTION (INTERFACE) INTERNING ------------ //
+// ------------------------------------------------------------------ //
+
+
+
+/// Emits a function's label for the given symbol id.
+void intern_function(vm_env_t *env_ptr, const sym_id_t symbol_id, const int arity, const int label)
+{
+    if (symbol_id >= (sym_id_t)env_ptr->dispatch_table_capacity)
+    {
+        const size_t old_cap = env_ptr->dispatch_table_capacity;
+        const size_t new_cap = (symbol_id + 1) * 2;
+        dispatch_entry_t **new_tbl = GC_MALLOC(new_cap * sizeof(dispatch_entry_t *));
+
+        if (env_ptr->dispatch_table != NULL) {
+            memcpy(new_tbl, env_ptr->dispatch_table, old_cap * sizeof(dispatch_entry_t *));
+        }
+
+        env_ptr->dispatch_table = new_tbl;
+        env_ptr->dispatch_table_capacity = new_cap;
+    }
+
+    dispatch_entry_t *entry = GC_MALLOC(sizeof(dispatch_entry_t));
+    entry->arity = arity;
+    entry->label = label;
+
+    entry->next = env_ptr->dispatch_table[symbol_id];
+    env_ptr->dispatch_table[symbol_id] = entry;
+}
 
 /// Loads a dynamic library. Returns `true` if the loading was successful.
 bool rcl_env_load_library(vm_env_t *env_ptr, const char *path)
@@ -669,41 +690,50 @@ int rcl_env_register_ffi(
     for (size_t i = 0; i < env_ptr->loaded_libs_count; i++)
     {
         func_ptr = (void(*)(void))RCL_FIND_SYM(env_ptr->loaded_libs[i], func_name);
-        if (func_ptr) break;
+
+        if (func_ptr != NULL)
+            break;
     }
 
     #if !defined(_WIN32) && !defined(_WIN64)
-    if (!func_ptr)
+    if (func_ptr == NULL)
         func_ptr = (void(*)(void))dlsym(RTLD_DEFAULT, func_name);
     #endif
 
-    if (!func_ptr)
+    if (func_ptr == NULL)
     {
         fprintf(stderr, "Fatal error: cannot find the function '%s' in any dynamic library.\n", func_name);
         exit(1);
     }
 
     struct ffi_info *info = new_ffi_info(func_ptr, arity, arg_types, ret_type);
-    if (!info) return -1;
+    if (info == NULL)
+        return -1;
 
-    if (env_ptr->ffi_count >= env_ptr->ffi_capacity) {
-        size_t new_cap = (env_ptr->ffi_capacity == 0) ? 16 : env_ptr->ffi_capacity * 2;
+    if (env_ptr->ffi_count >= env_ptr->ffi_capacity)
+    {
+        const size_t new_cap = (env_ptr->ffi_capacity == 0) ? INITIAL_CAPACITY: env_ptr->ffi_capacity * 2;
         struct ffi_info **new_table = GC_MALLOC_ATOMIC(new_cap * sizeof(struct ffi_info*));
-        if (env_ptr->ffi_table) {
+
+        if (env_ptr->ffi_table)
             memcpy(new_table, env_ptr->ffi_table, env_ptr->ffi_count * sizeof(struct ffi_info*));
-        }
+
         env_ptr->ffi_table = new_table;
         env_ptr->ffi_capacity = new_cap;
     }
 
-    int ffi_index = (int)env_ptr->ffi_count;
+    const int ffi_index = (int)env_ptr->ffi_count;
     env_ptr->ffi_table[env_ptr->ffi_count++] = info;
     
     return ffi_index;
 }
 
 
-// --- Bytecode emit --- //
+
+// ------------------------------------------------------------ //
+// ------------ BYTECODE EMIT & CONSTANT INTERNING ------------ //
+// ------------------------------------------------------------ //
+
 
 
 /// Emits a bytecode instruction as a four address-code instruction.
@@ -721,7 +751,7 @@ void emit(vm_env_t *env_ptr, opcode_t op, const int a, const int b, const int c,
     env_ptr->program[env_ptr->program_size++] = (instr_t){ op, a, b, c, d };
 }
 
-/// Emits a label.
+/// Emits a bytecode label.
 void set_label(vm_env_t *env_ptr, const int label)
 {
     if (label >= (int)env_ptr->labels_capacity)
@@ -737,31 +767,6 @@ void set_label(vm_env_t *env_ptr, const int label)
     }
 
     env_ptr->labels[label] = (int)env_ptr->program_size;
-}
-
-/// Emits a function's label for the given symbol id.
-void intern_function(vm_env_t *env_ptr, const sym_id_t symbol_id, const int arity, const int label)
-{
-    if (symbol_id >= (sym_id_t)env_ptr->dispatch_table_capacity)
-    {
-        size_t old_cap = env_ptr->dispatch_table_capacity;
-        const size_t new_cap = (symbol_id + 1) * 2;
-        dispatch_entry_t **new_tbl = GC_MALLOC(new_cap * sizeof(dispatch_entry_t *));
-
-        if (env_ptr->dispatch_table != NULL) {
-            memcpy(new_tbl, env_ptr->dispatch_table, old_cap * sizeof(dispatch_entry_t *));
-        }
-
-        env_ptr->dispatch_table = new_tbl;
-        env_ptr->dispatch_table_capacity = new_cap;
-    }
-
-    dispatch_entry_t *entry = GC_MALLOC(sizeof(dispatch_entry_t));
-    entry->arity = arity;
-    entry->label = label;
-
-    entry->next = env_ptr->dispatch_table[symbol_id];
-    env_ptr->dispatch_table[symbol_id] = entry;
 }
 
 /// Emits a "load float" instruction.
@@ -786,11 +791,40 @@ void emit_load_string(vm_env_t *env_ptr, const int dst_reg, const char *s)
 }
 
 
-// --- Runtime helpers --- //
+
+// --------------------------------- //
+// ------------ HEADERS ------------ //
+// --------------------------------- //
 
 
-/// Follows a chain of indirection pointers until it reaches a concrete value or a term that
-/// is no longer an indirection, and returns that final term.
+
+// While `term_t` is an "universal type", `term_header_t` is a "specialized term" (we convert from
+// `term_t` to `term_header_t` using the `AS_HEADER` macro). This specialised type allows tree-like
+// structures to be represented in a relatively simple manner (without the need to define unions of
+// algebraic data types). It forms the basis of constructions in Liyh.
+
+
+// This type represents the "header" for "structured terms", it serves as a basis for
+// each high level composed types (symbolic expressions, closures, records, ...)
+typedef struct
+{
+    sym_id_t id;            // Identify the symbol id
+    uint32_t arity;         // Number of children
+    term_t children[];      // Children array
+} term_header_t;
+
+#define AS_HEADER(val)  ((term_header_t *)(val))
+
+
+
+// ----------------------------------------------- //
+// ------------ INDIRECTIONS & THUNKS ------------ //
+// ----------------------------------------------- //
+
+
+
+/// Follows a chain of indirection pointers until it reaches a concrete value or a term that is no
+/// longer an indirection, and returns that final term. The chain is usually very short, if any!
 static inline term_t resolve_indirection(term_t term)
 {
     while (IS_PTR(term) && AS_HEADER(term)->id == SYM_INDIRECT)
@@ -828,6 +862,14 @@ static void lock_and_check_thunk(term_t term)
     if (h->id == SYM_THUNK)
         h->id = SYM_BLACK_HOLE;
 }
+
+
+
+// ---------------------------------------------------------- //
+// ------------ BOXED LITERALS & RECORDS HELPERS ------------ //
+// ---------------------------------------------------------- //
+
+
 
 /// Creates a boxed value for a float (64 bits).
 static term_t make_float(const double value)
@@ -889,6 +931,7 @@ static const char *get_string_ptr(term_t term)
     return (const char *)AS_HEADER(term)->children[0];
 }
 
+/// A key/value struct for record fields.
 typedef struct
 {
     sym_id_t key;
@@ -961,6 +1004,14 @@ static void *get_opaque_ptr(term_t term)
     fprintf(stderr, "Fatal error: expected native pointer.\n");
     exit(1);
 }
+
+
+
+// -------------------------------------------------------- //
+// ------------ TERM COMPARISON & SUBSTITUTION ------------ //
+// -------------------------------------------------------- //
+
+
 
 typedef struct
 {
@@ -1214,6 +1265,14 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
     return final;
 }
 
+
+
+// ------------------------------------------ //
+// ------------ PRETTY PRINTTING ------------ //
+// ------------------------------------------ //
+
+
+
 // We will not pretty print structures that are too deep; we will stop at an arbitrary limit.
 // If the user wishes to pretty print deep structures, it is preferable that they provide their own solution.
 #define MAX_PRETTY_PRINT_DEPTH  50
@@ -1343,11 +1402,15 @@ static void io_print_term(vm_env_t *env_ptr, const term_t term)
 }
 
 
-// --- VM Core --- //
+
+// ------------------------------------------ //
+// ------------ VIRTUAL MACHINE  ------------ //
+// ------------------------------------------ //
 
 
-#define INITIAL_STACK_CAPACITY  8192 // arbitrary
-#define INITIAL_FRAMES_CAPACITY 2048 // arbitrary
+
+#define INITIAL_STACK_CAPACITY  8192
+#define INITIAL_FRAMES_CAPACITY 2048
 #define STACK_FRAME_PADDING     16
 
 /*
@@ -1430,14 +1493,20 @@ void destroy_vm(vm_t *vm_ptr)
     if (vm_ptr == NULL)
         return;
 
-    // if (vm_ptr->env_ptr != NULL)
-    //     destroy_env(vm_ptr->env_ptr);
-
-    // heap content of the vm is handled by the garbage collector
+    if (vm_ptr->env_ptr != NULL)
+        destroy_env(vm_ptr->env_ptr);
 
     GC_gcollect();
     vm_ptr = NULL;
 }
+
+
+
+// ------------------------------------------------- //
+// ------------ VIRTUAL MACHINE HELPERS ------------ //
+// ------------------------------------------------- //
+
+
 
 // Sets a recursion limit by limmiting the number of frames.
 
@@ -1526,15 +1595,16 @@ static inline void perform_call(
     term_t **stack, size_t *stack_cap,
     frame_t **frames, size_t *frames_cap,
     int target_label, int arg_count, int args_src_offset, int dst_reg, term_t closure_env
-) {
+)
+{
     // Check frame capacity.
-    if (__builtin_expect(*fp + 1 >= (int)*frames_cap, 0)) {
+    if (unlikely(*fp + 1 >= (int)*frames_cap)) {
         grow_frames_impl(vm, frames, frames_cap);
     }
 
     // Check stack capacity.
     int needed = arg_count + STACK_FRAME_PADDING;
-    if (__builtin_expect(*sp + needed >= (int)*stack_cap, 0)) {
+    if (unlikely(*sp + needed >= (int)*stack_cap)) {
         grow_stack_impl(vm, stack, stack_cap, needed);
     }
 
@@ -1567,15 +1637,14 @@ static inline void perform_call_heap_args(
     int target_label, int arg_count,
     term_t *args_array, // Array of arguments from the heap (e.g. h->children)
     int dst_reg, term_t closure_env, term_t thunk_ptr
-) {
-    if (__builtin_expect(*fp + 1 >= (int)*frames_cap, 0)) {
+)
+{
+    if (unlikely(*fp + 1 >= (int)*frames_cap))
         grow_frames_impl(vm, frames, frames_cap);
-    }
 
-    int needed = arg_count + STACK_FRAME_PADDING;
-    if (__builtin_expect(*sp + needed >= (int)*stack_cap, 0)) {
+    const int needed = arg_count + STACK_FRAME_PADDING;
+    if (unlikely(*sp + needed >= (int)*stack_cap))
         grow_stack_impl(vm, stack, stack_cap, needed);
-    }
 
     (*frames)[(*fp)++] = (frame_t){ *pc, *bp, dst_reg, closure_env, thunk_ptr };
 
@@ -1585,7 +1654,6 @@ static inline void perform_call_heap_args(
 
     memset(dst_args + arg_count, 0, STACK_FRAME_PADDING * sizeof(term_t));
 
-    // 6. Update VM registers
     *bp = *sp;
     *sp = *sp + needed;
     *pc = target_label;
@@ -1671,36 +1739,14 @@ static void display_vm_stats(const stats_t stats[], const char* opcode_names[])
     printf("%-*s\n", total_width, "──────────────────────────────────────────────────");
 }
 
-// static inline void *resolve_native_ptr(term_t term, const sym_id_t *accepted_ids, size_t n)
-// {
-//     if (!IS_PTR(term)) return NULL;
-// 
-//     const term_header_t *hdr = AS_HEADER(term);
-// 
-//     for (size_t k = 0; k < n; k++)
-//     {
-//         if (hdr->id != accepted_ids[k]) continue;
-// 
-//         if (hdr->id == SYM_BUFFER_NATIVE) return (void *)hdr->children[0];
-//         if (hdr->id == SYM_STRING_NATIVE) return (void *)get_string_ptr(term);
-//         if (hdr->id == SYM_PTR_NATIVE) return get_opaque_ptr(term);
-// 
-//         return NULL;
-//     }
-// 
-//     return NULL;
-// }
-// 
-// static const sym_id_t PTR_ACCEPTED[]    = { SYM_BUFFER_NATIVE, SYM_PTR_NATIVE, SYM_STRING_NATIVE };
-// static const sym_id_t STRING_ACCEPTED[] = { SYM_STRING_NATIVE, SYM_BUFFER_NATIVE };
-
-static const int instruction_call_ffi(
+static inline int instruction_call_ffi(
     vm_t *vm_ptr,
     term_t *regs,
     const int dst_reg,
     const int ffi_index,
     const int args_start
-) {
+)
+{
 
     if (ffi_index < 0 || ffi_index >= (int)vm_ptr->env_ptr->ffi_count)
     {
@@ -1949,6 +1995,429 @@ static const int instruction_call_ffi(
     return EXIT_SUCCESS;
 }
 
+static inline int instruction_test_tag(
+    vm_t *vm_ptr,
+    term_t *regs,
+    int *pc,
+    int *labels,
+    const int src_reg,
+    const int tag_id,
+    const int fail_label
+)
+{
+    const term_t val = resolve_indirection(regs[src_reg]);
+    const sym_id_t toTest = (sym_id_t)tag_id;
+
+    bool matches = false;
+
+    if (toTest == SYM_NUM_NATIVE)
+    {
+        if (IS_INT(val))
+            matches = true;
+
+        else if (IS_PTR(val))
+            matches = (AS_HEADER(val)->id == SYM_FLOAT_NATIVE);
+    }
+
+    else if (IS_INT(val))
+        matches = (toTest == SYM_INT_NATIVE);
+
+    else if (IS_CHAR(val))
+        matches = (toTest == SYM_CHAR_NATIVE);
+
+    else if (IS_BOOL(val))
+        matches = (toTest == SYM_BOOL_NATIVE);
+
+    else if (IS_PTR(val))
+        matches = (AS_HEADER(val)->id == toTest);
+
+    // If it's a float (PTR with SYM_FLOAT), it matches here because toTest == SYM_FLOAT
+    // If it's a string (PTR with SYM_STRING), it matches here because toTest == SYM_STRING
+
+    if (!matches)
+        *pc = labels[fail_label];
+
+    return EXIT_SUCCESS;
+}
+
+static inline int instruction_apply(
+    vm_t *vm_ptr,
+    term_t *regs,
+    int *pc, int *sp, int *fp, int *bp,
+    int *labels,
+    const int fn_reg,
+    const int arg_offset,
+    const int arg_count,
+    const int dst_reg,
+    term_t **stack, size_t *stack_capacity,
+    frame_t **frames, size_t *frames_capacity
+)
+{
+    const term_t fn = resolve_indirection(regs[fn_reg]);
+    int target = -1;
+    term_t env_closure = 0;
+
+    // Is it a closure?
+    if (IS_PTR(fn) && AS_HEADER(fn)->id == SYM_CLOSURE)
+    {
+        target = labels[(int)GET_INT(AS_HEADER(fn)->children[0])];
+        env_closure = fn;
+    }
+
+    // Is it a global symbol (potential function)?
+    else if (IS_PTR(fn) && AS_HEADER(fn)->arity == 0)
+    {
+        const sym_id_t sym_id = AS_HEADER(fn)->id;
+
+        if (sym_id < vm_ptr->env_ptr->dispatch_table_capacity)
+        {
+            dispatch_entry_t *entry = vm_ptr->env_ptr->dispatch_table[sym_id];
+
+            while (entry != NULL) {
+                // On utilise le VRAI arg_count passé en paramètre
+                if (entry->arity == arg_count) {
+                    target = labels[entry->label];
+                    break;
+                }
+                entry = entry->next;
+            }
+        }
+    }
+
+    // Execution
+
+    if (target != -1)
+    {
+        perform_call(
+            vm_ptr, pc, sp, fp, bp,
+            stack, stack_capacity, frames, frames_capacity,
+            target,
+            arg_count,
+            arg_offset,
+            dst_reg,
+            env_closure
+        );
+    }
+    else
+    {
+        // Fallback: data construction
+
+        const sym_id_t sym_id = IS_PTR(fn) ? AS_HEADER(fn)->id : SYM_INT_NATIVE;
+
+        term_header_t *h = GC_MALLOC(sizeof(term_header_t) + arg_count * sizeof(term_t));
+        h->id = sym_id;
+        h->arity = arg_count;
+
+        for (int i = 0; i < arg_count; i++)
+            h->children[i] = regs[arg_offset + i];
+
+        vm_ptr->sp = *sp;
+        regs[dst_reg] = (term_t)h;
+    }
+
+    return EXIT_SUCCESS;
+}
+
+static inline int instruction_force(
+    vm_t *vm_ptr,
+    term_t *regs,
+    int *pc, int *sp, int *fp, int *bp,
+    int *labels,
+    const int dst_reg,
+    const int src_reg,
+    term_t **stack, size_t *stack_capacity,
+    frame_t **frames, size_t *frames_capacity
+)
+{
+    const term_t t = resolve_indirection(regs[src_reg]);
+
+    // If not a pointer, it is a computed value.
+    if (!IS_PTR(t))
+    {
+        regs[dst_reg] = t;
+        return EXIT_SUCCESS;
+    }
+
+    term_header_t *h = AS_HEADER(t);
+
+    // Try to evaluate symbolic data ("outermost strategy") if it's not a system tag.
+    if (IS_USER_DATA(h->id))
+    {
+        const sym_id_t sym_id = h->id;
+        const int arg_count = h->arity;
+
+        // Search dispatch table for a matching function
+        int target = -1;
+        if (sym_id < vm_ptr->env_ptr->dispatch_table_capacity)
+        {
+            dispatch_entry_t *entry = vm_ptr->env_ptr->dispatch_table[sym_id];
+            while (entry != NULL)
+            {
+                if (entry->arity == arg_count)
+                {
+                    target = labels[entry->label];
+                    break;
+                }
+                entry = entry->next;
+            }
+        }
+
+        if (target != -1) // Found a function to call
+        {
+            perform_call_heap_args(
+                vm_ptr, pc, sp, fp, bp,
+                stack, stack_capacity, frames, frames_capacity,
+                target,
+                arg_count,
+                h->children,    // Arguments are the children of the data
+                dst_reg,        // Destination register
+                0,              // No closure env
+                0               // Not a thunk update
+            );
+            return EXIT_SUCCESS;
+        }
+
+        // If no function found, it's just a symbolic data.
+        regs[dst_reg] = t;
+        return EXIT_SUCCESS;
+    }
+
+    // If it's not a Thunk, BlackHole or SuspendedCall, it's a value (Record, String, etc.)
+    if (h->id != SYM_THUNK && h->id != SYM_BLACK_HOLE && h->id != SYM_SUSPENDED_CALL)
+    {
+        regs[dst_reg] = t;
+        return EXIT_SUCCESS;
+    }
+
+    lock_and_check_thunk(t);
+
+    // Suspended Call (from substitution).
+    if (h->id == SYM_SUSPENDED_CALL)
+    {
+        // Layout: [Closure, Arg1, Arg2, ...]
+        const term_t closure_term = h->children[0];
+        const term_header_t *closure_h = AS_HEADER(closure_term);
+        const int target_label = (int)GET_INT(closure_h->children[0]);
+        const int arg_count = h->arity - 1;
+
+        perform_call_heap_args(
+            vm_ptr, pc, sp, fp, bp,
+            stack, stack_capacity, frames, frames_capacity,
+            labels[target_label],
+            arg_count,
+            &h->children[1], // Arguments start at index 1
+            dst_reg,
+            closure_term,    // Use closure as environment
+            t                // Update 't' with result (memoization)
+        );
+        return EXIT_SUCCESS;
+    }
+
+    // A thunk for lazy evaluation.
+    // Layout: [Label, Capture1, Capture2...]
+    const int target_label = (int)GET_INT(h->children[0]);
+
+    // Note: Thunks have 0 arguments for the call itself (captured vars are in closure_env)
+    perform_call_heap_args(
+        vm_ptr, pc, sp, fp, bp,
+        stack, stack_capacity, frames, frames_capacity,
+        labels[target_label],
+        0,                  // No stack arguments
+        NULL,               // No source array needed
+        dst_reg,
+        (term_t)h,          // The thunk is its own environment
+        t                   // Update 't' with result (memoization)
+    );
+    
+    return EXIT_SUCCESS;
+}
+
+static inline int instruction_cast(
+    vm_t *vm_ptr,
+    term_t *regs,
+    const int dst_reg,
+    const int src_reg,
+    const int target_type_id,
+    const int source_type_id
+)
+{
+    const term_t src = resolve_indirection(regs[src_reg]);
+    const sym_id_t target_type = (sym_id_t)target_type_id;
+    const sym_id_t source_type = (sym_id_t)source_type_id;
+
+    // Check if the expected types are consistent.
+    bool type_match = false;
+
+    if (source_type == SYM_INT_NATIVE)
+        type_match = IS_INT(src);
+
+    else if (source_type == SYM_CHAR_NATIVE)
+        type_match = IS_CHAR(src);
+
+    else if (IS_PTR(src))
+        type_match = (AS_HEADER(src)->id == source_type);
+
+    if (!type_match)
+    {
+        // Mismatch between compiler expectation and runtime reality.
+        regs[dst_reg] = make_cast_result(vm_ptr->env_ptr, false, MAKE_INT(0)); 
+        return EXIT_SUCCESS;
+    }
+
+    term_t result_val = MAKE_INT(0); // default value when success = false
+    bool success = true;
+
+    if (source_type == SYM_INT_NATIVE)
+    {
+        int64_t val = GET_INT(src);
+
+        // Int to Float
+        if (target_type == SYM_FLOAT_NATIVE)
+        {
+            result_val = make_float((double)val);
+        }
+
+        // Int to Char
+        else if (target_type == SYM_CHAR_NATIVE)
+        {
+            if (val < 0 || val > 0x10FFFF) success = false; // Invalid Unicode code point
+            else result_val = MAKE_CHAR((uint32_t)val);
+        }
+
+        // Int to String
+        else if (target_type == SYM_STRING_NATIVE)
+        {
+            char buffer[64];
+            snprintf(buffer, 64, "%lld", (long long)val);
+            result_val = make_string(buffer);
+        }
+
+        // Int to Int
+        else if (target_type == SYM_INT_NATIVE) 
+        {
+            result_val = src;
+        }
+
+        // Error
+        else
+        {
+            success = false;
+        }
+    }
+    else if (source_type == SYM_FLOAT_NATIVE)
+    {
+        double val = get_float(src);
+
+        // Float to Int
+        if (target_type == SYM_INT_NATIVE)
+        {
+            if (isnan(val) || isinf(val)) success = false;
+            else if (val > (double)INT64_MAX || val < (double)INT64_MIN) success = false;
+            else result_val = MAKE_INT((int64_t)val);
+        }
+
+        // Float to String
+        else if (target_type == SYM_STRING_NATIVE)
+        {
+            char buffer[64];
+            snprintf(buffer, 64, "%.*g", DBL_DIG, val);
+            result_val = make_string(buffer);
+        }
+
+        // Float to Float
+        else if (target_type == SYM_FLOAT_NATIVE)
+        {
+            result_val = src;
+        }
+
+        // Error
+        else
+        {
+            success = false;
+        }
+    }
+    else if (source_type == SYM_CHAR_NATIVE)
+    {
+        uint32_t val = GET_CHAR(src);
+
+        // Char to Int
+        if (target_type == SYM_INT_NATIVE)
+        {
+            result_val = MAKE_INT((int64_t)val);
+        }
+
+        // Char to String
+        else if (target_type == SYM_STRING_NATIVE)
+        {
+            char buffer[2] = { (char)val, '\0' };
+            result_val = make_string(buffer);
+        }
+
+        // Char to Char
+        else if (target_type == SYM_CHAR_NATIVE)
+        {
+            result_val = src;
+        }
+
+        // Error
+        else
+        {
+            success = false;
+        }
+    }
+    else if (source_type == SYM_STRING_NATIVE)
+    {
+        const char *str = get_string_ptr(src);
+
+        // String to Int
+        if (target_type == SYM_INT_NATIVE)
+        {
+            char *endptr;
+            long long res = strtoll(str, &endptr, 10);
+
+            if (*str != '\0' && *endptr == '\0') result_val = MAKE_INT(res);
+            else success = false;
+        }
+
+        // String to Float
+        else if (target_type == SYM_FLOAT_NATIVE)
+        {
+            char *endptr;
+            double res = strtod(str, &endptr);
+
+            if (*str != '\0' && *endptr == '\0') result_val = make_float(res);
+            else success = false;
+        }
+
+        // String to Char
+        else if (target_type == SYM_CHAR_NATIVE)
+        {
+            if (str[0] != '\0' && str[1] == '\0') result_val = MAKE_CHAR((uint32_t)str[0]);
+            else success = false;
+        }
+
+        // String to String
+        else if (target_type == SYM_STRING_NATIVE)
+        {
+            result_val = src;
+        }
+
+        else
+        {
+            success = false;
+        }
+    }
+    else 
+    {
+        success = false;
+    }
+
+    // The result is a record { Success = (0 | 1), Value = <converted value or default> }
+    regs[dst_reg] = make_cast_result(vm_ptr->env_ptr, success, success ? result_val : MAKE_INT(0));
+    
+    return EXIT_SUCCESS;
+}
+
 /// Converts a C string array (argv) into a symbolic linked list: `cons[str, cons[... nil]]`.
 /// This is used for the main arguments of the program.
 term_t rcl_make_string_list(vm_env_t *env_ptr, int argc, const char *argv[])
@@ -2053,67 +2522,64 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
         switch (instr.op)
         {
+
+        // HALT exit_code
         case INSTR_HALT:
         {
-            return_value = instr.a;
+            const int exit_code = instr.a;
+
+            return_value = exit_code;
             run = false;
             break;
         }
 
+        // MOV dst_reg, src_reg
         case INSTR_MOV:
         {
-            regs[instr.a] = regs[instr.b];
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+
+            regs[dst_reg] = regs[src_reg];
             break;
         }
 
+        // TEST_TAG src_reg, tag_id, fail_label
         case INSTR_TEST_TAG:
         {
-            const term_t val = resolve_indirection(regs[instr.a]);
-            const sym_id_t toTest = (sym_id_t)instr.b;
+            const int src_reg = instr.a;
+            const int tag_id = instr.b;
+            const int fail_label = instr.c;
 
-            bool matches = false;
-
-            if (toTest == SYM_NUM_NATIVE)
+            if (unlikely(instruction_test_tag(
+                vm_ptr, regs, &pc, labels, src_reg, tag_id, fail_label) != EXIT_SUCCESS))
             {
-                if (IS_INT(val))
-                    matches = true;
-                else if (IS_PTR(val))
-                    matches = (AS_HEADER(val)->id == SYM_FLOAT_NATIVE);
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
             }
 
-            else if (IS_INT(val))
-                matches = (toTest == SYM_INT_NATIVE);
-
-            else if (IS_CHAR(val))
-                matches = (toTest == SYM_CHAR_NATIVE);
-
-            else if (IS_BOOL(val))
-                matches = (toTest == SYM_BOOL_NATIVE);
-
-            else if (IS_PTR(val))
-                matches = (AS_HEADER(val)->id == toTest);
-
-            // If it's a float (PTR with SYM_FLOAT), it matches here because toTest == SYM_FLOAT
-            // If it's a string (PTR with SYM_STRING), it matches here because toTest == SYM_STRING
-
-            if (!matches)
-                pc = labels[instr.c];
-
             break;
         }
 
+        // DECONSTRUCT dst_reg, src_reg, index
         case INSTR_DECONSTRUCT:
         {
-            const term_t t = resolve_indirection(regs[instr.b]);
-            regs[instr.a] = AS_HEADER(t)->children[instr.c];
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+            const int index = instr.c;
+
+            const term_t t = resolve_indirection(regs[src_reg]);
+            regs[dst_reg] = AS_HEADER(t)->children[index];
             break;
         }
 
+        // RESERVE count
         case INSTR_RESERVE:
         {
-            const int needed = bp + instr.a;
+            const int count = instr.a;
+            const int needed = bp + count;
 
-            if (__builtin_expect(needed >= (int)stack_capacity, 0))
+            if (unlikely(needed >= (int)stack_capacity))
                 grow_stack_impl(vm_ptr, &stack, &stack_capacity, needed);
 
             if (needed > sp)
@@ -2125,60 +2591,82 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // JUMP label
         case INSTR_JUMP:
         {
-            pc = labels[instr.a];
+            const int label = instr.a;
+
+            pc = labels[label];
             break;
         }
 
-        // jump if false, otherwise continue;
+        // JUMP_FALSE src_reg, label
         case INSTR_JUMP_FALSE:
         {
-            const term_t val = regs[instr.a];
+            const int src_reg = instr.a;
+            const int label = instr.b;
+
+            const term_t val = regs[src_reg];
 
             if (!IS_BOOL(val)) 
             {
-                fprintf(stderr, "Runtime Error: Condition must be a boolean (got type '%s').\n", GET_TAG_TYPE(val));
+                char *s = term_to_string(vm_ptr->env_ptr, val, 3, NULL);
+                fprintf(stderr, "Runtime Error: Condition must be a boolean (got value '%s').\n", s);
                 return_value = EXIT_FAILURE;
                 run = false;
                 break;
             }
 
-            if (GET_BOOL(val) == 0) pc = labels[instr.b];
+            if (GET_BOOL(val) == 0)
+                pc = labels[label];
+
             break;
         }
 
-        // jump if true, otherwise continue;
+        // JUMP_TRUE src_reg, label
         case INSTR_JUMP_TRUE:
         {
-            const term_t val = regs[instr.a];
+            const int src_reg = instr.a;
+            const int label = instr.b;
 
-            if (!IS_BOOL(val)) 
+            const term_t val = regs[src_reg];
+
+            if (!IS_BOOL(val))
             {
-                fprintf(stderr, "Runtime Error: Condition must be a boolean (got type '%s').\n", GET_TAG_TYPE(val));
+                char *s = term_to_string(vm_ptr->env_ptr, val, 3, NULL);
+                fprintf(stderr, "Runtime Error: Condition must be a boolean (got value '%s').\n", s);
                 return_value = EXIT_FAILURE;
                 run = false;
                 break;
             }
 
-            if (GET_BOOL(val) != 0) pc = labels[instr.b];
+            if (GET_BOOL(val) != 0)
+                pc = labels[label];
+
             break;
         }
 
+        // CALL label, arg_offset, arg_count, dst_reg
         case INSTR_CALL:
         {
+            const int label = instr.a;
+            const int arg_offset = instr.b;
+            const int arg_count = instr.c;
+            const int dst_reg = instr.d;
+
             perform_call(
                 vm_ptr, &pc, &sp, &fp, &bp,
                 &stack, &stack_capacity, &frames, &farmes_capacity,
-                labels[instr.a],    // traget label
-                instr.c,            // arg count
-                instr.b,            // arg source offset
-                instr.d,            // destination register
-                0                   // no closure
+                labels[label],  // traget label
+                arg_count,      // arg count
+                arg_offset,     // arg source offset
+                dst_reg,        // destination register
+                0               // no closure
             );
             break;
         }
 
+        // CALL_FFI dst_reg, ffi_index, args_start_reg
         case INSTR_CALL_FFI:
         {
             const int dst_reg = instr.a;
@@ -2195,12 +2683,13 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // BUFFER_ALLOC dst_reg, size_reg
         case INSTR_BUFFER_ALLOC:
         {
-            // instr.a = dst
-            // instr.b = size_reg
+            const int dst_reg = instr.a;
+            const int size_reg = instr.b;
 
-            const int64_t size = GET_INT(resolve_indirection(regs[instr.b]));
+            const int64_t size = GET_INT(resolve_indirection(regs[size_reg]));
 
             term_header_t *h = GC_MALLOC(sizeof(term_header_t) + 2 * sizeof(term_t));
             h->id = SYM_BUFFER_NATIVE;
@@ -2212,27 +2701,28 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             h->children[0] = (term_t)raw_mem;   // the buffer has a pointer adress
             h->children[1] = MAKE_INT(size);    // as well a size
 
-            regs[instr.a] = (term_t)h;
+            regs[dst_reg] = (term_t)h;
             break;
         }
 
+        // BUFFER_GET dst_reg, buf_reg, index_reg
         case INSTR_BUFFER_GET:
         {
-            // instr.a = dst
-            // instr.b = buf_reg
-            // instr.c = index_reg
+            const int dst_reg = instr.a;
+            const int buf_reg = instr.b;
+            const int index_reg = instr.c;
 
-            term_header_t *h = AS_HEADER(resolve_indirection(regs[instr.b]));
-            int64_t index = GET_INT(resolve_indirection(regs[instr.c]));
+            term_header_t *h = AS_HEADER(resolve_indirection(regs[buf_reg]));
+            const int64_t index = GET_INT(resolve_indirection(regs[index_reg]));
 
             if (h->id == SYM_BUFFER_NATIVE)
             {
                 uint8_t *buf_mem = (uint8_t *)h->children[0];
-                int64_t size = GET_INT(h->children[1]);
+                const int64_t size = GET_INT(h->children[1]);
 
                 if (index >= 0 && index < size)
                 {
-                    regs[instr.a] = MAKE_INT(buf_mem[index]);
+                    regs[dst_reg] = MAKE_INT(buf_mem[index]);
                 }
                 else
                 {
@@ -2250,20 +2740,21 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // BUFFER_SET buf_reg, index_reg, val_reg
         case INSTR_BUFFER_SET:
         {
-            // instr.a = buf_reg
-            // instr.b = index_reg;
-            // instr.c = val_reg;
+            const int buf_reg = instr.a; 
+            const int index_reg = instr.b ;
+            const int val_reg = instr.c ;
 
-            term_header_t *h = AS_HEADER(resolve_indirection(regs[instr.a]));
-            int64_t index = GET_INT(resolve_indirection(regs[instr.b]));
-            int64_t val = GET_INT(resolve_indirection(regs[instr.c]));
+            term_header_t *h = AS_HEADER(resolve_indirection(regs[buf_reg]));
+            const int64_t index = GET_INT(resolve_indirection(regs[index_reg]));
+            const int64_t val = GET_INT(resolve_indirection(regs[val_reg]));
 
             if (h->id == SYM_BUFFER_NATIVE)
             {
                 uint8_t *buf_mem = (uint8_t *)h->children[0];
-                int64_t size = GET_INT(h->children[1]);
+                const int64_t size = GET_INT(h->children[1]);
 
                 if (index >= 0 && index < size)
                 {
@@ -2285,18 +2776,19 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // BUFFER_REALLOC buf_reg, new_size_reg
         case INSTR_BUFFER_REALLOC:
         {
-            // instr.a = buf_reg
-            // instr.b = new_size_reg
+            const int buf_reg = instr.a;
+            const int new_size_reg = instr.b;
 
-            term_header_t *h = AS_HEADER(resolve_indirection(regs[instr.a]));
-            int64_t new_size = GET_INT(resolve_indirection(regs[instr.b]));
+            term_header_t *h = AS_HEADER(resolve_indirection(regs[buf_reg]));
+            const int64_t new_size = GET_INT(resolve_indirection(regs[new_size_reg]));
 
             if (h->id == SYM_BUFFER_NATIVE)
             {
                 void *old_mem = (void *)h->children[0];
-                int64_t old_size = GET_INT(h->children[1]);
+                const int64_t old_size = GET_INT(h->children[1]);
 
                 void *new_mem = GC_REALLOC(old_mem, new_size);
 
@@ -2317,10 +2809,13 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
-        // lighter call that do not consume frames for tail calls
+        // TAILCALL label, arg_offset, arg_count
         case INSTR_TAILCALL:
         {
+            const int label = instr.a;
+            const int arg_offset = instr.b;
             const int arg_count = instr.c;
+
             term_t args_buffer[arg_count]; // VLA not to allocate memory onto the stack.
             memcpy(args_buffer, &regs[instr.b], arg_count * sizeof(term_t));
 
@@ -2337,13 +2832,15 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // RET src_reg
         case INSTR_RET:
         {
-            const term_t res = regs[instr.a];
+            const int src_reg = instr.a;
 
             if (--fp < 0) // nothing else to do
                 break;
 
+            const term_t res = regs[src_reg];
             frame_t *f = &frames[fp];
 
             if (f->thunk != 0)
@@ -2389,329 +2886,233 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // APPLY fn_reg, arg_offset, arg_count, dst_reg
         case INSTR_APPLY:
         {
-            const term_t fn = resolve_indirection(regs[instr.a]);
-            int target = -1;
-            term_t env_closure = 0;
+            const int fn_reg = instr.a;
+            const int reg_offset = instr.b;
+            const int arg_count = instr.c;
+            const int dst_reg = instr.d;
 
-            // Is it a closure?
-            if (IS_PTR(fn) && AS_HEADER(fn)->id == SYM_CLOSURE)
+            if (unlikely(instruction_apply(
+                    vm_ptr, regs, &pc, &sp, &fp, &bp, labels,
+                    fn_reg, reg_offset, arg_count, dst_reg,
+                    &stack, &stack_capacity, &frames, &farmes_capacity) != EXIT_SUCCESS))
             {
-                target = labels[(int)GET_INT(AS_HEADER(fn)->children[0])];
-                env_closure = fn;
-            }
-
-            // Is it a global symbol (potential function)?
-            else if (IS_PTR(fn) && AS_HEADER(fn)->arity == 0)
-            {
-                const sym_id_t sym_id = AS_HEADER(fn)->id;
-                const int arg_count = instr.c;
-
-                if (sym_id < vm_ptr->env_ptr->dispatch_table_capacity)
-                {
-                    dispatch_entry_t *entry = vm_ptr->env_ptr->dispatch_table[sym_id];
-
-                    while (entry != NULL) {
-                        if (entry->arity == arg_count) {
-                            target = labels[entry->label];
-                            break;
-                        }
-                        entry = entry->next;
-                    }
-                }
-            }
-
-            // Execution
-
-            if (target != -1)
-            {
-                // Call the function
-
-                perform_call(
-                    vm_ptr, &pc, &sp, &fp, &bp,
-                    &stack, &stack_capacity, &frames, &farmes_capacity,
-                    target,
-                    instr.c,
-                    instr.b,
-                    instr.d,
-                    env_closure
-                );
-            }
-            else
-            {
-                // Fallback: data construction
-
-                const sym_id_t sym_id = IS_PTR(fn) ? AS_HEADER(fn)->id : SYM_INT_NATIVE;
-                const int count = instr.c;
-
-                vm_ptr->sp = sp;
-                term_header_t *h = GC_MALLOC(sizeof(term_header_t) + count * sizeof(term_t));
-                h->id = sym_id;
-                h->arity = count;
-
-                for (int i = 0; i < count; i++)
-                    h->children[i] = regs[instr.b + i];
-
-                regs[instr.d] = (term_t)h;
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
             }
             break;
         }
 
+        // CALL_CLOSURE cl_reg, arg_offset, arg_count, dst_reg
         case INSTR_CALL_CLOSURE:
         {
-            const term_t cl = resolve_indirection(regs[instr.a]);
+            const int cl_reg = instr.a;
+            const int arg_offset = instr.b;
+            const int arg_count = instr.c;
+            const int dst_reg = instr.d;
+
+            const term_t cl = resolve_indirection(regs[cl_reg]);
             const int target = (int)GET_INT(AS_HEADER(cl)->children[0]);
 
             perform_call(
                 vm_ptr, &pc, &sp, &fp, &bp,
                 &stack, &stack_capacity, &frames, &farmes_capacity,
                 labels[target],
-                instr.c,
-                instr.b,
-                instr.d,
+                arg_count,
+                arg_offset,
+                dst_reg,
                 cl          // closure env
             );
 
             break;
         }
 
+        // DELAY dst_reg, label, capture_count, capture_start
         case INSTR_DELAY:
         {
-            // instr.a = dst register
-            // instr.b = label of the thunk
-            // instr.c = number of values to capture
-            // instr.d = initial register for the capture
+            const int dst_reg = instr.a;
+            const int label = instr.b;
+            const int capture_count = instr.c;
+            const int capture_start = instr.d;
 
             vm_ptr->sp = sp;
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (instr.c + 1) * sizeof(term_t));
+            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (capture_count + 1) * sizeof(term_t));
             h->id = SYM_THUNK;
-            h->arity = instr.c + 1;
-            h->children[0] = MAKE_INT(instr.b); // the label to jump in
+            h->arity = capture_count + 1;
+            h->children[0] = MAKE_INT(label); // the label to jump in
 
-            for (int i = 0; i < instr.c; i++)
-                h->children[i + 1] = regs[instr.d + i];
+            for (int i = 0; i < capture_count; i++)
+                h->children[i + 1] = regs[capture_start + i];
 
-            regs[instr.a] = (term_t)h;
+            regs[dst_reg] = (term_t)h;
             break;
         }
 
+        // FORCE dst_reg, src_reg
         case INSTR_FORCE:
         {
-            // instr.a = dst register
-            // instr.b = src register
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
 
-            const term_t t = resolve_indirection(regs[instr.b]);
-
-            // If not a pointer, it is a computed value.
-            if (!IS_PTR(t))
+            if (unlikely(instruction_force(
+                    vm_ptr, regs, &pc, &sp, &fp, &bp, labels,
+                    dst_reg, src_reg,
+                    &stack, &stack_capacity, &frames, &farmes_capacity) != EXIT_SUCCESS))
             {
-                regs[instr.a] = t;
+                return_value = EXIT_FAILURE;
+                run = false;
                 break;
             }
-
-            term_header_t *h = AS_HEADER(t);
-
-            // Try to evaluate symbolic data ("outermost strategy") if it's not a system tag.
-            if (IS_USER_DATA(h->id))
-            {
-                const sym_id_t sym_id = h->id;
-                const int arg_count = h->arity;
-
-                // Search dispatch table for a matching function
-                int target = -1;
-                if (sym_id < vm_ptr->env_ptr->dispatch_table_capacity)
-                {
-                    dispatch_entry_t *entry = vm_ptr->env_ptr->dispatch_table[sym_id];
-                    while (entry != NULL)
-                    {
-                        if (entry->arity == arg_count)
-                        {
-                            target = labels[entry->label];
-                            break;
-                        }
-                        entry = entry->next;
-                    }
-                }
-
-                if (target != -1) // Found a function to call
-                {
-                    perform_call_heap_args(
-                        vm_ptr, &pc, &sp, &fp, &bp,
-                        &stack, &stack_capacity, &frames, &farmes_capacity,
-                        target,
-                        arg_count,
-                        h->children,    // Arguments are the children of the data
-                        instr.a,        // Destination register
-                        0,              // No closure env
-                        0               // Not a thunk update
-                    );
-                    break;
-                }
-
-                // If no function found, it's just a symbolic data.
-                regs[instr.a] = t;
-                break;
-            }
-
-            // If it's not a Thunk, BlackHole or SuspendedCall, it's a value (Record, String, etc.)
-            if (h->id != SYM_THUNK && h->id != SYM_BLACK_HOLE && h->id != SYM_SUSPENDED_CALL)
-            {
-                regs[instr.a] = t;
-                break;
-            }
-
-            lock_and_check_thunk(t);
-
-            // Suspended Call (from substitution).
-            if (h->id == SYM_SUSPENDED_CALL)
-            {
-                // Layout: [Closure, Arg1, Arg2, ...]
-                const term_t closure_term = h->children[0];
-                const term_header_t *closure_h = AS_HEADER(closure_term);
-                const int target_label = (int)GET_INT(closure_h->children[0]);
-                const int arg_count = h->arity - 1;
-
-                perform_call_heap_args(
-                    vm_ptr, &pc, &sp, &fp, &bp,
-                    &stack, &stack_capacity, &frames, &farmes_capacity,
-                    labels[target_label],
-                    arg_count,
-                    &h->children[1], // Arguments start at index 1
-                    instr.a,
-                    closure_term,    // Use closure as environment
-                    t                // Update 't' with result (memoization)
-                );
-                break;
-            }
-
-            // A thunk for lazy evaluation.
-            // Layout: [Label, Capture1, Capture2...]
-            const int target_label = (int)GET_INT(h->children[0]);
-
-            // Note: Thunks have 0 arguments for the call itself (captured vars are in closure_env)
-            perform_call_heap_args(
-                vm_ptr, &pc, &sp, &fp, &bp,
-                &stack, &stack_capacity, &frames, &farmes_capacity,
-                labels[target_label],
-                0,                  // No stack arguments
-                NULL,               // No source array needed
-                instr.a,
-                (term_t)h,          // The thunk is its own environment
-                t                   // Update 't' with result (memoization)
-            );
             break;
         }
 
+        // LOAD_INT dst_reg, value
         case INSTR_LOAD_INT:
         {
-            regs[instr.a] = MAKE_INT(instr.b);
+            const int dst_reg = instr.a;
+            const int value = instr.b;
+
+            regs[dst_reg] = MAKE_INT(value);
             break;
         }
 
+        // LOAD_INT dst_reg, value
         case INSTR_LOAD_CHAR:
         {
-            regs[instr.a] = MAKE_CHAR((uint32_t)instr.b);
+            const int dst_reg = instr.a;
+            const int value = instr.b;
+
+            regs[dst_reg] = MAKE_CHAR((uint32_t)value);
             break;
         }
 
+        // LOAD_INT dst_reg, value
         case INSTR_LOAD_STRING:
         {
-            regs[instr.a] = make_string(vm_ptr->env_ptr->string_pool[instr.b]);
+            const int dst_reg = instr.a;
+            const int value = instr.b;
+
+            regs[dst_reg] = make_string(vm_ptr->env_ptr->string_pool[value]);
             break;
         }
 
+        // LOAD_INT dst_reg, value
         case INSTR_LOAD_BOOL:
         {
-            regs[instr.a] = MAKE_BOOL(instr.b);
+            const int dst_reg = instr.a;
+            const int value = instr.b;
+
+            regs[dst_reg] = MAKE_BOOL(value);
             break;
         }
 
+        // LOAD_FLOAT dst_reg, hi_bits, lo_bits
         case INSTR_LOAD_FLOAT:
         {
             // floats are encoded as two 32 bits integers
 
-            const uint32_t hi = (uint32_t)instr.b;
-            const uint32_t lo = (uint32_t)instr.c;
+            const int dst_reg = instr.a;
+            const int hi_bits = instr.b;
+            const int lo_bits = instr.c;
+
+            const uint32_t hi = (uint32_t)hi_bits;
+            const uint32_t lo = (uint32_t)lo_bits;
             const uint64_t bits = ((uint64_t)(uint32_t)hi << 32) | (uint64_t)(uint32_t)lo;
 
             double value;
             memcpy(&value, &bits, sizeof(value));
-            regs[instr.a] = make_float(value);
+            regs[dst_reg] = make_float(value);
 
             break;
         }
 
+        // LOAD_ATOM dst_reg, sym_id
         case INSTR_LOAD_ATOM:
         {
+            const int dst_reg = instr.a;
+            const int sym_id = instr.b;
+
             vm_ptr->sp = sp;
             term_header_t *t = GC_MALLOC(sizeof(term_header_t));
-            t->id = (sym_id_t)instr.b;
+            t->id = (sym_id_t)sym_id;
             t->arity = 0;
-            regs[instr.a] = (term_t)t;
+            regs[dst_reg] = (term_t)t;
             break;
         }
 
         // native binary operations
-        #define BINARY_OP(op) do {                                                      \
-            const term_t l = regs[instr.b];                                             \
-            const term_t r = regs[instr.c];                                             \
-                                                                                        \
-            if (IS_INT(l) && IS_INT(r)) {                                               \
-                regs[instr.a] = MAKE_INT(GET_INT(l) op GET_INT(r));                     \
-            }                                                                           \
-            else if (IS_NUMERIC(l) && IS_NUMERIC(r)) {                                  \
-                regs[instr.a] = make_float(get_float(l) op get_float(r));               \
-            }                                                                           \
-            else {                                                                      \
-                fprintf(stderr, "Runtime Error: Invalid operands for arithmetic operation. Expected numbers, got '%s' and '%s'.\n", \
-                        GET_TAG_TYPE(l), GET_TAG_TYPE(r));                              \
-                return_value = EXIT_FAILURE;                                            \
-                run = false;                                                            \
-            }                                                                           \
+        #define BINARY_OP(op) do { \
+            const term_t l = regs[instr.b]; \
+            const term_t r = regs[instr.c]; \
+            \
+            if (IS_INT(l) && IS_INT(r)) { \
+                regs[instr.a] = MAKE_INT(GET_INT(l) op GET_INT(r)); \
+            } \
+            else if (IS_NUMERIC(l) && IS_NUMERIC(r)) { \
+                regs[instr.a] = make_float(get_float(l) op get_float(r)); \
+            } \
+            else { \
+                char *sl = term_to_string(vm_ptr->env_ptr, l, 3, NULL); \
+                char *sr = term_to_string(vm_ptr->env_ptr, r, 3, NULL); \
+                fprintf(stderr, "Runtime Error: Invalid operands for arithmetic operation. Expected numbers, got '%s' and '%s'.\n", sl, sr); \
+                return_value = EXIT_FAILURE; \
+                run = false; \
+            } \
         } while(0)
 
         // native comparison operations
-        #define COMPARE_OP(op) do {                                                     \
-            const term_t l = regs[instr.b];                                             \
-            const term_t r = regs[instr.c];                                             \
-                                                                                        \
-            if (IS_INT(l) && IS_INT(r)) {                                               \
-                regs[instr.a] = MAKE_BOOL(GET_INT(l) op GET_INT(r));                    \
-            }                                                                           \
-            else if (IS_NUMERIC(l) && IS_NUMERIC(r)) {                                  \
-                regs[instr.a] = MAKE_BOOL(get_float(l) op get_float(r));                \
-            }                                                                           \
-            else {                                                                      \
-                fprintf(stderr, "Runtime Error: Type mismatch in comparison. Expected numbers, got '%s' and '%s'.\n", \
-                        GET_TAG_TYPE(l), GET_TAG_TYPE(r));                              \
-                return_value = EXIT_FAILURE;                                            \
-                run = false;                                                            \
+        #define COMPARE_OP(op) do { \
+            const term_t l = regs[instr.b]; \
+            const term_t r = regs[instr.c]; \
+            \
+            if (IS_INT(l) && IS_INT(r)) { \
+                regs[instr.a] = MAKE_BOOL(GET_INT(l) op GET_INT(r)); \
+            } \
+            else if (IS_NUMERIC(l) && IS_NUMERIC(r)) { \
+                regs[instr.a] = MAKE_BOOL(get_float(l) op get_float(r)); \
+            } \
+            else { \
+                char *sl = term_to_string(vm_ptr->env_ptr, l, 3, NULL); \
+                char *sr = term_to_string(vm_ptr->env_ptr, r, 3, NULL); \
+                fprintf(stderr, "Runtime Error: Type mismatch in comparison. Expected numbers, got '%s' and '%s'.\n", sl, sr);                                                        \
+                return_value = EXIT_FAILURE; \
+                run = false; \
             }                                                                           \
         } while(0)
 
+        // ADD dst_reg, lhs_reg, rhs_reg
         case INSTR_ADD:
         {
             BINARY_OP(+);
             break;
         }
 
+        // SUB dst_reg, lhs_reg, rhs_reg
         case INSTR_SUB:
         {
             BINARY_OP(-);
             break;
         }
 
+        // MUL dst_reg, lhs_reg, rhs_reg
         case INSTR_MUL:
         {
             BINARY_OP(*);
             break;
         }
 
+        // DIV dst_reg, lhs_reg, rhs_reg
         case INSTR_DIV:
         {
-            const term_t l = regs[instr.b], r = regs[instr.c];
+            const int dst_reg = instr.a;
+            const int lhs_reg = instr.b;
+            const int rhs_reg = instr.c;
+
+            const term_t l = regs[lhs_reg], r = regs[rhs_reg];
 
             if (IS_INT(l) && IS_INT(r))
             {
@@ -2722,7 +3123,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[instr.a] = MAKE_INT(GET_INT(l) / denominator);
+                regs[dst_reg] = MAKE_INT(GET_INT(l) / denominator);
             }
             else
             {
@@ -2733,14 +3134,19 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[instr.a] = make_float(get_float(l) / denominator);
+                regs[dst_reg] = make_float(get_float(l) / denominator);
             }
             break;
         }
 
+        // MOD dst_reg, lhs_reg, rhs_reg
         case INSTR_MOD:
         {
-            const term_t l = regs[instr.b], r = regs[instr.c];
+            const int dst_reg = instr.a;
+            const int lhs_reg = instr.b;
+            const int rhs_reg = instr.c;
+
+            const term_t l = regs[lhs_reg], r = regs[rhs_reg];
 
             if (IS_INT(l) && IS_INT(r)) {
                 const int64_t denominator = GET_INT(r);
@@ -2750,7 +3156,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[instr.a] = MAKE_INT(GET_INT(l) % denominator);
+                regs[dst_reg] = MAKE_INT(GET_INT(l) % denominator);
             }
             else
             {
@@ -2763,27 +3169,38 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[instr.a] = make_float(fmod(numerator, denominator));
+                regs[dst_reg] = make_float(fmod(numerator, denominator));
             }
             break;
         }
 
+        // NEG dst_reg, src_reg
         case INSTR_NEG:
         {
-            const term_t v = regs[instr.b];
-            if (IS_INT(v)) regs[instr.a] = MAKE_INT(-GET_INT(v));
-            else regs[instr.a] = make_float(-get_float(v));
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+
+            const term_t v = regs[src_reg];
+
+            if (IS_INT(v))
+                regs[src_reg] = MAKE_INT(-GET_INT(v));
+            else
+                regs[src_reg] = make_float(-get_float(v));
+
             break;
         }
 
+        // NOT dst_reg, src_reg
         case INSTR_NOT:
         {
-            const term_t v = regs[instr.b];
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+
+            const term_t v = regs[src_reg];
             
             if (IS_BOOL(v))
-            {
-                regs[instr.a] = MAKE_BOOL(GET_BOOL(v) == 0);
-            }
+                regs[dst_reg] = MAKE_BOOL(GET_BOOL(v) == 0);
+
             else
             {
                 fprintf(stderr, "Fatal Error: Operator 'not' expects a boolean.\n");
@@ -2793,21 +3210,28 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             break;
         }
 
+        // LE dst_reg, lhs_reg, rhs_reg
         case INSTR_LE:
         {
             COMPARE_OP(<);
             break;
         }
+
+        // LEQ dst_reg, lhs_reg, rhs_reg
         case INSTR_LEQ:
         {
             COMPARE_OP(<=);
             break;
         }
+
+        // GE dst_reg, lhs_reg, rhs_reg
         case INSTR_GE:
         {
             COMPARE_OP(>);
             break;
         }
+
+        // GEQ dst_reg, lhs_reg, rhs_reg
         case INSTR_GEQ:
         {
             COMPARE_OP(>=);
@@ -2817,59 +3241,82 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
         #undef BINARY_OP
         #undef COMPARE_OP
 
+        // EQUAL dst_reg, lhs_reg, rhs_reg
         case INSTR_EQUAL:
         {
-            regs[instr.a] = MAKE_BOOL(term_equals(regs[instr.b], regs[instr.c]));
+            const int dst_reg = instr.a;
+            const int lhs_reg = instr.b;
+            const int rhs_reg = instr.c;
+
+            regs[dst_reg] = MAKE_BOOL(term_equals(regs[lhs_reg], regs[rhs_reg]));
             break;
         }
 
+        // NOT_EQUAL dst_reg, lhs_reg, rhs_reg
         case INSTR_NOT_EQUAL:
         {
-            regs[instr.a] = MAKE_BOOL(!term_equals(regs[instr.b], regs[instr.c]));
+            const int dst_reg = instr.a;
+            const int lhs_reg = instr.b;
+            const int rhs_reg = instr.c;
+
+            regs[dst_reg] = MAKE_BOOL(!term_equals(regs[lhs_reg], regs[rhs_reg]));
             break;
         }
 
+        // ALLOC dst_reg, sym_id, arity, src_offset
         case INSTR_ALLOC:
         {
+            const int dst_reg = instr.a;
+            const int sym_id = instr.b;
+            const int arity = instr.c;
+            const int src_offset = instr.d;
+
             vm_ptr->sp = sp;
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + instr.c * sizeof(term_t));
-            h->id = (sym_id_t)instr.b;
-            h->arity = instr.c;
+            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
+            h->id = (sym_id_t)sym_id;
+            h->arity = arity;
 
-            for (int i = 0; i < instr.c; i++)
-                h->children[i] = regs[instr.d + i];
+            for (int i = 0; i < arity; i++)
+                h->children[i] = regs[src_offset + i];
 
-            regs[instr.a] = (term_t)h;
+            regs[dst_reg] = (term_t)h;
             break;
         }
 
+        // CLOSURE dst_reg, label, upval_count, upval_start
         case INSTR_CLOSURE:
         {
+            const int dst_reg = instr.a;
+            const int label = instr.b;
+            const int upval_count = instr.c;
+            const int upval_start = instr.d;
+
             vm_ptr->sp = sp;
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (instr.c + 1) * sizeof(term_t));
+            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (upval_count + 1) * sizeof(term_t));
             h->id = SYM_CLOSURE;
-            h->arity = instr.c + 1;
-            h->children[0] = MAKE_INT(instr.b);
+            h->arity = upval_count + 1;
+            h->children[0] = MAKE_INT(label);
 
-            for (int i = 0; i < instr.c; i++)
-                h->children[i + 1] = regs[instr.d + i];
+            for (int i = 0; i < upval_count; i++)
+                h->children[i + 1] = regs[upval_start + i];
 
-            regs[instr.a] = (term_t)h;
+            regs[dst_reg] = (term_t)h;
             break;
         }
 
+        // SUBST dst_reg, src_reg, atom_reg, repl_reg
         case INSTR_SUBST:
         {
-            // instr.a = dst register
-            // instr.b = src register
-            // instr.c = symbol atom to find
-            // instr.d = replacement value
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+            const int atom_reg = instr.c;
+            const int repl_reg = instr.d;
 
-            const term_t tree = regs[instr.b];
-            const term_t toReplace = resolve_indirection(regs[instr.c]);
-            const term_t replacement = regs[instr.d];
+            const term_t tree = regs[src_reg];
+            const term_t toReplace = resolve_indirection(regs[atom_reg]);
+            const term_t replacement = regs[repl_reg];
 
             if (!IS_PTR(toReplace)) // only atoms can be substitued
             {
@@ -2880,27 +3327,28 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             }
 
             const sym_id_t toReplaceId = AS_HEADER(toReplace)->id;
-            regs[instr.a] = perform_substitution(tree, toReplaceId, replacement);
+            regs[dst_reg] = perform_substitution(tree, toReplaceId, replacement);
 
             break;
         }
 
-        // gets a value from a closure env
+        // GET_UPVALUE dst_reg, upval_index
         case INSTR_GET_UPVALUE:
         {
+            const int dst_reg = instr.a;
+            const int upval_index = instr.b;
+
             const term_t cl = frames[fp - 1].closure_env;
-            regs[instr.a] = AS_HEADER(cl)->children[instr.b + 1];
+            regs[dst_reg] = AS_HEADER(cl)->children[upval_index + 1];
             break;
         }
 
+        // MK_RECORD dst_reg, pair_count, start_reg
         case INSTR_MK_RECORD:
         {
-            // instr.b = count
-            // instr.c = start
-
-            const int total_regs = instr.b;
+            const int dst_reg = instr.a;
+            const int pair_count = instr.b / 2;     // total regs ÷ 2
             const int start_reg = instr.c;
-            const int pair_count = total_regs / 2;
 
             record_field_t pairs[pair_count]; // VLA not to allocate memory onto the stack.
 
@@ -2921,18 +3369,19 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                 pairs[i].value = val_term;
             }
 
-            regs[instr.a] = make_record_from_pairs(pairs, pair_count);
+            regs[dst_reg] = make_record_from_pairs(pairs, pair_count);
             break;
         }
 
+        // EXTEND_RECORD dst_reg, base_reg, ext_count, ext_start
         case INSTR_EXTEND_RECORD:
         {
-            // instr.a = dst
-            // instr.b = base record reg
-            // instr.c = count (extension)
-            // instr.d = extension start reg
+            const int dst_reg = instr.a;
+            const int base_reg = instr.b;
+            const int ext_count = instr.c;
+            const int ext_start = instr.d;
 
-            const term_t base = resolve_indirection(regs[instr.b]);
+            const term_t base = resolve_indirection(regs[base_reg]);
 
             if (!IS_PTR(base) || AS_HEADER(base)->id != SYM_RECORD_NATIVE)
             {
@@ -2946,9 +3395,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int base_arity = base_header->arity;
             const int base_pair_count = base_arity / 2;
 
-            const int ext_total_regs = instr.c;
+            const int ext_total_regs = ext_count;
             const int ext_pair_count = ext_total_regs / 2;
-            const int ext_start = instr.d;
 
             const int total_pairs = base_pair_count + ext_pair_count;
 
@@ -2977,18 +3425,21 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                 pairs[base_pair_count + i].value = val_term;
             }
 
-            regs[instr.a] = make_record_from_pairs(pairs, total_pairs);
+            regs[dst_reg] = make_record_from_pairs(pairs, total_pairs);
             break;
         }
 
+        // GET_FIELD dst_reg, record_reg, field_id, fail_label
         case INSTR_GET_FIELD:
         {
-            // instr.b = record reg
-            // instr.c = field id
-            // instr.d = fail label
+            const int dst_reg = instr.a;
+            const int record_reg = instr.b;
+            const int field_id = instr.c;
+            const int fail_label = instr.d;
 
-            const term_t t = resolve_indirection(regs[instr.b]);
-            const sym_id_t needle = (sym_id_t)instr.c;
+            const term_t t = resolve_indirection(regs[record_reg]);
+            const sym_id_t needle = (sym_id_t)field_id;
+
             bool found = false;
 
             if (IS_PTR(t))
@@ -3002,7 +3453,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                         const sym_id_t key = (sym_id_t)GET_INT(h->children[i * 2]);
                         if (key == needle)
                         {
-                            regs[instr.a] = h->children[(i * 2) + 1];
+                            regs[dst_reg] = h->children[(i * 2) + 1];
                             found = true;
                             break;
                         }
@@ -3011,201 +3462,39 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             }
 
             if (!found)
-                pc = labels[instr.d];
+                pc = labels[fail_label];
+
             break;
         }
 
+        // CAST dst_reg, src_reg, target_type_id, source_type_id
         case INSTR_CAST:
         {
-            // instr.a = dst register
-            // instr.b = src register
-            // instr.c = target type id
-            // instr.d = source type id (expected type of the entry to cast)
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+            const int target_type_id = instr.c;
+            const int source_type_id = instr.d;
 
-            const term_t src = resolve_indirection(regs[instr.b]);
-            const sym_id_t target_type = (sym_id_t)instr.c;
-            const sym_id_t source_type = (sym_id_t)instr.d;
-
-            // Check if the expected types are consistent.
-            bool type_match = false;
-
-            if (source_type == SYM_INT_NATIVE)
-                type_match = IS_INT(src);
-
-            else if (source_type == SYM_CHAR_NATIVE)
-                type_match = IS_CHAR(src);
-
-            else if (IS_PTR(src))
-                type_match = (AS_HEADER(src)->id == source_type);
-
-            if (!type_match)
+            if (unlikely(instruction_cast(
+                vm_ptr, regs, dst_reg, src_reg, target_type_id, source_type_id) != EXIT_SUCCESS))
             {
-                // Mismatch between compiler expectation and runtime reality.
-                regs[instr.a] = make_cast_result(vm_ptr->env_ptr, false, MAKE_INT(0)); 
+                return_value = EXIT_FAILURE;
+                run = false;
                 break;
             }
 
-            term_t result_val = MAKE_INT(0); // default value when success = false
-            bool success = true;
-
-            if (source_type == SYM_INT_NATIVE)
-            {
-                int64_t val = GET_INT(src);
-
-                // Int to Float
-                if (target_type == SYM_FLOAT_NATIVE)
-                {
-                    result_val = make_float((double)val);
-                }
-
-                // Int to Char
-                else if (target_type == SYM_CHAR_NATIVE)
-                {
-                    if (val < 0 || val > 0x10FFFF) success = false; // Invalid Unicode code point
-                    else result_val = MAKE_CHAR((uint32_t)val);
-                }
-
-                // Int to String
-                else if (target_type == SYM_STRING_NATIVE)
-                {
-                    char buffer[64];
-                    snprintf(buffer, 64, "%lld", (long long)val);
-                    result_val = make_string(buffer);
-                }
-
-                // Int to Int
-                else if (target_type == SYM_INT_NATIVE) {
-                    result_val = src;
-                }
-
-                // Error
-                else
-                {
-                    success = false;
-                }
-            }
-
-            else if (source_type == SYM_FLOAT_NATIVE)
-            {
-                double val = get_float(src);
-
-                // Float to Int
-                if (target_type == SYM_INT_NATIVE)
-                {
-                    if (isnan(val) || isinf(val)) success = false;
-                    else if (val > (double)INT64_MAX || val < (double)INT64_MIN) success = false;
-                    else result_val = MAKE_INT((int64_t)val);
-                }
-
-                // Float to String
-                else if (target_type == SYM_STRING_NATIVE)
-                {
-                    char buffer[64];
-                    snprintf(buffer, 64, "%.*g", DBL_DIG, val);
-                    result_val = make_string(buffer);
-                }
-
-                // Float to Float
-                else if (target_type == SYM_FLOAT_NATIVE)
-                {
-                    result_val = src;
-                }
-
-                // Error
-                else
-                {
-                    success = false;
-                }
-            }
-
-            else if (source_type == SYM_CHAR_NATIVE)
-            {
-                uint32_t val = GET_CHAR(src);
-
-                // Char to Int
-                if (target_type == SYM_INT_NATIVE)
-                {
-                    result_val = MAKE_INT((int64_t)val);
-                }
-
-                // Char to String
-                else if (target_type == SYM_STRING_NATIVE)
-                {
-                    char buffer[2] = { (char)val, '\0' };
-                    result_val = make_string(buffer);
-                }
-
-                // Char to Char
-                else if (target_type == SYM_CHAR_NATIVE)
-                {
-                    result_val = src;
-                }
-
-                // Error
-                else
-                {
-                    success = false;
-                }
-            }
-
-            else if (source_type == SYM_STRING_NATIVE)
-            {
-                const char *str = get_string_ptr(src);
-
-                // String to Int
-                if (target_type == SYM_INT_NATIVE)
-                {
-                    char *endptr;
-                    long long res = strtoll(str, &endptr, 10);
-
-                    if (*str != '\0' && *endptr == '\0') result_val = MAKE_INT(res);
-                    else success = false;
-                }
-
-                // String to Float
-                else if (target_type == SYM_FLOAT_NATIVE)
-                {
-                    char *endptr;
-                    double res = strtod(str, &endptr);
-
-                    if (*str != '\0' && *endptr == '\0') result_val = make_float(res);
-                    else success = false;
-                }
-
-                // String to Char
-                else if (target_type == SYM_CHAR_NATIVE)
-                {
-                    if (str[0] != '\0' && str[1] == '\0') result_val = MAKE_CHAR((uint32_t)str[0]);
-                    else success = false;
-                }
-
-                // String to String
-                else if (target_type == SYM_STRING_NATIVE)
-                {
-                    result_val = src;
-                }
-
-                else
-                {
-                    success = false;
-                }
-            }
-
-            else 
-            {
-                success = false;
-            }
-
-            // The result is a record { Success = (0 | 1), Value = <converted value or default> }
-            regs[instr.a] = make_cast_result(vm_ptr->env_ptr, success, success ? result_val : MAKE_INT(0));
             break;
         }
 
-        /// Optimized `strcat` for string concatenation. Mainly used for string interpolation.
+        // STR_CAT dst_reg, lhs_reg, rhs_reg
         case INSTR_STR_CAT:
         {
-            const char *s1 = get_string_ptr(regs[instr.b]);
-            const char *s2 = get_string_ptr(regs[instr.c]);
+            const int dst_reg = instr.a;
+            const int lhs_reg = instr.b;
+            const int rhs_reg = instr.c;
+
+            const char *s1 = get_string_ptr(regs[lhs_reg]);
+            const char *s2 = get_string_ptr(regs[rhs_reg]);
 
             const size_t len1 = strlen(s1);
             const size_t len2 = strlen(s2);
@@ -3224,29 +3513,35 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             buffer[total_len] = '\0';
 
             term->children[0] = (term_t)buffer;
-            regs[instr.a] = (term_t)term;
+            regs[dst_reg] = (term_t)term;
 
             break;
         }
 
+        // PPSHOW dst_reg, src_reg
         case INSTR_PPSHOW:
         {
-            const char *s = term_to_string(vm_ptr->env_ptr, regs[instr.b], 0, NULL);
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+
+            const char *s = term_to_string(vm_ptr->env_ptr, regs[src_reg], 0, NULL);
             term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(term_t));
 
             term->id = SYM_STRING_NATIVE;
             term->arity = 0;
 
             term->children[0] = (term_t)s;
-            regs[instr.a] = (term_t)term;
+            regs[dst_reg] = (term_t)term;
 
             break;
         }
 
-        // print a pretty printed version of an "expression" from the VM for debbuging purpose
+        // PRINT str_reg
         case INSTR_PRINT:
         {
-            const char *s = get_string_ptr(regs[instr.a]);
+            const int str_reg = instr.a;
+
+            const char *s = get_string_ptr(regs[str_reg]);
             fputs(s, stdout);
             break;
             // io_print_term(vm_ptr->env_ptr, regs[instr.a]);
@@ -3340,7 +3635,7 @@ int main(int argc, char *argv[])
     const int entry_point = <ENTRY-POINT>;
     const int exit_value = run_vm(vm_ptr, entry_point, args_list);
 
-    destroy_env(env_ptr);
+    //destroy_env(env_ptr);
     destroy_vm(vm_ptr);
 
     return exit_value;
