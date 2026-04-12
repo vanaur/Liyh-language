@@ -22,14 +22,21 @@ module public BytecodeCompiler =
 
         let mapCTypeToRclType (ctype: CType) =
             match ctype with
-            | CType.Int64 -> RclType.Int64
-            | CType.Int32 -> RclType.Int32
-            | CType.Float64 -> RclType.Float64
-            | CType.Float32 -> RclType.Float32
-            | CType.Char -> RclType.Char
-            | CType.String -> RclType.String
-            | CType.Pointer _ -> RclType.Pointer
-            | CType.Void -> RclType.Void
+            | CType.UInt8 -> RclType.UINT8
+            | CType.Int8 -> RclType.INT8
+            | CType.UInt16 -> RclType.UINT16
+            | CType.Int16 -> RclType.INT16
+            | CType.UInt32 -> RclType.UINT32
+            | CType.Int32 -> RclType.INT32
+            | CType.UInt64 -> RclType.UINT64
+            | CType.Int64 -> RclType.INT64
+            | CType.Float32 -> RclType.FLOAT32
+            | CType.Float64 -> RclType.FLOAT64
+            | CType.LongDouble -> RclType.LONGDOUBLE
+            | CType.Char -> RclType.CHAR
+            | CType.String -> RclType.STRING
+            | CType.Pointer _ -> RclType.PTR
+            | CType.Void -> RclType.VOID
 
         let flatBindings =
             globalFFIBindings

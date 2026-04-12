@@ -88,14 +88,21 @@ module public BindingRCL =
 
 [<RequireQualifiedAccess>]
 type public RclType =
-    | Int64 = 0
-    | Int32 = 1
-    | Float64 = 2
-    | Float32 = 3
-    | Char = 4
-    | String = 5
-    | Pointer = 6
-    | Void = 7
+    | UINT8 = 0         // uint8
+    | INT8 = 1          // int8
+    | UINT16 = 2        // uint16
+    | INT16 = 3         // int16
+    | UINT32 = 4        // uint32
+    | INT32 = 5         // int32
+    | UINT64 = 6        // uint64
+    | INT64 = 7         // int64
+    | FLOAT32 = 8       // float32
+    | FLOAT64 = 9       // float64
+    | LONGDOUBLE = 10   // long double (precision depends on architecture)
+    | CHAR = 11         // char (32 bits unicode in Liyh)
+    | STRING = 12       // string (ptr)
+    | PTR = 13          // void* (opaque pointer / buffer)
+    | VOID = 14         // void
 
 module public RclType =
 

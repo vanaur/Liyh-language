@@ -115,14 +115,21 @@ typedef uint32_t sym_id_t;
 /// C types for the FFI.
 enum rcl_type
 {
-    RCL_TYPE_INT64,     // int64
-    RCL_TYPE_INT32,     // int32
-    RCL_TYPE_FLOAT64,   // float64
-    RCL_TYPE_FLOAT32,   // float32
-    RCL_TYPE_CHAR,      // char (32 bits unicode in Liyh)
-    RCL_TYPE_STRING,    // string (ptr)
-    RCL_TYPE_PTR,       // void* (opaque pointer / buffer)
-    RCL_TYPE_VOID,      // void
+    RCL_TYPE_UINT8,         // uint8
+    RCL_TYPE_INT8,          // int8
+    RCL_TYPE_UINT16,        // uint16
+    RCL_TYPE_INT16,         // int16
+    RCL_TYPE_UINT32,        // uint32
+    RCL_TYPE_INT32,         // int32
+    RCL_TYPE_UINT64,        // uint64
+    RCL_TYPE_INT64,         // int64
+    RCL_TYPE_FLOAT32,       // float32
+    RCL_TYPE_FLOAT64,       // float64
+    RCL_TYPE_LONGDOUBLE,    // long double (precision depends on architecture)
+    RCL_TYPE_CHAR,          // char (32 bits unicode in Liyh)
+    RCL_TYPE_STRING,        // string (ptr)
+    RCL_TYPE_PTR,           // void* (opaque pointer / buffer)
+    RCL_TYPE_VOID,          // void
 };
 
 /// Given a RCL type, return the associated FFI type representation for LibFFI.
@@ -130,10 +137,17 @@ static ffi_type *rcl_type_to_ffi_type(const enum rcl_type rcl_ty)
 {
     switch (rcl_ty)
     {
-        case RCL_TYPE_INT64: return &ffi_type_sint64;
+        case RCL_TYPE_UINT8: return &ffi_type_uint8;
+        case RCL_TYPE_INT8: return &ffi_type_sint8;
+        case RCL_TYPE_UINT16: return &ffi_type_uint16;
+        case RCL_TYPE_INT16: return &ffi_type_sint16;
+        case RCL_TYPE_UINT32: return &ffi_type_uint32;
         case RCL_TYPE_INT32: return &ffi_type_sint32;
-        case RCL_TYPE_FLOAT64: return &ffi_type_double;
+        case RCL_TYPE_UINT64: return &ffi_type_uint64;
+        case RCL_TYPE_INT64: return &ffi_type_sint64;
         case RCL_TYPE_FLOAT32: return &ffi_type_float;
+        case RCL_TYPE_FLOAT64: return &ffi_type_double;
+        case RCL_TYPE_LONGDOUBLE: return &ffi_type_longdouble;
         case RCL_TYPE_CHAR: return &ffi_type_uint32;
         case RCL_TYPE_STRING: return &ffi_type_pointer;
         case RCL_TYPE_PTR: return &ffi_type_pointer;
@@ -146,15 +160,21 @@ static const char *rcl_type_name(enum rcl_type type)
 {
     switch (type)
     {
-        case RCL_TYPE_INT64: return "int64";
+        case RCL_TYPE_UINT8: return "uint8";
+        case RCL_TYPE_INT8: return "int8";
+        case RCL_TYPE_UINT16: return "uint16";
+        case RCL_TYPE_INT16: return "int16";
+        case RCL_TYPE_UINT32: return "uint32";
         case RCL_TYPE_INT32: return "int32";
-        case RCL_TYPE_FLOAT64: return "float64";
+        case RCL_TYPE_UINT64: return "uint64";
+        case RCL_TYPE_INT64: return "int64";
         case RCL_TYPE_FLOAT32: return "float32";
+        case RCL_TYPE_FLOAT64: return "float64";
+        case RCL_TYPE_LONGDOUBLE: return "longdouble";
         case RCL_TYPE_CHAR: return "char";
         case RCL_TYPE_STRING: return "string";
         case RCL_TYPE_PTR: return "ptr";
         case RCL_TYPE_VOID: return "void";
-        default: return "<unknown-type>";
     }
 }
 
@@ -1747,7 +1767,6 @@ static inline int instruction_call_ffi(
     const int args_start
 )
 {
-
     if (ffi_index < 0 || ffi_index >= (int)vm_ptr->env_ptr->ffi_count)
     {
         fprintf(stderr, "Fatal error: Invalid FFI index: %d.\n", ffi_index);
@@ -1758,8 +1777,15 @@ static inline int instruction_call_ffi(
     const size_t arity = info->arity;
 
     union ffi_data {
+        uint64_t u64;
         int64_t i64;
+        uint32_t u32;
         int32_t i32;
+        uint16_t u16;
+        int16_t i16;
+        uint8_t u8;
+        int8_t i8;
+        long double ld;
         double f64;
         float f32;
         uint32_t c;
@@ -1792,6 +1818,83 @@ static inline int instruction_call_ffi(
 
         switch (info->arguments_types[arg_index])
         {
+            case RCL_TYPE_UINT8:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].u8 = (uint8_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_INT8:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].i8 = (int8_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_UINT16:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].u16 = (uint16_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_INT16:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].i16 = (int16_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_UINT32:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].u32 = (uint32_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_INT32:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].i32 = (int32_t)GET_INT(arg_term);
+                break;
+            }
+
+            case RCL_TYPE_UINT64:
+            {
+                if (!IS_INT(arg_term))
+                {
+                    has_arg_error = true;
+                    break;
+                }
+                arg_values[arg_index].u64 = (uint64_t)GET_INT(arg_term);
+                break;
+            }
+
             case RCL_TYPE_INT64:
             {
                 if (!IS_INT(arg_term))
@@ -1803,19 +1906,21 @@ static inline int instruction_call_ffi(
                 break;
             }
 
-            case RCL_TYPE_INT32:
+            case RCL_TYPE_LONGDOUBLE:
             {
-                if (!IS_INT(arg_term)) {
+                if (AS_HEADER(arg_term)->id!= SYM_FLOAT_NATIVE)
+                {
                     has_arg_error = true;
                     break;
                 }
-                arg_values[arg_index].i32 = (int32_t)GET_INT(arg_term);
+                arg_values[arg_index].ld = (long double)get_float(arg_term);
                 break;
             }
 
             case RCL_TYPE_FLOAT64:
             {
-                if (AS_HEADER(arg_term)->id != SYM_FLOAT_NATIVE) {
+                if (AS_HEADER(arg_term)->id!= SYM_FLOAT_NATIVE)
+                {
                     has_arg_error = true;
                     break;
                 }
@@ -1825,7 +1930,8 @@ static inline int instruction_call_ffi(
 
             case RCL_TYPE_FLOAT32:
             {
-                if (AS_HEADER(arg_term)->id != SYM_FLOAT_NATIVE) {
+                if (AS_HEADER(arg_term)->id != SYM_FLOAT_NATIVE)
+                {
                     has_arg_error = true;
                     break;
                 }
@@ -1835,7 +1941,8 @@ static inline int instruction_call_ffi(
 
             case RCL_TYPE_CHAR:
             {
-                if (!IS_CHAR(arg_term)) {
+                if (!IS_CHAR(arg_term))
+                {
                     has_arg_error = true;
                     break;
                 }
@@ -1856,13 +1963,6 @@ static inline int instruction_call_ffi(
 
             case RCL_TYPE_PTR:
             {
-                // We distinguish between a few types of pointers:
-                //
-                //  - native buffers
-                //  - native pointers (opaques)
-                //  - strings
-                //
-
                 if (IS_PTR(arg_term))
                 {
                     const sym_id_t id = AS_HEADER(arg_term)->id;
@@ -1942,15 +2042,56 @@ static inline int instruction_call_ffi(
 
     switch (info->return_type)
     {
-        case RCL_TYPE_INT64:
+        case RCL_TYPE_UINT8:
         {
-            regs[dst_reg] = MAKE_INT(*(int64_t*)raw_result);
+            regs[dst_reg] = MAKE_INT(*(uint8_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_INT8:
+        {
+            regs[dst_reg] = MAKE_INT(*(int8_t*)raw_result);
+            break;
+        }
+        case RCL_TYPE_UINT16:
+        {
+            regs[dst_reg] = MAKE_INT(*(uint16_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_INT16:
+        {
+            regs[dst_reg] = MAKE_INT(*(int16_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_UINT32:
+        {
+            regs[dst_reg] = MAKE_INT(*(uint32_t*)raw_result);
             break;
         }
 
         case RCL_TYPE_INT32:
         {
             regs[dst_reg] = MAKE_INT(*(int32_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_UINT64:
+        {
+            regs[dst_reg] = MAKE_INT(*(uint64_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_INT64:
+        {
+            regs[dst_reg] = MAKE_INT(*(int64_t*)raw_result);
+            break;
+        }
+
+        case RCL_TYPE_LONGDOUBLE:
+        {
+            regs[dst_reg] = make_float((double)*(long double*)raw_result);
             break;
         }
 
