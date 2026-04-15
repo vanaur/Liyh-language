@@ -16,6 +16,7 @@ module Program =
             | [<MainCommand; ExactlyOnce>] File of string
             | [<AltCommandLine("-o")>] Output of path: string
             | [<AltCommandLine("-O")>] Optimize
+            | [<AltCommandLine("-s")>] Stfu
             | Emit of file: string
 
             interface IArgParserTemplate with
@@ -25,11 +26,13 @@ module Program =
                     | Output _ -> "The path for the compiled executable (default: same as input)."
                     | Optimize -> "Activate the optimizations."
                     | Emit _ -> "Write the compiled bytecode in the given file for textual visualization."
+                    | Stfu -> "Displays only the necessary information."
 
         type ExecuteArgs =
             | [<MainCommand; ExactlyOnce>] File of string
             | [<AltCommandLine("-o")>] Optimize
             | [<CustomCommandLine("--args")>] ProgramArgs of string list
+            | [<AltCommandLine("-s")>] Stfu
 
             interface IArgParserTemplate with
                 member this.Usage =
@@ -37,6 +40,7 @@ module Program =
                     | File _ -> "The root file of the program to run."
                     | Optimize -> "Activate the optimizations before running."
                     | ProgramArgs _ -> "Arguments to pass to the Liyh program's main function."
+                    | Stfu -> "Displays only the necessary information."
 
         type ExplainArgs =
             | [<MainCommand; ExactlyOnce>] Code of string
@@ -67,6 +71,16 @@ module Program =
                     | Dummy -> ""
 
         type ServerArgs =
+            | Stdio
+            | [<Hidden>] Dummy
+
+            interface IArgParserTemplate with
+                member this.Usage =
+                    match this with
+                    | Stdio -> "Use standard input/output for LSP communication (used by VS Code)."
+                    | Dummy -> ""
+
+        type Init =
             | [<Hidden>] Dummy
 
             interface IArgParserTemplate with
@@ -74,7 +88,7 @@ module Program =
                     match this with
                     | Dummy -> ""
 
-        type Init =
+        type VersionArgs =
             | [<Hidden>] Dummy
 
             interface IArgParserTemplate with
@@ -91,7 +105,7 @@ module Program =
             | Repl of ParseResults<ReplArgs>
             | Server of ParseResults<ServerArgs>
             | Init of ParseResults<Init>
-            | [<AltCommandLine("-v")>] Version
+            | [<AltCommandLine("-v")>] Version of ParseResults<VersionArgs>
 
             interface IArgParserTemplate with
                 member this.Usage =
@@ -103,7 +117,7 @@ module Program =
                     | Repl _ -> "Open the interactive environment."
                     | Server _ -> "Activate the LSP server."
                     | Init _ -> "Generates a new project."
-                    | Version -> "Display the version of the compiler."
+                    | Version _ -> "Display the version of the compiler."
 
         let cliParser = ArgumentParser.Create<CliArguments>(programName = "liyh")
 
@@ -120,6 +134,7 @@ module Program =
             (output: string option)
             (emitBytecode: string option)
             (programArgs: string list)
+            (stfu: bool)
 
             =
 
@@ -190,7 +205,9 @@ module Program =
 
                 | None when run ->
                     let ms = vm.Run(programArgs)
-                    printfn "%s" (showTimeTaken ms)
+
+                    if not stfu then
+                        printfn "%s" (showTimeTaken ms)
 
                 | Some output when not run ->
                     compileTo output
@@ -386,7 +403,7 @@ module Program =
                 let cli = cliParser.Parse(args)
 
                 match cli.GetSubCommand() with
-                | Version ->
+                | Version _ ->
                     printfn "Liyh version: %s" version
                 
                 | Repl _ ->
@@ -408,17 +425,19 @@ module Program =
                     let rootFile = runArgs.GetResult(ExecuteArgs.File)
                     let doOptimize = runArgs.Contains(ExecuteArgs.Optimize)
                     let programArgs = runArgs.GetResult(ExecuteArgs.ProgramArgs, [])
+                    let stfu = runArgs.Contains(ExecuteArgs.Stfu)
 
-                    CompilationProcess.runOrCompile rootFile doOptimize true None None programArgs
+                    CompilationProcess.runOrCompile rootFile doOptimize true None None programArgs stfu
                 
                 | Compile compileArgs ->
                     let rootFile = compileArgs.GetResult(CompileArgs.File)
                     let doOptimize = compileArgs.Contains(CompileArgs.Optimize)
                     let emit = compileArgs.TryGetResult(CompileArgs.Emit)
                     let output = compileArgs.TryGetResult(CompileArgs.Output)
+                    let stfu = compileArgs.Contains(CompileArgs.Stfu)
 
-                    CompilationProcess.runOrCompile rootFile doOptimize false output emit []
-                
+                    CompilationProcess.runOrCompile rootFile doOptimize false output emit [] stfu
+
                 | Explain explainArgs ->
                     let code = explainArgs.GetResult(ExplainArgs.Code)
                     printfn "Code Error Explain not yet implemented."
