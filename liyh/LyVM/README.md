@@ -15,7 +15,7 @@ LyVM is an attempt for a virtual machine for Liyh. The runtime and the library a
 
  - The VM is register-based and does not have an explicit stack (or, similarly, a stack maps each register, but the stack is not accessible as such). The number of registers is arbitrary, fixed for each case by the compiler (using instruction `reverse`).
  - Integers (`int`) and characters (`char`) are unboxed (using pointer tagging). Integers are of 62 bits size because of pointer tagging.
- - Automatic garbage collection using [bdwgc](https://github.com/bdwgc/bdwgc) (known as Boehm-Demers-Weiser GC). Memory leaks are known to occur (due to the nature of this kind of GC) and performance of memory allocation is acceptable, although there is room for improvement with a generational GC instead.
+ - Automatic Reference Counting (ARC), managed by the VM without the need for intervention from the user or the compiler.
  - Deep adaptive stack frame, up to 256 MB of stack frame allowed. This allows deep recursion and traverse of deep structures.
  - Tailcall optimisation via a `tailcall` instruction.
  - Abstract symbols/constructors (via `alloc` and `atom` instructions) for constructing symbolic data or functional data structures.

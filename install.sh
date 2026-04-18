@@ -75,8 +75,8 @@ install_dependencies() {
             error "Homebrew is required for macOS installation. See https://brew.sh/"
         fi
 
-        if ! brew list libgc >/dev/null 2>&1 || ! brew list libffi >/dev/null 2>&1; then
-            packages="$packages libgc libffi"
+        if ! brew list libffi >/dev/null 2>&1; then
+            packages="$packages libffi"
             needs_install=true
         fi
 
@@ -86,14 +86,14 @@ install_dependencies() {
         fi
         
         # Set flags for Homebrew libraries
-        EXTRA_CFLAGS="-I$(brew --prefix libgc)/include -I$(brew --prefix libffi)/include"
-        EXTRA_LDFLAGS="-L$(brew --prefix libgc)/lib -L$(brew --prefix libffi)/lib"
+        EXTRA_CFLAGS="-I$(brew --prefix libffi)/include"
+        EXTRA_LDFLAGS="-L$(brew --prefix libffi)/lib"
 
     elif [ "$OS" = "linux" ]; then
         # Linux Logic
         if [[ "$DISTRO" == "ubuntu" || "$DISTRO" == "debian" || "$DISTRO_LIKE" == *"debian"* ]]; then
-            if ! dpkg -l | grep -q libgc-dev || ! dpkg -l | grep -q libffi-dev; then
-                packages="$packages libgc-dev libffi-dev"
+            if ! dpkg -l | grep -q libffi-dev; then
+                packages="$packages libffi-dev"
                 needs_install=true
             fi
             if ! command_exists cc; then packages="$packages build-essential"; fi
@@ -104,8 +104,8 @@ install_dependencies() {
             fi
 
         elif [[ "$DISTRO" == "fedora" || "$DISTRO" == "rhel" || "$DISTRO" == "centos" || "$DISTRO_LIKE" == *"fedora"* ]]; then
-            if ! rpm -q gc-devel >/dev/null 2>&1 || ! rpm -q libffi-devel >/dev/null 2>&1; then
-                packages="$packages gc-devel libffi-devel"
+            if ! rpm -q libffi-devel >/dev/null 2>&1; then
+                packages="$packages libffi-devel"
                 needs_install=true
             fi
             if ! command_exists cc; then packages="$packages gcc gcc-c++ make"; fi
@@ -116,8 +116,8 @@ install_dependencies() {
             fi
 
         elif [[ "$DISTRO" == "arch" || "$DISTRO" == "manjaro" ]]; then
-            if ! pacman -Q gc >/dev/null 2>&1 || ! pacman -Q libffi >/dev/null 2>&1; then
-                packages="$packages gc libffi"
+            if ! pacman -Q libffi >/dev/null 2>&1; then
+                packages="$packages libffi"
                 needs_install=true
             fi
             if ! command_exists cc; then packages="$packages base-devel"; fi
@@ -127,7 +127,7 @@ install_dependencies() {
                 sudo pacman -S --noconfirm $packages
             fi
         else
-            warn "Unknown Linux distribution. Please manually install: Boehm GC (libgc), libffi, and a C compiler."
+            warn "Unknown Linux distribution. Please manually install: libffi and a C compiler."
         fi
     fi
 }

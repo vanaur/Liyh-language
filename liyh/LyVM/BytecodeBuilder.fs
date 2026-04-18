@@ -859,7 +859,7 @@ type public VM() =
             | None -> failwith "The program does not present any entry point"
             | Some entryLabel ->
                 let argsArray = Array.ofList programArgs
-                let argsTerm = rcl_make_string_list(env, argsArray.Length, argsArray)
+                let argsTerm = rcl_make_string_list(vm, argsArray.Length, argsArray)
                 let sw = Diagnostics.Stopwatch.StartNew()
 
                 run_vm (vm, entryLabel, argsTerm)
@@ -1012,14 +1012,16 @@ module public AOT =
 
         // Load Program
         appendLine("    size_t prog_size = sizeof(static_program) / sizeof(instr_t);")
-        appendLine("    env_ptr->program = (instr_t*)GC_MALLOC_ATOMIC(prog_size * sizeof(instr_t));")
+        appendLine("    free(env_ptr->program);")
+        appendLine("    env_ptr->program = (instr_t*)malloc(prog_size * sizeof(instr_t));")
         appendLine("    memcpy(env_ptr->program, static_program, sizeof(static_program));")
         appendLine("    env_ptr->program_size = prog_size;")
         appendLine("    env_ptr->program_capacity = prog_size;")
 
         // Load Labels
         appendLine("    size_t labels_count = sizeof(static_labels) / sizeof(int);")
-        appendLine("    env_ptr->labels = (int*)GC_MALLOC_ATOMIC(labels_count * sizeof(int));")
+        appendLine("    free(env_ptr->labels);")
+        appendLine("    env_ptr->labels = (int*)malloc(labels_count * sizeof(int));")
         appendLine("    memcpy(env_ptr->labels, static_labels, sizeof(static_labels));")
         appendLine("    env_ptr->labels_capacity = labels_count;")
 
@@ -1064,12 +1066,11 @@ module public AOT =
 
         let flags =
             [ "-lm"                                 // Link math library (libm)
-              "-lgc"                                // Link Boehm garbage collector
               "-lffi"                               // Link libffi
               "-DEMBEDDED"                          // Define EMBEDDED macro for standalone executable compilation
               if optimize then "-O3"                // Aggressive optimization
-              "-flto"                               // Link-time optimization (whole-program analysis)
-              "-fno-plt"                            // Avoid PLT indirection for shared libraries (faster calls)
+              if optimize then "-flto"              // Link-time optimization (whole-program analysis)
+              if optimize then "-fno-plt"           // Avoid PLT indirection for shared libraries (faster calls)
               if optimize then "-march=native" ]    // Optimize for the current CPU architecture
 
             |> String.concat " "

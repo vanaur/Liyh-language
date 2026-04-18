@@ -18,12 +18,6 @@
 #include <float.h>
 #include <time.h>
 
-#if __has_include(<gc.h>)
-#  include <gc.h>
-#else
-#  error "Boehm GC (gc.h) not found: please install libgc-dev / bdw-gc."
-#endif
-
 #if __has_include(<ffi.h>)
 #   include <ffi.h>
 #else
@@ -103,6 +97,264 @@ typedef uint32_t sym_id_t;
 #define IS_USER_DATA(id)    ((id) < SYM_CHAR_NATIVE)    // identify user defined data
 
 #define INITIAL_CAPACITY 1024 // initial capacity for growing vectors
+
+
+
+// --------------------------------- //
+// ------------ HEADERS ------------ //
+// --------------------------------- //
+
+
+
+// While `term_t` is an "universal type", `term_header_t` is a "specialized term" (we convert from
+// `term_t` to `term_header_t` using the `AS_HEADER` macro). This specialised type allows tree-like
+// structures to be represented in a relatively simple manner (without the need to define unions of
+// algebraic data types). It forms the basis of constructions in Liyh.
+
+
+// This type represents the "header" for "structured terms", it serves as a basis for
+// each high level composed types (symbolic expressions, closures, records, ...)
+typedef struct
+{
+    size_t rc;              // ref count
+
+    sym_id_t id;            // Identify the symbol id
+    uint32_t arity;         // Number of children
+    term_t children[];      // Children array
+
+} term_header_t;
+
+#define AS_HEADER(val)  ((term_header_t *)(val))
+
+
+
+// --------------------------------------------------------- //
+// ------------ AUTOMATIC REFERENCE COUNTING GC ------------ //
+// --------------------------------------------------------- //
+
+
+
+// We use automatic reference counting (ARC) for the memory management of the VM.
+// The memory allocations through this system are done using an arena allocator, and we also use
+// a "free memory list" that store recycled memory from the previous allocations by arity to
+// limitate the memory fragmentation and new allocations, reducing memory usage and improving
+// the overall performances. This is useful for small objects that are created and destroyed in
+// loops, for example when traversing recursive structures, as the memory of the older objects is
+// then used by the new ones, and so on.
+//
+// When a new reference is added, the reference count field in the header (`rc` in `header_term_t`)
+// is incremented, and when a reference is dropped, the count is decremented. When a reference count
+// reaches zero, the object (and its children) is not immediately released, but is added to a "pending queue"
+// to prevent cascading releases and release latencies. The queue is flushed (`drain_queue`), in a non-recursive
+// manner, at the end of each function (during `ret` and `tailcall` instructions)
+
+
+
+#define ARENA_CHUNK_SIZE (1024 * 1024) // 1 Mo
+
+/// Objects with an arity of 0 to 15 are recycled; the others will be recycled when the chunks are released.
+// In practice, it should be rare to encounter such a high arity, which ensures fairly good memory recycling.
+#define MAX_RECYCLED_ARITY 16
+
+/// Chunk of arena memory allocator.
+typedef struct arena_chunk_s
+{
+    struct arena_chunk_s *next;
+    size_t used;
+    size_t capacity;
+    uint8_t data[];     // points to the memory immediately after the header (the actual memory of the chunk)
+} arena_chunk_t;
+
+/// The free node list, used to contain list of unused memory after reference counter reaching 0.
+typedef struct free_node_s
+{
+    struct free_node_s *next;
+} free_node_t;
+
+/// Arena memory allocator. It contains the chunks of allocations as well as a fixed array of recycled memory
+/// for each arity, allowing to use the old memory back without new allocation.
+typedef struct
+{
+    arena_chunk_t *current_chunk;
+    free_node_t *free_lists[MAX_RECYCLED_ARITY];    // An array of free lists, one for each arity.
+} arena_t;
+
+static inline void init_arena(arena_t *arena)
+{
+    memset(arena, 0, sizeof(arena_t));
+}
+
+/// Create a new arena zone.
+static void arena_grow(arena_t *arena, const size_t min_size)
+{
+    const size_t capacity = (min_size > ARENA_CHUNK_SIZE ? min_size : ARENA_CHUNK_SIZE);
+    arena_chunk_t *new_chunk = malloc(sizeof(arena_chunk_t) + capacity);
+
+    new_chunk->next = arena->current_chunk;
+    new_chunk->capacity = capacity;
+    new_chunk->used = 0;
+
+    arena->current_chunk = new_chunk;
+}
+
+/// Using the given arena allocator, allocate memory for an object of given arity.
+static void *arena_alloc_term(arena_t *arena, const size_t arity)
+{
+    // We are looking for recycled blocks fist.
+
+    if (arity < MAX_RECYCLED_ARITY && arena->free_lists[arity])
+    {
+        void *ptr = arena->free_lists[arity];
+        arena->free_lists[arity] = arena->free_lists[arity]->next;
+        return ptr;
+    }
+
+    // Otherwise, we just use the bump arena allocator.
+
+    size_t size = (sizeof(term_header_t) + (arity * sizeof(term_t)));
+    if (size < sizeof(free_node_t)) size = sizeof(free_node_t); // ensure enough memory for at least one node
+
+    size = (size + 7) & ~7; // align on 64 bits (better on 64 bits systems)
+
+    if (!arena->current_chunk || arena->current_chunk->used + size > arena->current_chunk->capacity)
+        arena_grow(arena, size);
+
+    if (!arena->current_chunk)
+        return NULL;
+
+    void *ptr = arena->current_chunk->data + arena->current_chunk->used;
+    arena->current_chunk->used += size;
+
+    return ptr;
+}
+
+/// Releases all the memory of the arena.
+static void arena_free(arena_t *arena)
+{
+    arena_chunk_t *chunk = arena->current_chunk;
+    while (chunk)
+    {
+        arena_chunk_t *next = chunk->next;
+        free(chunk);
+        chunk = next;
+    }
+    arena->current_chunk = NULL;
+}
+
+typedef struct
+{
+    term_t *pending;    // objects for whose rc is 0
+    size_t size;
+    size_t capacity;
+} dec_queue_t;
+
+static void init_queue(dec_queue_t *queue)
+{
+    queue->capacity = INITIAL_CAPACITY;
+    queue->size = 0;
+    queue->pending = malloc(queue->capacity * sizeof(term_t));
+}
+
+static void grow_queue(dec_queue_t *queue)
+{
+    size_t new_capacity = queue->capacity * 2;
+    term_t *new_pending = realloc(queue->pending, new_capacity * sizeof(term_t));
+
+    queue->pending = new_pending;
+    queue->capacity = new_capacity;
+}
+
+static void free_queue(dec_queue_t *queue)
+{
+    free(queue->pending);
+    queue->pending = NULL;
+    queue->capacity = 0;
+    queue->size = 0;
+}
+
+/// Increments the reference count of the given term. If it is not a heap allocated
+/// object, then do nothing (for example, a simple integer is not boxed).
+static __always_inline void rc_increment(term_t obj)
+{
+    if (unlikely(!obj || !IS_PTR(obj)))
+        return; // not an object on the heap
+
+    term_header_t *h = AS_HEADER(obj);
+    h->rc++;
+}
+
+/// Decrements the reference count of the given term. If it is not a heap allocated
+/// object, then do nothing (for example, a simple integer is not boxed). If the reference
+/// count reaches zero, add the object to the pending queue for freeing or recycling.
+static __always_inline void rc_decrement(dec_queue_t *queue, term_t obj)
+{
+    if (!obj || !IS_PTR(obj))
+        return; // not an object on the heap
+
+    term_header_t *h = AS_HEADER(obj);
+
+    if (likely(h->rc > 0))
+    {
+        h->rc--;
+
+        if (h->rc == 0)
+        {
+            if (unlikely(queue->size >= queue->capacity))
+                grow_queue(queue);
+
+            queue->pending[queue->size++] = obj;
+        }
+    }
+}
+
+/// Assigns a refcounted value to a target refcounted value, and handle the reference count of each one.
+/// If one or each of the objects are boxed, then no refcount will occur since it is not necessary.
+static __always_inline void rc_assign(dec_queue_t *queue, term_t *target, term_t new_val)
+{
+    term_t old_val = *target;
+
+    if (old_val == new_val)
+        return;
+
+    rc_increment(new_val);
+    *target = new_val;
+    rc_decrement(queue, old_val);
+}
+
+/// Releases each objects on the pending queue and decrement the refcount of each linked objects.
+/// Note that decreased counters may add to the pending queue, and will be drained for a next cycle.
+static void drain_queue(dec_queue_t *queue, arena_t *arena)
+{
+    while (queue->size > 0)
+    {
+        term_t obj = queue->pending[--queue->size];
+        term_header_t *h = AS_HEADER(obj);
+        uint32_t arity = h->arity;
+
+        // Relase native ressources.
+        if (h->id == SYM_STRING_NATIVE || h->id == SYM_BUFFER_NATIVE)
+        {
+            void *native_ptr = (void *)h->children[0];
+            if (native_ptr) free(native_ptr);
+        }
+
+        // Propagate the refcount to the children.
+        for (uint32_t i = 0; i < h->arity; i++)
+        {
+            term_t child = h->children[i];
+            if (child && IS_PTR(h->children[i]))
+                rc_decrement(queue, h->children[i]);
+        }
+
+        // If the arity is in the bounds, recycle the memory of the dead object for a next use.
+        if (arity < MAX_RECYCLED_ARITY)
+        {
+            free_node_t *dead_node = (free_node_t *)h;
+            dead_node->next = arena->free_lists[arity];
+            arena->free_lists[arity] = dead_node;
+        }
+    }
+}
 
 
 
@@ -490,33 +742,33 @@ typedef struct
 /// Initializes a new VM environment and returns a pointer to it.
 vm_env_t *create_env()
 {
-    vm_env_t *env = (vm_env_t *)GC_MALLOC(sizeof(vm_env_t));
+    vm_env_t *env = (vm_env_t *)calloc(1, sizeof(vm_env_t));
 
     env->program_capacity = INITIAL_CAPACITY;
-    env->program = GC_MALLOC_ATOMIC(env->program_capacity * sizeof(instr_t));
+    env->program = malloc(env->program_capacity * sizeof(instr_t));
     env->program_size = 0;
 
     env->labels_capacity = INITIAL_CAPACITY;
-    env->labels = GC_MALLOC_ATOMIC(env->labels_capacity * sizeof(int));
+    env->labels = malloc(env->labels_capacity * sizeof(int));
     memset(env->labels, -1, env->labels_capacity * sizeof(int));
 
     env->string_pool_capacity = 256;
-    env->string_pool = GC_MALLOC(env->string_pool_capacity * sizeof(char *));
+    env->string_pool = calloc(env->string_pool_capacity, sizeof(char *));
     env->string_pool_count = 0;
 
     env->symbol_pool_count = INITIAL_CAPACITY;
-    env->symbol_pool = GC_MALLOC(env->symbol_pool_count * sizeof(atom_t *));
+    env->symbol_pool = calloc(env->symbol_pool_count, sizeof(atom_t *));
     env->symbol_counter = 0;
 
     env->dispatch_table_capacity = INITIAL_CAPACITY;
-    env->dispatch_table = GC_MALLOC(env->dispatch_table_capacity * sizeof(dispatch_entry_t *));
+    env->dispatch_table = calloc(env->dispatch_table_capacity, sizeof(dispatch_entry_t *));
 
     env->loaded_libs_capacity = 8;
-    env->loaded_libs = GC_MALLOC(env->loaded_libs_capacity * sizeof(rcl_lib_handle));
+    env->loaded_libs = calloc(env->loaded_libs_capacity, sizeof(rcl_lib_handle));
     env->loaded_libs_count = 0;
 
     env->ffi_capacity = INITIAL_CAPACITY;
-    env->ffi_table = GC_MALLOC(env->ffi_capacity * sizeof(struct ffi_info *));
+    env->ffi_table = calloc(env->ffi_capacity, sizeof(struct ffi_info *));
     env->ffi_count = 0;
 
     return env;
@@ -528,37 +780,59 @@ void destroy_env(vm_env_t *env_ptr)
     if (env_ptr == NULL)
         return;
 
+    // Libération du code
+    free(env_ptr->program);
+    free(env_ptr->labels);
+
+    // Libération des chaînes
     for (size_t i = 0; i < env_ptr->string_pool_count; i++)
         free(env_ptr->string_pool[i]);
+    free(env_ptr->string_pool);
 
-    for (size_t i = 0; i < env_ptr->loaded_libs_count; i++)
-    {
+    // Libération des symboles (liste chaînée)
+    for (size_t i = 0; i < env_ptr->symbol_pool_count; i++) {
+        atom_t *curr = env_ptr->symbol_pool[i];
+        while (curr) {
+            atom_t *next = curr->next;
+            free(curr->name);
+            free(curr);
+            curr = next;
+        }
+    }
+    free(env_ptr->symbol_pool);
+
+    // Libération de la dispatch table (liste chaînée)
+    for (size_t i = 0; i < env_ptr->dispatch_table_capacity; i++) {
+        dispatch_entry_t *curr = env_ptr->dispatch_table[i];
+        while (curr) {
+            dispatch_entry_t *next = curr->next;
+            free(curr);
+            curr = next;
+        }
+    }
+    free(env_ptr->dispatch_table);
+
+    // Libération du FFI
+    for (size_t i = 0; i < env_ptr->loaded_libs_count; i++) {
         if (env_ptr->loaded_libs[i])
             RCL_CLOSE_LIB(env_ptr->loaded_libs[i]);
     }
+    free(env_ptr->loaded_libs);
 
-    for (size_t i = 0; i < env_ptr->ffi_count; i++)
-    {
+    for (size_t i = 0; i < env_ptr->ffi_count; i++) {
         if (env_ptr->ffi_table[i])
             free_ffi_info(env_ptr->ffi_table[i]);
     }
+    free(env_ptr->ffi_table);
 
-    env_ptr = NULL;
+    free(env_ptr);
 }
 
 /// Initializes the garbage collector.
 void gc_init()
 {
-    GC_INIT();
-
-    /// Involves less pauses for the GC.
-    GC_set_free_space_divisor(1);
-    
-    // Reasonable initial heap for a language that allocates a lot.
-    GC_expand_hp(64 * 1024 * 1024);  // 64 Mo
-    
-    // Theoretically more suitable for many small objects.
-    GC_enable_incremental();
+    // well, nothing to do! The ARC is autonomous, for now.
+    // but in the future, this function might be useful.
 }
 
 
@@ -593,7 +867,7 @@ sym_id_t intern_symbol(vm_env_t *env_ptr, const char *name)
             return a->id;
     }
 
-    atom_t *new_atom = GC_MALLOC(sizeof(atom_t));
+    atom_t *new_atom = malloc(sizeof(atom_t));
 
     new_atom->name = malloc(strlen(name) + 1);
     strcpy(new_atom->name, name);
@@ -626,8 +900,9 @@ int intern_string(vm_env_t *env_ptr, const char *s)
     if (env_ptr->string_pool_count >= env_ptr->string_pool_capacity)
     {
         const size_t new_capacity = env_ptr->string_pool_capacity * 2;
-        char **new_pool = GC_MALLOC(new_capacity * sizeof(char *));
+        char **new_pool = malloc(new_capacity * sizeof(char *));
         memcpy(new_pool, env_ptr->string_pool, env_ptr->string_pool_count * sizeof(char *));
+        free(env_ptr->string_pool);
         env_ptr->string_pool = new_pool;
         env_ptr->string_pool_capacity = new_capacity;
     }
@@ -654,17 +929,18 @@ void intern_function(vm_env_t *env_ptr, const sym_id_t symbol_id, const int arit
     {
         const size_t old_cap = env_ptr->dispatch_table_capacity;
         const size_t new_cap = (symbol_id + 1) * 2;
-        dispatch_entry_t **new_tbl = GC_MALLOC(new_cap * sizeof(dispatch_entry_t *));
+        dispatch_entry_t **new_tbl = calloc(new_cap, sizeof(dispatch_entry_t *));
 
         if (env_ptr->dispatch_table != NULL) {
             memcpy(new_tbl, env_ptr->dispatch_table, old_cap * sizeof(dispatch_entry_t *));
+            free(env_ptr->dispatch_table);
         }
 
         env_ptr->dispatch_table = new_tbl;
         env_ptr->dispatch_table_capacity = new_cap;
     }
 
-    dispatch_entry_t *entry = GC_MALLOC(sizeof(dispatch_entry_t));
+    dispatch_entry_t *entry = malloc(sizeof(dispatch_entry_t));
     entry->arity = arity;
     entry->label = label;
 
@@ -686,8 +962,9 @@ bool rcl_env_load_library(vm_env_t *env_ptr, const char *path)
     if (env_ptr->loaded_libs_count >= env_ptr->loaded_libs_capacity)
     {
         const size_t new_cap = env_ptr->loaded_libs_capacity * 2;
-        rcl_lib_handle *new_libs = GC_MALLOC(new_cap * sizeof(rcl_lib_handle));
+        rcl_lib_handle *new_libs = malloc(new_cap * sizeof(rcl_lib_handle));
         memcpy(new_libs, env_ptr->loaded_libs, env_ptr->loaded_libs_count * sizeof(rcl_lib_handle));
+        free(env_ptr->loaded_libs);
         env_ptr->loaded_libs = new_libs;
         env_ptr->loaded_libs_capacity = new_cap;
     }
@@ -733,10 +1010,13 @@ int rcl_env_register_ffi(
     if (env_ptr->ffi_count >= env_ptr->ffi_capacity)
     {
         const size_t new_cap = (env_ptr->ffi_capacity == 0) ? INITIAL_CAPACITY: env_ptr->ffi_capacity * 2;
-        struct ffi_info **new_table = GC_MALLOC_ATOMIC(new_cap * sizeof(struct ffi_info*));
+        struct ffi_info **new_table = malloc(new_cap * sizeof(struct ffi_info*));
 
         if (env_ptr->ffi_table)
+        {
             memcpy(new_table, env_ptr->ffi_table, env_ptr->ffi_count * sizeof(struct ffi_info*));
+            free(env_ptr->ffi_table);
+        }
 
         env_ptr->ffi_table = new_table;
         env_ptr->ffi_capacity = new_cap;
@@ -762,8 +1042,9 @@ void emit(vm_env_t *env_ptr, opcode_t op, const int a, const int b, const int c,
     if (env_ptr->program_size >= env_ptr->program_capacity)
     {
         const size_t new_capacity = env_ptr->program_capacity * 2;
-        instr_t *new_program = GC_MALLOC_ATOMIC(new_capacity * sizeof(instr_t));
+        instr_t *new_program = malloc(new_capacity * sizeof(instr_t));
         memcpy(new_program, env_ptr->program, env_ptr->program_size * sizeof(instr_t));
+        free(env_ptr->program);
         env_ptr->program = new_program;
         env_ptr->program_capacity = new_capacity;
     }
@@ -777,10 +1058,13 @@ void set_label(vm_env_t *env_ptr, const int label)
     if (label >= (int)env_ptr->labels_capacity)
     {
         const size_t new_cap = (label < 1024) ? 2048 : (label + 1) * 2; // Since the labels are dispersed, this avoids allocating too much into the void.
-        int *new_labels = (int *)GC_MALLOC_ATOMIC(new_cap * sizeof(int));
+        int *new_labels = (int *)malloc(new_cap * sizeof(int));
         memset(new_labels, -1, new_cap * sizeof(int));
         if (env_ptr->labels != NULL && env_ptr->labels_capacity > 0)
             memcpy(new_labels, env_ptr->labels, env_ptr->labels_capacity * sizeof(int));
+
+        if (env_ptr->labels != NULL)
+            free(env_ptr->labels);
 
         env_ptr->labels = new_labels;
         env_ptr->labels_capacity = new_cap;
@@ -812,28 +1096,117 @@ void emit_load_string(vm_env_t *env_ptr, const int dst_reg, const char *s)
 
 
 
-// --------------------------------- //
-// ------------ HEADERS ------------ //
-// --------------------------------- //
+// ------------------------------------------ //
+// ------------ VIRTUAL MACHINE  ------------ //
+// ------------------------------------------ //
 
 
 
-// While `term_t` is an "universal type", `term_header_t` is a "specialized term" (we convert from
-// `term_t` to `term_header_t` using the `AS_HEADER` macro). This specialised type allows tree-like
-// structures to be represented in a relatively simple manner (without the need to define unions of
-// algebraic data types). It forms the basis of constructions in Liyh.
+#define INITIAL_STACK_CAPACITY  8192
+#define INITIAL_FRAMES_CAPACITY 2048
+#define STACK_FRAME_PADDING     16
 
+/*
+The VM is a stack-based virtual machine with register windows.
 
-// This type represents the "header" for "structured terms", it serves as a basis for
-// each high level composed types (symbolic expressions, closures, records, ...)
+Temporary virtual registers reside in a single linear stack (`stack[]`), 
+but the architecture mainly uses two distinct memory areas at runtime:
+
+ - `stack[]`: window of active virtual registers (offsets relative to bp)
+ - `frames[]`: stack of call frames containing metadata (ret_pc, prev_bp, etc.)
+
+The execution stack (`stack[]`) and the frame stack (`frames[]`) follow 
+a LIFO discipline for managing function calls.
+
+Virtual registers are aliases over the stack:
+they are implemented as offsets relative to a base pointer (bp).
+The stack is not directly accessible to the user or compiler.
+The stack is the memory model, while the registers are the access model.
+
+Conceptually:
+  regs = &stack[bp]
+  regs[i] = stack[bp + i]
+
+Registers are not fixed locations and their count is not predefined.
+The size of the current register window is determined dynamically
+by INSTR_RESERVE, which advances sp.
+
+Each CALL pushes a frame recording the previous bp.
+On RET, bp is restored from the frame.
+sp always marks the upper bound of the current register window.
+*/
+
+// Calling frame.
 typedef struct
 {
-    sym_id_t id;            // Identify the symbol id
-    uint32_t arity;         // Number of children
-    term_t children[];      // Children array
-} term_header_t;
+    int ret_pc;                 // the return program counter (pc of return)
+    int prev_bp;                // previous base pointer
+    int dst_reg;                // destination register for the result
 
-#define AS_HEADER(val)  ((term_header_t *)(val))
+    term_t closure_env;         // closure environment (can be set to 0)
+    term_t thunk;               // thunk for lazy evaluation (can be set to 0)
+} frame_t;
+
+// Execution state (VM).
+typedef struct
+{
+    term_t *stack;              // evaluation stack
+    size_t stack_capacity;      // allocated size for the stack
+
+    frame_t *frames;            // call stack frames
+    size_t frames_capacity;     // allocated size for the call stack frames
+
+    int sp, bp, fp, pc;         // Stack Pointer, Base Pointer, Frame Pointer, Program Counter
+    vm_env_t *env_ptr;          // Environment pointer
+
+    arena_t arena;              // arena allocator
+    dec_queue_t dec_queue;      // queue of ARC decrementation
+} vm_t;
+
+/// Creates a new VM and returns a pointer to it.
+vm_t *create_vm(vm_env_t *env_ptr)
+{
+    vm_t *vm = calloc(1, sizeof(vm_t));
+
+    vm->stack_capacity = INITIAL_STACK_CAPACITY;
+    vm->stack = calloc(vm->stack_capacity, sizeof(term_t));
+
+    vm->frames_capacity = INITIAL_FRAMES_CAPACITY;
+    vm->frames = calloc(vm->frames_capacity, sizeof(frame_t));
+
+    vm->sp = 0;
+    vm->bp = 0;
+    vm->fp = 0;
+    vm->pc = 0;
+    vm->env_ptr = env_ptr;
+
+    init_arena(&vm->arena);
+    init_queue(&vm->dec_queue);
+
+    return vm;
+}
+
+/// Destroys the VM.
+void destroy_vm(vm_t *vm_ptr)
+{
+    if (vm_ptr == NULL)
+        return;
+
+    for (int i = 0; i < vm_ptr->stack_capacity; i++)
+    {
+        if (vm_ptr->stack[i] && IS_PTR(vm_ptr->stack[i]))
+            rc_decrement(&vm_ptr->dec_queue, vm_ptr->stack[i]);
+    }
+
+    drain_queue(&vm_ptr->dec_queue, &vm_ptr->arena);
+
+    free_queue(&vm_ptr->dec_queue);
+    arena_free(&vm_ptr->arena);
+
+    free(vm_ptr->stack);
+    free(vm_ptr->frames);
+    free(vm_ptr);
+}
 
 
 
@@ -855,9 +1228,20 @@ static inline term_t resolve_indirection(term_t term)
 
 /// Transforms a thunk (or any other object) into an indirection to a target value.
 /// This allows for memoization to take place.
-static void overwrite_with_indirection(const term_t thunk_ptr, const term_t value)
+static void overwrite_with_indirection(vm_t *vm_ptr, const term_t thunk_ptr, const term_t value)
 {
     term_header_t *h = AS_HEADER(thunk_ptr);
+
+    if (value && IS_PTR(value))
+        rc_increment(value);
+
+    // All previously captured variables by the thunk are released.
+    for (uint32_t i = 0; i < h->arity; i++)
+    {
+        if (h->children[i] && IS_PTR(h->children[i]))
+            rc_decrement(&vm_ptr->dec_queue, h->children[i]);
+    }
+
     h->id = SYM_INDIRECT;
     h->arity = 1;
     h->children[0] = value;
@@ -885,6 +1269,83 @@ static void lock_and_check_thunk(term_t term)
 
 
 
+// ------------------------------------- //
+// ------------ ARC HELPERS ------------ //
+// ------------------------------------- //
+
+
+
+/// Allocates a n-arity term via ARC.
+static term_t arc_alloc_term(vm_t *vm_ptr, sym_id_t id, uint32_t arity)
+{
+    term_header_t *h = (term_header_t *)arena_alloc_term(&vm_ptr->arena, arity);
+
+    h->rc = 0;
+    h->id = id;
+    h->arity = arity;
+
+    if (arity > 0)
+        memset(h->children, 0, arity * sizeof(term_t));
+
+    return (term_t)h;
+}
+
+/// Allocates a 0-arity term via ARC.
+static term_t arc_alloc_leaf(vm_t *vm_ptr, sym_id_t id, size_t playload_bytes)
+{
+    size_t words = (playload_bytes + sizeof(term_t) - 1) / sizeof(term_t);
+    term_header_t *h = (term_header_t *)arena_alloc_term(&vm_ptr->arena, words);
+    
+    h->rc = 0;
+    h->id = id;
+    h->arity = 0;
+
+    return (term_t)h;
+}
+
+static inline void arc_clean_stack_window(vm_t *vm_ptr, int old_sp, int new_sp)
+{
+    if (old_sp >= new_sp)
+        return; // the stack has grown, so nothing is to be released
+
+    for (int i = old_sp; i < new_sp; i++)
+    {
+        term_t obj = vm_ptr->stack[i];
+        if (obj && IS_PTR(obj))
+            rc_decrement(&vm_ptr->dec_queue, obj);
+        
+        vm_ptr->stack[i] = 0;
+    }
+
+    drain_queue(&vm_ptr->dec_queue, &vm_ptr->arena);
+}
+
+static inline void vm_arc_assign(vm_t *vm_ptr, int reg_index, term_t new_val)
+{
+    rc_assign(&vm_ptr->dec_queue, &vm_ptr->stack[vm_ptr->bp + reg_index], new_val);
+}
+
+/// Assigns a new value to a register whilst properly managing reference counting.
+static inline void arc_assign_reg(vm_t *vm_ptr, term_t *regs, const int reg_index, term_t new_val)
+{
+    //    const term_t old = regs[reg_index];
+    //
+    //    if (unlikely(old == new_val))
+    //        return;
+    //    
+    //    regs[reg_index] = new_val;
+    //
+    //    if (unlikely(IS_PTR(old) || IS_PTR(new_val)))
+    //    {
+    //        rc_increment(new_val);
+    //        rc_decrement(&vm_ptr->dec_queue, old);
+    //    }
+
+    rc_assign(&vm_ptr->dec_queue, &regs[reg_index], new_val);
+}
+
+
+
 // ---------------------------------------------------------- //
 // ------------ BOXED LITERALS & RECORDS HELPERS ------------ //
 // ---------------------------------------------------------- //
@@ -892,18 +1353,16 @@ static void lock_and_check_thunk(term_t term)
 
 
 /// Creates a boxed value for a float (64 bits).
-static term_t make_float(const double value)
+static term_t make_float(vm_t *vm_ptr, const double value)
 {
-    term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(double));
-
-    term->id = SYM_FLOAT_NATIVE;
-    term->arity = 0;
+    term_t term = arc_alloc_leaf(vm_ptr, SYM_FLOAT_NATIVE, sizeof(double));
+    term_header_t *h = AS_HEADER(term);
 
     uint64_t bits;
     memcpy(&bits, &value, sizeof(bits));
-    memcpy(&term->children[0], &bits, sizeof(bits));
+    memcpy(&h->children[0], &bits, sizeof(bits));
 
-    return (term_t)term;
+    return term;
 }
 
 /// Gets a float (64 bits) from the given term.
@@ -931,17 +1390,16 @@ static double get_float(term_t term)
 }
 
 /// Create a new string as a term (copy the given string).
-static term_t make_string(const char *s)
+static term_t make_string(vm_t *vm_ptr, const char *s)
 {
-    term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(term_t));
-    term->id = SYM_STRING_NATIVE;
-    term->arity = 0;
+    term_t term = arc_alloc_leaf(vm_ptr, SYM_STRING_NATIVE, sizeof(void *));
+    term_header_t *h = AS_HEADER(term);
 
-    char *buff = GC_MALLOC_ATOMIC(strlen(s) + 1);
+    char *buff = malloc(strlen(s) + 1);
     strcpy(buff, s);
 
-    term->children[0] = (term_t)buff;
-    return (term_t)term;
+    h->children[0] = (term_t)buff;
+    return term;
 }
 
 /// Gets a string from the given term.
@@ -966,7 +1424,7 @@ static int compare_fields(const void *a, const void *b)
     return (int)fa->key - (int)fb->key;
 }
 
-static term_t make_record_from_pairs(record_field_t *pairs, const int count)
+static term_t make_record_from_pairs(vm_t *vm_ptr, record_field_t *pairs, const int count)
 {
     qsort(pairs, count, sizeof(record_field_t), compare_fields);
     int unique_count = 0;
@@ -985,29 +1443,29 @@ static term_t make_record_from_pairs(record_field_t *pairs, const int count)
     }
 
     const uint32_t arity = 2 * unique_count;
-    term_header_t *header = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
-
-    header->id = SYM_RECORD_NATIVE;
-    header->arity = arity;
+    term_t term = arc_alloc_term(vm_ptr, SYM_RECORD_NATIVE, arity);
+    term_header_t *header = AS_HEADER(term);
 
     for (int i = 0; i < unique_count; i++)
     {
         header->children[i * 2] = MAKE_INT(pairs[i].key);
-        header->children[i * 2 + 1] = pairs[i].value;
+
+        term_t val = pairs[i].value;
+        if (val && IS_PTR(val))
+            rc_increment(val);
+        
+        header->children[i * 2 + 1] = val;
     }
 
     return (term_t)header;
 }
 
 /// Creates an 'opaque pointer' from a given pointer, converting it into a term with a term id `SYM_PTR_NATIVE`.
-static term_t make_opaque_ptr(void *ptr)
+static term_t make_opaque_ptr(vm_t *vm_ptr, void *ptr)
 {
-    term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(void *));
-    term->id = SYM_PTR_NATIVE;
-    term->arity = 0;
-
-    memcpy(&term->children[0], &ptr, sizeof(void *));
-    return (term_t)term;
+    term_t term = arc_alloc_leaf(vm_ptr, SYM_PTR_NATIVE, sizeof(void *));
+    memcpy(&AS_HEADER(term)->children[0], &ptr, sizeof(void *));
+    return term;
 }
 
 /// Given a term assuming its term id is `SYM_PTR_NATIVE`, returns a copy of its adress.
@@ -1137,7 +1595,7 @@ typedef struct {
 /// Performs a structural and recursive substitution: replaces occurrences of `toRepId` with
 /// `repl` in `root`. Returns a new term (or the original if no changes were made).
 /// No overflow will occurs.
-static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
+static term_t perform_substitution(vm_t *vm_ptr, term_t root, sym_id_t toRepId, term_t repl)
 {
     root = resolve_indirection(root);
 
@@ -1214,57 +1672,47 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
         term_t final_res = (term_t)NULL;
 
         if (!children_changed && !self_changed)
-        {
             final_res = frame->term;
-        }
-        else if (self_changed)
-        {    
-            if (arity == 0)
+
+        else if (self_changed && arity == 0)
+            final_res = repl;
+
+        else if (self_changed && IS_PTR(repl) && AS_HEADER(repl)->id == SYM_CLOSURE)
+        {
+            // Replacing a closure: creating a SUSPENDED_CALL
+            uint32_t new_arity = arity + 1;
+            term_t susp = arc_alloc_term(vm_ptr, SYM_SUSPENDED_CALL, new_arity);
+            term_header_t *h = AS_HEADER(susp);
+
+            // The `repl` closure becomes the first child (use rc_increment)
+            if (repl && IS_PTR(repl)) rc_increment(repl);
+            h->children[0] = repl;
+
+            // rc_increment on the evaluated arguments
+            for (uint32_t i = 0; i < arity; i++)
             {
-                final_res = repl;
+                term_t child = child_results[i];
+                if (child && IS_PTR(child)) rc_increment(child);
+                h->children[i + 1] = child;
             }
-            else
-            {
-                if (IS_PTR(repl) && AS_HEADER(repl)->id == SYM_CLOSURE) {
-                    // Closure replacement creates a SUSPENDED_CALL
-                    // Layout: [Closure, Arg1, Arg2, ...]
-                    uint32_t new_arity = arity + 1;
-                    term_header_t *susp = GC_MALLOC(sizeof(term_header_t) + new_arity * sizeof(term_t));
-                    susp->id = SYM_SUSPENDED_CALL;
-                    susp->arity = new_arity;
-                    susp->children[0] = repl;
-                    memcpy(&susp->children[1], child_results, arity * sizeof(term_t));
-                    final_res = (term_t)susp;
-                }
-                else if (IS_PTR(repl))
-                {
-                    sym_id_t new_id = AS_HEADER(repl)->id;
-                    term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
-                    new_term->id = new_id;
-                    new_term->arity = arity;
-                    memcpy(new_term->children, child_results, arity * sizeof(term_t));
-                    final_res = (term_t)new_term;
-                } 
-                else
-                {
-                    // Fallback: keep the original ID but use the substituted children
-                    term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
-                    new_term->id = frame->header->id;
-                    new_term->arity = arity;
-                    memcpy(new_term->children, child_results, arity * sizeof(term_t));
-                    final_res = (term_t)new_term;
-                }
-            }
+            final_res = susp;
         }
         else
         {
-            // Only children changed (propagate changes upward): create a new
-            // term with the same ID but updated children.
-            term_header_t *new_term = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
-            new_term->id = frame->header->id;
-            new_term->arity = arity;
-            memcpy(new_term->children, child_results, arity * sizeof(term_t));
-            final_res = (term_t)new_term;
+            // General case (change of children or standard replacement)
+            sym_id_t new_id = (self_changed && IS_PTR(repl)) ? AS_HEADER(repl)->id : frame->header->id;
+
+            term_t new_term = arc_alloc_term(vm_ptr, new_id, arity);
+            term_header_t *h = AS_HEADER(new_term);
+
+            // rc_increment on the evaluated arguments
+            for (uint32_t i = 0; i < arity; i++)
+            {
+                term_t child = child_results[i];
+                if (child && IS_PTR(child)) rc_increment(child);
+                h->children[i] = child;
+            }
+            final_res = new_term;
         }
 
         result_sp -= arity;
@@ -1298,22 +1746,21 @@ static term_t perform_substitution(term_t root, sym_id_t toRepId, term_t repl)
 #define MAX_PRETTY_PRINT_DEPTH  50
 
 /// Return a pointer to a string associated to a pretty print of the term.
-/// The returned memory is managed by the GC.
 static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, size_t *out_len)
 {
     term = resolve_indirection(term);
 
     size_t capacity = 256;
     size_t length = 0;
-    char *buffer = GC_malloc(capacity);
+    char *buffer = malloc(capacity);
     if (!buffer) return NULL;
 
     #define APPEND(fmt, ...) do { \
         int needed = snprintf(buffer + length, capacity - length, fmt, ##__VA_ARGS__); \
         if (needed >= (int)(capacity - length)) { \
             capacity = length + needed + 256; \
-            char *new_buf = GC_REALLOC(buffer, capacity); \
-            if (!new_buf) { GC_FREE(buffer); return NULL; } \
+            char *new_buf = realloc(buffer, capacity); \
+            if (!new_buf) { free(buffer); return NULL; } \
             buffer = new_buf; \
             snprintf(buffer + length, capacity - length, fmt, ##__VA_ARGS__); \
         } \
@@ -1360,7 +1807,11 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
                 APPEND("%s = ", symbol_name(env_ptr, field_id));
 
                 char *child_str = term_to_string(env_ptr, header->children[i * 2 + 1], depth + 1, NULL);
-                APPEND("%s", child_str);
+                if (child_str)
+                {
+                    APPEND("%s", child_str);
+                    free(child_str);
+                }
             }
             APPEND(" }");
         }
@@ -1396,7 +1847,11 @@ static char *term_to_string(vm_env_t *env_ptr, term_t term, const int depth, siz
                         if (i > 0) APPEND(", ");
 
                         char *child_str = term_to_string(env_ptr, header->children[i], depth + 1, NULL);
-                        APPEND("%s", child_str);
+                        if (child_str)
+                        {
+                            APPEND("%s", child_str);
+                            free(child_str);
+                        }
                     }
                     APPEND("]");
                 }
@@ -1418,106 +1873,7 @@ static void io_print_term(vm_env_t *env_ptr, const term_t term)
 {
     char *s = term_to_string(env_ptr, term, 0, NULL);
     printf("%s", s);
-    GC_FREE(s);
-}
-
-
-
-// ------------------------------------------ //
-// ------------ VIRTUAL MACHINE  ------------ //
-// ------------------------------------------ //
-
-
-
-#define INITIAL_STACK_CAPACITY  8192
-#define INITIAL_FRAMES_CAPACITY 2048
-#define STACK_FRAME_PADDING     16
-
-/*
-The VM is a stack-based virtual machine with register windows.
-
-Temporary virtual registers reside in a single linear stack (`stack[]`), 
-but the architecture mainly uses two distinct memory areas at runtime:
-
- - `stack[]`: window of active virtual registers (offsets relative to bp)
- - `frames[]`: stack of call frames containing metadata (ret_pc, prev_bp, etc.)
-
-The execution stack (`stack[]`) and the frame stack (`frames[]`) follow 
-a LIFO discipline for managing function calls.
-
-Virtual registers are aliases over the stack:
-they are implemented as offsets relative to a base pointer (bp).
-The stack is not directly accessible to the user or compiler.
-The stack is the memory model, while the registers are the access model.
-
-Conceptually:
-  regs = &stack[bp]
-  regs[i] = stack[bp + i]
-
-Registers are not fixed locations and their count is not predefined.
-The size of the current register window is determined dynamically
-by INSTR_RESERVE, which advances sp.
-
-Each CALL pushes a frame recording the previous bp.
-On RET, bp is restored from the frame.
-sp always marks the upper bound of the current register window.
-*/
-
-// Calling frame.
-typedef struct
-{
-    int ret_pc;                 // the return program counter (pc of return)
-    int prev_bp;                // previous base pointer
-    int dst_reg;                // destination register for the result
-
-    term_t closure_env;         // closure environment (can be set to 0)
-    term_t thunk;               // thunk for lazy evaluation (can be set to 0)
-} frame_t;
-
-// Execution state (VM).
-typedef struct
-{
-    term_t *stack;              // evaluation stack
-    size_t stack_capacity;      // allocated size for the stack
-
-    frame_t *frames;            // call stack frames
-    size_t frames_capacity;     // allocated size for the call stack frames
-
-    int sp, bp, fp, pc;         // Stack Pointer, Base Pointer, Frame Pointer, Program Counter
-    vm_env_t *env_ptr;          // Environment pointer
-} vm_t;
-
-/// Creates a new VM and returns a pointer to it.
-vm_t *create_vm(vm_env_t *env_ptr)
-{
-    vm_t *vm = GC_malloc(sizeof(vm_t));
-
-    vm->stack_capacity = INITIAL_STACK_CAPACITY;
-    vm->stack = GC_MALLOC(vm->stack_capacity * sizeof(term_t));
-
-    vm->frames_capacity = INITIAL_FRAMES_CAPACITY;
-    vm->frames = GC_MALLOC(vm->frames_capacity * sizeof(frame_t));
-
-    vm->sp = 0;
-    vm->bp = 0;
-    vm->fp = 0;
-    vm->pc = 0;
-    vm->env_ptr = env_ptr;
-
-    return vm;
-}
-
-/// Destroys the VM.
-void destroy_vm(vm_t *vm_ptr)
-{
-    if (vm_ptr == NULL)
-        return;
-
-    if (vm_ptr->env_ptr != NULL)
-        destroy_env(vm_ptr->env_ptr);
-
-    GC_gcollect();
-    vm_ptr = NULL;
+    free(s);
 }
 
 
@@ -1551,11 +1907,10 @@ static void grow_stack(vm_t *vm_ptr, const int needed)
         fprintf(stderr, "Fatal Error: Stack Overflow.\n");
         fprintf(stderr, "Memory limit reached (%d MB). Likely infinite recursion.\n", LIMIT);
 
-        GC_gcollect();
         exit(1);
     }
 
-    term_t *new_stack = GC_REALLOC(vm_ptr->stack, new_capacity * sizeof(term_t));
+    term_t *new_stack = realloc(vm_ptr->stack, new_capacity * sizeof(term_t));
 
     const size_t old_size = vm_ptr->stack_capacity * sizeof(term_t);
     const size_t new_size = new_capacity * sizeof(term_t);
@@ -1577,11 +1932,10 @@ static void grow_frames(vm_t *vm_ptr)
         fprintf(stderr, "Fatal Error: Stack Overflow.\n");
         fprintf(stderr, "Memory limit reached (%d MB). Likely infinite recursion.\n", LIMIT);
 
-        GC_gcollect();
         exit(1);
     }
 
-    frame_t *new_frames = GC_REALLOC(vm_ptr->frames, new_capacity * sizeof(frame_t));
+    frame_t *new_frames = realloc(vm_ptr->frames, new_capacity * sizeof(frame_t));
 
     const size_t old_size_bytes = vm_ptr->frames_capacity * sizeof(frame_t);
     memset((char*)new_frames + old_size_bytes, 0, new_size_bytes - old_size_bytes);
@@ -1636,7 +1990,16 @@ static inline void perform_call(
     term_t *dst_args = (*stack) + (*sp);
 
     if (arg_count > 0)
-        memcpy(dst_args, src_args, arg_count * sizeof(term_t));
+    {
+        for (int i = 0; i < arg_count; i++)
+        {
+            term_t arg = src_args[i];
+            dst_args[i] = arg;
+
+            if (arg && IS_PTR(arg))
+                rc_increment(arg);
+        }
+    }
 
     // Zero-init of padding (it's safier with the GC).
     memset(dst_args + arg_count, 0, STACK_FRAME_PADDING * sizeof(term_t));
@@ -1670,7 +2033,16 @@ static inline void perform_call_heap_args(
 
     term_t *dst_args = (*stack) + (*sp);
     if (arg_count > 0)
-        memcpy(dst_args, args_array, arg_count * sizeof(term_t));
+    {
+        for (int i = 0; i < arg_count; i++)
+        {
+            term_t arg = args_array[i];
+            dst_args[i] = arg;
+
+            if (arg && IS_PTR(arg))
+                rc_increment(arg);
+        }
+    }
 
     memset(dst_args + arg_count, 0, STACK_FRAME_PADDING * sizeof(term_t));
 
@@ -1680,17 +2052,17 @@ static inline void perform_call_heap_args(
 }
 
 /// Helper to create a { Success, Value } record for cast operations.
-static term_t make_cast_result(vm_env_t *env, const bool success, const term_t value)
+static term_t make_cast_result(vm_t *vm_ptr, const bool success, const term_t value)
 {
     record_field_t pairs[2];
 
-    pairs[0].key = intern_symbol(env, "success"); 
+    pairs[0].key = intern_symbol(vm_ptr->env_ptr, "success"); 
     pairs[0].value = MAKE_INT(success ? 1 : 0);
 
-    pairs[1].key = intern_symbol(env, "value");
+    pairs[1].key = intern_symbol(vm_ptr->env_ptr, "value");
     pairs[1].value = value;
 
-    return make_record_from_pairs(pairs, 2);
+    return make_record_from_pairs(vm_ptr, pairs, 2);
 }
 
 /// We can collect statistics for the VM. This collect the number of times each opcode is called
@@ -2044,88 +2416,94 @@ static inline int instruction_call_ffi(
     {
         case RCL_TYPE_UINT8:
         {
-            regs[dst_reg] = MAKE_INT(*(uint8_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(uint8_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_INT8:
         {
-            regs[dst_reg] = MAKE_INT(*(int8_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(int8_t*)raw_result));
             break;
         }
         case RCL_TYPE_UINT16:
         {
-            regs[dst_reg] = MAKE_INT(*(uint16_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(uint16_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_INT16:
         {
-            regs[dst_reg] = MAKE_INT(*(int16_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(int16_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_UINT32:
         {
-            regs[dst_reg] = MAKE_INT(*(uint32_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(uint32_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_INT32:
         {
-            regs[dst_reg] = MAKE_INT(*(int32_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(int32_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_UINT64:
         {
-            regs[dst_reg] = MAKE_INT(*(uint64_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(uint64_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_INT64:
         {
-            regs[dst_reg] = MAKE_INT(*(int64_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(*(int64_t*)raw_result));
             break;
         }
 
         case RCL_TYPE_LONGDOUBLE:
         {
-            regs[dst_reg] = make_float((double)*(long double*)raw_result);
+            const term_t value = make_float(vm_ptr, (double)*(long double*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
         case RCL_TYPE_FLOAT64:
         {
-            regs[dst_reg] = make_float(*(double*)raw_result);
+            const term_t value = make_float(vm_ptr, *(double*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
         case RCL_TYPE_FLOAT32:
         {
-            regs[dst_reg] = make_float((double)*(float*)raw_result);
+            const term_t value = make_float(vm_ptr, (double)*(float*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
         case RCL_TYPE_CHAR:
         {
-            regs[dst_reg] = MAKE_CHAR(*(uint32_t*)raw_result);
+            const term_t value =  MAKE_CHAR(*(uint32_t*)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
-        
+
         case RCL_TYPE_STRING:
         {
             const char *c_str = *(const char **)raw_result;
-            regs[dst_reg] = c_str ? make_string(c_str) : MAKE_INT(0);
+            const term_t value = c_str ? make_string(vm_ptr, c_str) : MAKE_INT(0);
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
         case RCL_TYPE_PTR:
         {
-            regs[dst_reg] = make_opaque_ptr(*(void **)raw_result);
+            const term_t value = make_opaque_ptr(vm_ptr, *(void **)raw_result);
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
-        
+
         case RCL_TYPE_VOID:
         {
             break;
@@ -2244,16 +2622,18 @@ static inline int instruction_apply(
         // Fallback: data construction
 
         const sym_id_t sym_id = IS_PTR(fn) ? AS_HEADER(fn)->id : SYM_INT_NATIVE;
-
-        term_header_t *h = GC_MALLOC(sizeof(term_header_t) + arg_count * sizeof(term_t));
-        h->id = sym_id;
-        h->arity = arg_count;
+        const term_t value = arc_alloc_term(vm_ptr, sym_id, arg_count);
+        term_header_t *h = AS_HEADER(value);
 
         for (int i = 0; i < arg_count; i++)
-            h->children[i] = regs[arg_offset + i];
+        {
+            term_t arg = regs[arg_offset + i];
+            if (arg && IS_PTR(arg)) rc_increment(arg);
+            h->children[i] = arg;
+        }
 
         vm_ptr->sp = *sp;
-        regs[dst_reg] = (term_t)h;
+        arc_assign_reg(vm_ptr, regs, dst_reg, value);
     }
 
     return EXIT_SUCCESS;
@@ -2275,7 +2655,7 @@ static inline int instruction_force(
     // If not a pointer, it is a computed value.
     if (!IS_PTR(t))
     {
-        regs[dst_reg] = t;
+        arc_assign_reg(vm_ptr, regs, dst_reg, t);
         return EXIT_SUCCESS;
     }
 
@@ -2318,15 +2698,15 @@ static inline int instruction_force(
             return EXIT_SUCCESS;
         }
 
-        // If no function found, it's just a symbolic data.
-        regs[dst_reg] = t;
+        
+        arc_assign_reg(vm_ptr, regs, dst_reg, t);// If no function found, it's just a symbolic data.
         return EXIT_SUCCESS;
     }
 
     // If it's not a Thunk, BlackHole or SuspendedCall, it's a value (Record, String, etc.)
     if (h->id != SYM_THUNK && h->id != SYM_BLACK_HOLE && h->id != SYM_SUSPENDED_CALL)
     {
-        regs[dst_reg] = t;
+        arc_assign_reg(vm_ptr, regs, dst_reg, t);
         return EXIT_SUCCESS;
     }
 
@@ -2401,7 +2781,8 @@ static inline int instruction_cast(
     if (!type_match)
     {
         // Mismatch between compiler expectation and runtime reality.
-        regs[dst_reg] = make_cast_result(vm_ptr->env_ptr, false, MAKE_INT(0)); 
+        const term_t value = make_cast_result(vm_ptr, false, MAKE_INT(0));
+        arc_assign_reg(vm_ptr, regs, dst_reg, value); 
         return EXIT_SUCCESS;
     }
 
@@ -2415,7 +2796,7 @@ static inline int instruction_cast(
         // Int to Float
         if (target_type == SYM_FLOAT_NATIVE)
         {
-            result_val = make_float((double)val);
+            result_val = make_float(vm_ptr, (double)val);
         }
 
         // Int to Char
@@ -2430,7 +2811,7 @@ static inline int instruction_cast(
         {
             char buffer[64];
             snprintf(buffer, 64, "%lld", (long long)val);
-            result_val = make_string(buffer);
+            result_val = make_string(vm_ptr, buffer);
         }
 
         // Int to Int
@@ -2462,7 +2843,7 @@ static inline int instruction_cast(
         {
             char buffer[64];
             snprintf(buffer, 64, "%.*g", DBL_DIG, val);
-            result_val = make_string(buffer);
+            result_val = make_string(vm_ptr, buffer);
         }
 
         // Float to Float
@@ -2491,7 +2872,7 @@ static inline int instruction_cast(
         else if (target_type == SYM_STRING_NATIVE)
         {
             char buffer[2] = { (char)val, '\0' };
-            result_val = make_string(buffer);
+            result_val = make_string(vm_ptr, buffer);
         }
 
         // Char to Char
@@ -2526,7 +2907,7 @@ static inline int instruction_cast(
             char *endptr;
             double res = strtod(str, &endptr);
 
-            if (*str != '\0' && *endptr == '\0') result_val = make_float(res);
+            if (*str != '\0' && *endptr == '\0') result_val = make_float(vm_ptr, res);
             else success = false;
         }
 
@@ -2554,36 +2935,35 @@ static inline int instruction_cast(
     }
 
     // The result is a record { Success = (0 | 1), Value = <converted value or default> }
-    regs[dst_reg] = make_cast_result(vm_ptr->env_ptr, success, success ? result_val : MAKE_INT(0));
+    const term_t value = make_cast_result(vm_ptr, success, success ? result_val : MAKE_INT(0));
+    arc_assign_reg(vm_ptr, regs, dst_reg, value);
     
     return EXIT_SUCCESS;
 }
 
 /// Converts a C string array (argv) into a symbolic linked list: `cons[str, cons[... nil]]`.
 /// This is used for the main arguments of the program.
-term_t rcl_make_string_list(vm_env_t *env_ptr, int argc, const char *argv[])
+term_t rcl_make_string_list(vm_t *vm_ptr, int argc, const char *argv[])
 {
-    const sym_id_t nil_id = intern_symbol(env_ptr, "nil");
-    const sym_id_t cons_id = intern_symbol(env_ptr, "cons");
+    const sym_id_t nil_id = intern_symbol(vm_ptr->env_ptr, "nil");
+    const sym_id_t cons_id = intern_symbol(vm_ptr->env_ptr, "cons");
 
-    term_header_t *nil_term = GC_MALLOC(sizeof(term_header_t));
-    nil_term->id = nil_id;
-    nil_term->arity = 0;
-
-    term_t current_list = (term_t)nil_term;
+    term_t current_list = arc_alloc_term(vm_ptr, nil_id, 0);
 
     for (int i = argc - 1; i >= 0; i--)
     {
-        term_t str_val = make_string(argv[i]);
+        term_t str_val = make_string(vm_ptr, argv[i]);
 
-        term_header_t *cons_term = GC_MALLOC(sizeof(term_header_t) + 2 * sizeof(term_t));
-        cons_term->id = cons_id;
-        cons_term->arity = 2;
+        term_t cons_term = arc_alloc_term(vm_ptr, cons_id, 2);
+        term_header_t *h = AS_HEADER(cons_term);
 
-        cons_term->children[0] = str_val;
-        cons_term->children[1] = current_list;
+        if (str_val && IS_PTR(str_val)) rc_increment(str_val);
+        h->children[0] = str_val;
 
-        current_list = (term_t)cons_term;
+        if (current_list && IS_PTR(current_list)) rc_increment(current_list);
+        h->children[1] = current_list;
+
+        current_list = cons_term;
     }
 
     return current_list;
@@ -2611,13 +2991,11 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
     if (entry >= (int)vm_ptr->env_ptr->labels_capacity || vm_ptr->env_ptr->labels[entry] < 0)
     {
         fprintf(stderr, "Invalid entry label: .L%d\n", entry);
-        GC_gcollect();
         exit(1);
     }
 
     instr_t *program = vm_ptr->env_ptr->program;
     int *labels = vm_ptr->env_ptr->labels;
-    dispatch_entry_t **dispatch_table = vm_ptr->env_ptr->dispatch_table;
 
     term_t *stack = vm_ptr->stack;
     frame_t *frames = vm_ptr->frames;
@@ -2630,7 +3008,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
     int fp = 0;
 
     memset(stack, 0, stack_capacity * sizeof(term_t));
-    stack[0] = program_args;
+    arc_assign_reg(vm_ptr, stack, 0, program_args);
 
     #ifdef STATS
 
@@ -2680,7 +3058,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int src_reg = instr.b;
 
-            regs[dst_reg] = regs[src_reg];
+            arc_assign_reg(vm_ptr, regs, dst_reg, regs[src_reg]);
             break;
         }
 
@@ -2710,7 +3088,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int index = instr.c;
 
             const term_t t = resolve_indirection(regs[src_reg]);
-            regs[dst_reg] = AS_HEADER(t)->children[index];
+            arc_assign_reg(vm_ptr, regs, dst_reg, AS_HEADER(t)->children[index]);
             break;
         }
 
@@ -2832,17 +3210,15 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             const int64_t size = GET_INT(resolve_indirection(regs[size_reg]));
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + 2 * sizeof(term_t));
-            h->id = SYM_BUFFER_NATIVE;
-            h->arity = 2;
+            const term_t value = arc_alloc_leaf(vm_ptr, SYM_BUFFER_NATIVE, 2 * sizeof(term_t));
+            term_header_t *h = AS_HEADER(value);
 
-            void *raw_mem = GC_MALLOC_ATOMIC(size);
-            memset(raw_mem, 0, size);
+            void *raw_mem = calloc(1, size);
 
             h->children[0] = (term_t)raw_mem;   // the buffer has a pointer adress
             h->children[1] = MAKE_INT(size);    // as well a size
 
-            regs[dst_reg] = (term_t)h;
+            arc_assign_reg(vm_ptr, regs, dst_reg, (term_t)h);
             break;
         }
 
@@ -2863,7 +3239,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
                 if (index >= 0 && index < size)
                 {
-                    regs[dst_reg] = MAKE_INT(buf_mem[index]);
+                    const term_t value = MAKE_INT(buf_mem[index]);
+                    arc_assign_reg(vm_ptr, regs, dst_reg, value);
                 }
                 else
                 {
@@ -2931,7 +3308,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                 void *old_mem = (void *)h->children[0];
                 const int64_t old_size = GET_INT(h->children[1]);
 
-                void *new_mem = GC_REALLOC(old_mem, new_size);
+                void *new_mem = realloc(old_mem, new_size);
 
                 if (new_size > old_size)
                 {
@@ -2957,14 +3334,22 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int arg_offset = instr.b;
             const int arg_count = instr.c;
 
-            term_t args_buffer[arg_count]; // VLA not to allocate memory onto the stack.
-            memcpy(args_buffer, &regs[instr.b], arg_count * sizeof(term_t));
+            term_t args_buffer[arg_count];
+            memcpy(args_buffer, &regs[arg_offset], arg_count * sizeof(term_t));
 
-            // Clean the current frame.
+            // Temporarily increment the reference count of the arguments so that they are
+            // not destroyed  by the subsequent frame cleanup.
+            for (int i = 0; i < arg_count; i++)
+            {
+                if (args_buffer[i] && IS_PTR(args_buffer[i]))
+                    rc_increment(args_buffer[i]);
+            }
+
+            // Clean the current frame
             if (sp > bp)
-                memset(&stack[bp], 0, (sp - bp) * sizeof(term_t));
+                arc_clean_stack_window(vm_ptr, bp, sp);
 
-            // Initialize new arguments for the begining of the new frame.
+            // Initialize new arguments
             memcpy(&stack[bp], args_buffer, arg_count * sizeof(term_t));
 
             sp = bp + arg_count + STACK_FRAME_PADDING;
@@ -2984,12 +3369,15 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const term_t res = regs[src_reg];
             frame_t *f = &frames[fp];
 
+            // We increment the refcount so that the value survive the cleaning.
+            if (res && IS_PTR(res)) rc_increment(res);
+
             if (f->thunk != 0)
             {
                 // This frame corresponds to the evaluation of a Thunk, so the original thunk is overwriten
                 // with an indirection to the result `res`. The next time this thunk is `FORCE`, the function
                 // `resolve_indirection` will leads directly to `res`, hence a lazy evaluation.
-                overwrite_with_indirection(f->thunk, res);
+                overwrite_with_indirection(vm_ptr, f->thunk, res);
 
                 // If the result itself is a thunk, then it is also evaluated.
 
@@ -3009,20 +3397,25 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
                     // Jump to the new thunk.
                     pc = labels[(int)GET_INT(AS_HEADER(deep_res)->children[0])];
+
+                    if (res && IS_PTR(res)) rc_decrement(&vm_ptr->dec_queue, res);
                     break;
                 }
             }
 
             // Clear the pointers from the current frame so that the GC no longer follows them.
             if (sp > bp)
-                memset(&stack[bp], 0, (sp - bp) * sizeof(term_t));
+                arc_clean_stack_window(vm_ptr, bp, sp);
 
             sp = bp;          // Resotre SP
             bp = f->prev_bp;  // Restore BP
             pc = f->ret_pc;   // Return jump
 
             regs = &stack[bp];
-            regs[f->dst_reg] = res; // Write the result in the caller register.
+            arc_assign_reg(vm_ptr, regs, f->dst_reg, res); // Write the result in the caller register.
+
+            if (res && IS_PTR(res)) rc_decrement(&vm_ptr->dec_queue, res);
+            drain_queue(&vm_ptr->dec_queue, &vm_ptr->arena);
 
             break;
         }
@@ -3081,15 +3474,18 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             vm_ptr->sp = sp;
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (capture_count + 1) * sizeof(term_t));
-            h->id = SYM_THUNK;
-            h->arity = capture_count + 1;
-            h->children[0] = MAKE_INT(label); // the label to jump in
+            term_t t = arc_alloc_term(vm_ptr, SYM_THUNK, capture_count + 1);
+            term_header_t *h = AS_HEADER(t);
+            h->children[0] = MAKE_INT(label);
 
             for (int i = 0; i < capture_count; i++)
-                h->children[i + 1] = regs[capture_start + i];
+            {
+                term_t captured = regs[capture_start + i];
+                if (captured && IS_PTR(captured)) rc_increment(captured);
+                h->children[i + 1] = captured;
+            }
 
-            regs[dst_reg] = (term_t)h;
+            arc_assign_reg(vm_ptr, regs, dst_reg, t);
             break;
         }
 
@@ -3117,7 +3513,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int value = instr.b;
 
-            regs[dst_reg] = MAKE_INT(value);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(value));
             break;
         }
 
@@ -3127,7 +3523,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int value = instr.b;
 
-            regs[dst_reg] = MAKE_CHAR((uint32_t)value);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_CHAR((uint32_t)value));
             break;
         }
 
@@ -3137,7 +3533,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int value = instr.b;
 
-            regs[dst_reg] = make_string(vm_ptr->env_ptr->string_pool[value]);
+            const term_t res = make_string(vm_ptr, vm_ptr->env_ptr->string_pool[value]);
+            arc_assign_reg(vm_ptr, regs, dst_reg, res);
             break;
         }
 
@@ -3147,7 +3544,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int value = instr.b;
 
-            regs[dst_reg] = MAKE_BOOL(value);
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_BOOL(value));
             break;
         }
 
@@ -3166,7 +3563,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             double value;
             memcpy(&value, &bits, sizeof(value));
-            regs[dst_reg] = make_float(value);
+            arc_assign_reg(vm_ptr, regs, dst_reg, make_float(vm_ptr, value));
 
             break;
         }
@@ -3177,11 +3574,10 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int sym_id = instr.b;
 
-            vm_ptr->sp = sp;
-            term_header_t *t = GC_MALLOC(sizeof(term_header_t));
-            t->id = (sym_id_t)sym_id;
-            t->arity = 0;
-            regs[dst_reg] = (term_t)t;
+            // Allocation dans l'arène
+            const term_t value = arc_alloc_term(vm_ptr, (sym_id_t)sym_id, 0);
+
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3191,10 +3587,12 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const term_t r = regs[instr.c]; \
             \
             if (IS_INT(l) && IS_INT(r)) { \
-                regs[instr.a] = MAKE_INT(GET_INT(l) op GET_INT(r)); \
+                const term_t value = MAKE_INT(GET_INT(l) op GET_INT(r)); \
+                arc_assign_reg(vm_ptr, regs, instr.a, value); \
             } \
             else if (IS_NUMERIC(l) && IS_NUMERIC(r)) { \
-                regs[instr.a] = make_float(get_float(l) op get_float(r)); \
+                const term_t value = make_float(vm_ptr, get_float(l) op get_float(r)); \
+                arc_assign_reg(vm_ptr, regs, instr.a, value); \
             } \
             else { \
                 char *sl = term_to_string(vm_ptr->env_ptr, l, 3, NULL); \
@@ -3211,10 +3609,12 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const term_t r = regs[instr.c]; \
             \
             if (IS_INT(l) && IS_INT(r)) { \
-                regs[instr.a] = MAKE_BOOL(GET_INT(l) op GET_INT(r)); \
+                const term_t value = MAKE_BOOL(GET_INT(l) op GET_INT(r)); \
+                arc_assign_reg(vm_ptr, regs, instr.a, value); \
             } \
             else if (IS_NUMERIC(l) && IS_NUMERIC(r)) { \
-                regs[instr.a] = MAKE_BOOL(get_float(l) op get_float(r)); \
+                const term_t value = MAKE_BOOL(get_float(l) op get_float(r)); \
+                arc_assign_reg(vm_ptr, regs, instr.a, value);  \
             } \
             else { \
                 char *sl = term_to_string(vm_ptr->env_ptr, l, 3, NULL); \
@@ -3264,7 +3664,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[dst_reg] = MAKE_INT(GET_INT(l) / denominator);
+                const term_t value = MAKE_INT(GET_INT(l) / denominator);
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
             }
             else
             {
@@ -3275,7 +3676,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[dst_reg] = make_float(get_float(l) / denominator);
+                const term_t value = make_float(vm_ptr, get_float(l) / denominator);
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
             }
             break;
         }
@@ -3297,7 +3699,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[dst_reg] = MAKE_INT(GET_INT(l) % denominator);
+                const term_t value = MAKE_INT(GET_INT(l) % denominator);
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
             }
             else
             {
@@ -3310,7 +3713,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                     return_value = EXIT_FAILURE;
                     run = false;
                 }
-                regs[dst_reg] = make_float(fmod(numerator, denominator));
+                const term_t value = make_float(vm_ptr, fmod(numerator, denominator));
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
             }
             break;
         }
@@ -3324,9 +3728,15 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const term_t v = regs[src_reg];
 
             if (IS_INT(v))
-                regs[src_reg] = MAKE_INT(-GET_INT(v));
+            {
+                const term_t value = MAKE_INT(-GET_INT(v));
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
+            }
             else
-                regs[src_reg] = make_float(-get_float(v));
+            {
+                const term_t value = make_float(vm_ptr, -get_float(v));
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
+            }
 
             break;
         }
@@ -3340,7 +3750,10 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const term_t v = regs[src_reg];
             
             if (IS_BOOL(v))
-                regs[dst_reg] = MAKE_BOOL(GET_BOOL(v) == 0);
+            {
+                const term_t value = MAKE_BOOL(GET_BOOL(v) == 0);
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
+            }
 
             else
             {
@@ -3389,7 +3802,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int lhs_reg = instr.b;
             const int rhs_reg = instr.c;
 
-            regs[dst_reg] = MAKE_BOOL(term_equals(regs[lhs_reg], regs[rhs_reg]));
+            const term_t value = MAKE_BOOL(term_equals(regs[lhs_reg], regs[rhs_reg]));
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3400,7 +3814,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int lhs_reg = instr.b;
             const int rhs_reg = instr.c;
 
-            regs[dst_reg] = MAKE_BOOL(!term_equals(regs[lhs_reg], regs[rhs_reg]));
+            const term_t value = MAKE_BOOL(!term_equals(regs[lhs_reg], regs[rhs_reg]));
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3414,14 +3829,17 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             vm_ptr->sp = sp;
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + arity * sizeof(term_t));
-            h->id = (sym_id_t)sym_id;
-            h->arity = arity;
+            const term_t value = arc_alloc_term(vm_ptr, (sym_id_t)sym_id, arity);
+            term_header_t *h = AS_HEADER(value);
 
             for (int i = 0; i < arity; i++)
-                h->children[i] = regs[src_offset + i];
+            {
+                term_t child = regs[src_offset + i];
+                if (child && IS_PTR(child)) rc_increment(child);
+                h->children[i] = child;
+            }
 
-            regs[dst_reg] = (term_t)h;
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3435,15 +3853,18 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             vm_ptr->sp = sp;
 
-            term_header_t *h = GC_MALLOC(sizeof(term_header_t) + (upval_count + 1) * sizeof(term_t));
-            h->id = SYM_CLOSURE;
-            h->arity = upval_count + 1;
+            const term_t value = arc_alloc_term(vm_ptr, SYM_CLOSURE, upval_count + 1);
+            term_header_t *h = AS_HEADER(value);
             h->children[0] = MAKE_INT(label);
 
             for (int i = 0; i < upval_count; i++)
-                h->children[i + 1] = regs[upval_start + i];
+            {
+                term_t captured = regs[upval_start + i];
+                if (captured && IS_PTR(captured)) rc_increment(captured);
+                h->children[i + 1] = captured;
+            }
 
-            regs[dst_reg] = (term_t)h;
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3468,8 +3889,9 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             }
 
             const sym_id_t toReplaceId = AS_HEADER(toReplace)->id;
-            regs[dst_reg] = perform_substitution(tree, toReplaceId, replacement);
+            const term_t value = perform_substitution(vm_ptr, tree, toReplaceId, replacement);
 
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3480,7 +3902,9 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int upval_index = instr.b;
 
             const term_t cl = frames[fp - 1].closure_env;
-            regs[dst_reg] = AS_HEADER(cl)->children[upval_index + 1];
+            const term_t value = AS_HEADER(cl)->children[upval_index + 1];
+
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3510,7 +3934,9 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                 pairs[i].value = val_term;
             }
 
-            regs[dst_reg] = make_record_from_pairs(pairs, pair_count);
+            const term_t value = make_record_from_pairs(vm_ptr, pairs, pair_count);
+
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3566,7 +3992,9 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                 pairs[base_pair_count + i].value = val_term;
             }
 
-            regs[dst_reg] = make_record_from_pairs(pairs, total_pairs);
+            const term_t value = make_record_from_pairs(vm_ptr, pairs, total_pairs);
+
+            arc_assign_reg(vm_ptr, regs, dst_reg, value);
             break;
         }
 
@@ -3594,7 +4022,8 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                         const sym_id_t key = (sym_id_t)GET_INT(h->children[i * 2]);
                         if (key == needle)
                         {
-                            regs[dst_reg] = h->children[(i * 2) + 1];
+                            const term_t value = h->children[(i * 2) + 1];
+                            arc_assign_reg(vm_ptr, regs, dst_reg, value);
                             found = true;
                             break;
                         }
@@ -3639,23 +4068,17 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             const size_t len1 = strlen(s1);
             const size_t len2 = strlen(s2);
-            const size_t total_len = len1 + len2;
 
-            const size_t alloc_size = sizeof(term_header_t) + sizeof(term_t) + total_len + 1;
-            term_header_t *term = GC_MALLOC_ATOMIC(alloc_size);
-
-            term->id = SYM_STRING_NATIVE;
-            term->arity = 0;
-
-            char *buffer = (char*)((uintptr_t)term + sizeof(term_header_t) + sizeof(term_t));
-
+            char *buffer = malloc(len1 + len2 + 1);
             memcpy(buffer, s1, len1);
             memcpy(buffer + len1, s2, len2);
-            buffer[total_len] = '\0';
+            buffer[len1 + len2] = '\0';
 
-            term->children[0] = (term_t)buffer;
-            regs[dst_reg] = (term_t)term;
+            // make_string va allouer dans l'arène ARC et copier la chaîne
+            term_t new_str = make_string(vm_ptr, buffer);
+            free(buffer);
 
+            arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
             break;
         }
 
@@ -3665,14 +4088,11 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int dst_reg = instr.a;
             const int src_reg = instr.b;
 
-            const char *s = term_to_string(vm_ptr->env_ptr, regs[src_reg], 0, NULL);
-            term_header_t *term = GC_MALLOC(sizeof(term_header_t) + sizeof(term_t));
-
-            term->id = SYM_STRING_NATIVE;
-            term->arity = 0;
-
-            term->children[0] = (term_t)s;
-            regs[dst_reg] = (term_t)term;
+            char *s = term_to_string(vm_ptr->env_ptr, regs[src_reg], 0, NULL);
+            
+            term_t new_str = make_string(vm_ptr, s);
+            free(s);
+            arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
 
             break;
         }
@@ -3771,12 +4191,12 @@ int main(int argc, char *argv[])
 
     <FILL-PROGRAM>
 
-    term_t args_list = rcl_make_string_list(env_ptr, argc - 1, (const char **)(argv + 1));
+    term_t args_list = rcl_make_string_list(vm_ptr, argc - 1, (const char **)(argv + 1));
 
     const int entry_point = <ENTRY-POINT>;
     const int exit_value = run_vm(vm_ptr, entry_point, args_list);
 
-    //destroy_env(env_ptr);
+    destroy_env(env_ptr);
     destroy_vm(vm_ptr);
 
     return exit_value;
