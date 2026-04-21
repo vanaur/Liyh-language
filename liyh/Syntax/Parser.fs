@@ -1839,16 +1839,19 @@ module Parser =
         let parseStatement = 
             choice topLevelParsers |>> Some
 
-        let parseComment = 
-            attempt (spaces >>. skipString "--" <?> "" >>. skipRestOfLine true >>. spaces) >>% None
+        let parseWhitespaceOrComment : Parser<TopLevelWithPos option, _> =
+            fun stream ->
+                let startIdx = stream.Position.Index
+                spacesOrComment stream |> ignore
 
-        let parseWhitespace = 
-            attempt (skipMany1 (satisfy System.Char.IsWhiteSpace)) >>% None
+                if stream.Position.Index > startIdx then
+                    Reply(None)
+                else
+                    Reply(Error, messageError "not a whitespace or comment")
 
         choice [
             parseStatement
-            parseComment
-            parseWhitespace ]
+            parseWhitespaceOrComment ]
 
     and private blockOfTopLevel parser errorHandler =
         let itemParser = Recoverable.recover parser errorHandler
