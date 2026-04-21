@@ -1822,6 +1822,11 @@ module Parser =
                       Using = Option.defaultValue [] using
                       Content = content })
 
+    and private parseBleedingTopLevelError =
+        choice [ pstring "->"; pstring "=" ]
+        >>= fun s ->
+            fail $"Unexpected '{s}' for a top-level declaration."
+
     and private parseTopLevel =
         let topLevelParsers =
             [ parseWithPos parseUse
@@ -1834,20 +1839,23 @@ module Parser =
               parseWithPos parseLetRule
               attempt (parseWithPos parseHandler)
               parseWithPos parseExtern
-              parseWithPos parseRule ]
+              parseWithPos parseRule
+              parseBleedingTopLevelError ]
 
         let parseStatement = 
-            choice topLevelParsers |>> Some
+            choice topLevelParsers
+            <?> "top level declaration"
+            |>> Some
 
         let parseWhitespaceOrComment : Parser<TopLevelWithPos option, _> =
-            fun stream ->
+            (fun stream ->
                 let startIdx = stream.Position.Index
                 spacesOrComment stream |> ignore
 
                 if stream.Position.Index > startIdx then
                     Reply(None)
                 else
-                    Reply(Error, messageError "not a whitespace or comment")
+                    Reply(Error, messageError "not a whitespace or comment")) <?> ""
 
         choice [
             parseStatement
