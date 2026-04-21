@@ -972,9 +972,9 @@ module Parser =
 
         let private parseAtomicPattern =
             choice [
+                attempt (parseWithPos parseLiteralPattern)
                 parseWithPos parseVariablePattern
                 parseWithPos parseWildcard
-                parseWithPos parseLiteralPattern
                 attempt (parseWithPos parseTuplePattern)
                 between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef
                 attempt (parseWithPos parseListPattern)
