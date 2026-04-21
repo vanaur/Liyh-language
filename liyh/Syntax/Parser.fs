@@ -464,10 +464,11 @@ module Parser =
 
                 elif stream.Match("{-") then
                     let mutable depth = 1
-
                     stream.Skip("{-") |> ignore
 
                     while depth > 0 && not stream.IsEndOfStream do
+                        stream.SkipCharsOrNewlinesWhile(fun c -> c <> '{' && c <> '-') |> ignore
+
                         if stream.Match("{-") then
                             stream.Skip("{-") |> ignore
                             depth <- depth + 1
@@ -477,7 +478,8 @@ module Parser =
                             depth <- depth - 1
 
                         else
-                            stream.Skip()
+                            if not stream.IsEndOfStream then
+                                stream.Skip()
                 else
                     running <- false
 
