@@ -165,8 +165,11 @@ type public OpCode =
     | BufferGet = 45
     | BufferSet = 46 
     | BufferRealloc = 47
-    | PPShow = 48
-    | Print = 49
+    | BufferLength = 48
+    | BufferToString = 49
+    | StringToBuffer = 50
+    | PPShow = 51
+    | Print = 52
 
 [<Struct>]
 type public ByteCodeInstr =

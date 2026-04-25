@@ -1184,6 +1184,24 @@ module public BytecodeCompiler =
                 builder.BufferRealloc(bufReg, newSizeReg) // in-place modification but still return the pointer
                 MiscHelpers.markEvaluated bufReg context
 
+            | { Symbol = "__buffer_length"; Children = [ bufExpr ] } ->
+                let bufReg = compileTermStrict context bufExpr
+                let res = builder.BufferLength(bufReg)
+
+                MiscHelpers.markEvaluated res context
+
+            | { Symbol = "__buffer_to_string"; Children = [ bufExpr ] } ->
+                let bufReg = compileTermStrict context bufExpr
+                let res = builder.BufferToString(bufReg)
+
+                MiscHelpers.markEvaluated res context
+
+            | { Symbol = "__string_to_buffer"; Children = [ strExpr ] } ->
+                let strReg = compileTermStrict context strExpr
+                let res = builder.StringToBuffer(strReg)
+
+                MiscHelpers.markEvaluated res context
+
             | _ ->
 
                 // Arguments are prepared differently depending on the main strategy associated

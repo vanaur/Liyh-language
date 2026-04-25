@@ -608,6 +608,11 @@ typedef enum
     INSTR_BUFFER_SET,                                   // BUFFER_SET buf_reg, index_reg, val_reg, _
     INSTR_BUFFER_REALLOC,                               // BUFFER_REALLOC buf_reg, new_size_reg, _, _
 
+    INSTR_BUFFER_LENGTH,                                // BUFFER_LENGTH dst_reg, buf_reg, _, _
+
+    INSTR_BUFFER_TO_STRING,                             // BUFFER_TO_STRING dst_reg, buf_reg, _, _
+    INSTR_STRING_TO_BUFFER,                             // STRING_TO_BUFFER dst_reg, str_reg, _, _
+
     // debugging instruction
 
     INSTR_PPSHOW,                                       // PPSHOW dst_reg, src_reg, _, _
@@ -667,6 +672,9 @@ static const char* opcode_names[] = {
     [INSTR_BUFFER_GET] =    "BUFFER_GET",
     [INSTR_BUFFER_SET] =    "BUFFER_SET",
     [INSTR_BUFFER_REALLOC] ="BUFFER_REALLOC",
+    [INSTR_BUFFER_LENGTH] = "BUFFER_LENGTH",
+    [INSTR_BUFFER_TO_STRING] ="BUFFER_TO_STRING",
+    [INSTR_STRING_TO_BUFFER] ="STRING_TO_BUFFER",
     [INSTR_PPSHOW] =        "PPSHOW",
     [INSTR_PRINT] =         "PRINT",
 };
@@ -4079,6 +4087,99 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             free(buffer);
 
             arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
+            break;
+        }
+
+        // BUFFER_LENGTH dst_reg, buf_reg, _, _
+        case INSTR_BUFFER_LENGTH:
+        {
+            const int dst_reg = instr.a;
+            const int buf_reg = instr.b;
+
+            const term_header_t *h = AS_HEADER(resolve_indirection(regs[buf_reg]));
+
+            if (h->id == SYM_BUFFER_NATIVE)
+            {
+                arc_assign_reg(vm_ptr, regs, dst_reg, h->children[1]);
+            }
+            else
+            {
+                char *s = term_to_string(vm_ptr->env_ptr, regs[buf_reg], 3, NULL);
+                fprintf(stderr, "Fatal error: Expected Buffer, but got `%s`.", s);
+                free(s);
+                run = false;
+                return_value = EXIT_FAILURE;
+            }
+
+            break;
+        }
+
+        // BUFFER_TO_STRING dst_reg, buf_reg
+        case INSTR_BUFFER_TO_STRING:
+        {
+            const int dst_reg = instr.a;
+            const int buf_reg = instr.b;
+
+            const term_header_t *h = AS_HEADER(resolve_indirection(regs[buf_reg]));
+
+            if (h->id == SYM_BUFFER_NATIVE)
+            {
+                uint8_t *buf_mem = (uint8_t *)h->children[0];
+                const int64_t size = GET_INT(h->children[1]);
+
+                char *temp_str = malloc(size + 1);
+                memcpy(temp_str, buf_mem, size);
+                temp_str[size] = '\0';
+
+                term_t new_str = make_string(vm_ptr, temp_str);
+                free(temp_str);
+
+                arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
+            }
+            else
+            {
+                char *s = term_to_string(vm_ptr->env_ptr, regs[buf_reg], 3, NULL);
+                fprintf(stderr, "Fatal error: Expected Buffer, but got `%s`.", s);
+                free(s);
+                run = false;
+                return_value = EXIT_FAILURE;
+            }
+            break;
+        }
+
+        // STRING_TO_BUFFER dst_reg, str_reg, _, _
+        case INSTR_STRING_TO_BUFFER:
+        {
+            const int dst_reg = instr.a;
+            const int str_reg = instr.b;
+
+            const term_t t = resolve_indirection(regs[str_reg]);
+
+            if (IS_PTR(t) && AS_HEADER(t)->id == SYM_STRING_NATIVE)
+            {
+                const char *str = get_string_ptr(t);
+                const int64_t size = strlen(str);
+
+                const term_t value = arc_alloc_leaf(vm_ptr, SYM_BUFFER_NATIVE, 2 * sizeof(term_t));
+                term_header_t *h = AS_HEADER(value);
+
+                void *raw_mem = malloc(size);
+                memcpy(raw_mem, str, size);
+
+                h->children[0] = (term_t)raw_mem;
+                h->children[1] = MAKE_INT(size);
+
+                arc_assign_reg(vm_ptr, regs, dst_reg, value);
+            }
+            else
+            {
+                char *s = term_to_string(vm_ptr->env_ptr, regs[str_reg], 3, NULL);
+                fprintf(stderr, "Fatal error: Expected String, but got `%s`.", s);
+                free(s);
+                run = false;
+                return_value = EXIT_FAILURE;
+            }
+
             break;
         }
 

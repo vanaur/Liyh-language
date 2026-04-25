@@ -526,6 +526,21 @@ type public ByteCodeBuilder() =
     member public this.BufferRealloc (bufReg: Reg, newSizeReg: Reg) =
         instructions.Add(Instr(OpCode.BufferRealloc, bufReg.Index, newSizeReg.Index, 0, 0))
 
+    member public this.BufferLength (bufReg: Reg) =
+        let dst = this.Alloc()
+        instructions.Add(Instr(OpCode.BufferLength, dst.Index, bufReg.Index, 0, 0))
+        dst
+
+    member public this.BufferToString (bufReg: Reg) =
+        let dst = this.Alloc()
+        instructions.Add(Instr(OpCode.BufferToString, dst.Index, bufReg.Index, 0, 0))
+        dst
+
+    member public this.StringToBuffer (bufReg: Reg) =
+        let dst = this.Alloc()
+        instructions.Add(Instr(OpCode.StringToBuffer, dst.Index, bufReg.Index, 0, 0))
+        dst
+
     /// A smol peephole optimizer for a very common pattern that arise in the compiler.
     member private __.OptimizePeephole() =
         let mutable i = 0
@@ -746,6 +761,15 @@ module public PrettyPrinter =
 
         | Instr(OpCode.BufferRealloc, bufReg, newSizeReg, _, _) ->
             $"    buffer_realloc({reg bufReg}, {reg newSizeReg})"
+
+        | Instr(OpCode.BufferLength, dstReg, bufReg, _, _) ->
+            $"    {reg dstReg} = buffer_length({reg bufReg})"
+
+        | Instr(OpCode.BufferToString, dstReg, bufReg, _, _) ->
+            $"    {reg dstReg} = buffer_to_string({reg bufReg})"
+
+        | Instr(OpCode.StringToBuffer, dstReg, bufReg, _, _) ->
+            $"    {reg dstReg} = string_to_buffer({reg bufReg})"
 
         | Instr(OpCode.PPShow, dst, src, _, _) ->
             $"    {reg dst} = ppshow {reg src}"
