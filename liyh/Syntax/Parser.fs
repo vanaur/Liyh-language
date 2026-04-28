@@ -689,8 +689,14 @@ module Parser =
                             if currentIndent >= indentCol then
                                 if currentIndent = indentCol then
                                     let! isCloser = choice [ attempt (pstring "\"\"\"") >>% true; preturn false ]
-                                    if isCloser then return List.rev acc
-                                    else return! readLineContent acc
+                                    if isCloser then
+                                        let cleanAcc =
+                                            match acc with
+                                            | InterpolatedPart.Str "\n" :: tail -> tail
+                                            | _ -> acc
+                                        return List.rev cleanAcc
+                                    else
+                                        return! readLineContent acc
                                 else
                                     let extraSpaces = String.replicate (currentIndent - indentCol) " "
                                     return! readLineContent (InterpolatedPart.Str extraSpaces :: acc)
@@ -716,11 +722,12 @@ module Parser =
                     | Some _ -> return Literal.InterpolatedString content
                     | None ->
                         let strContent =
-                            content |> List.fold (fun acc frag ->
-                                match frag with
-                                | InterpolatedPart.Str s -> acc + s
-                                | _ -> acc) ""
-                            |> _.TrimEnd()
+                            content
+                            |> List.choose (function
+                                | InterpolatedPart.Str s -> Some s
+                                | _ -> None)
+                            |> String.concat ""
+
                         return Literal.String strContent
                 }
 
