@@ -1,6 +1,23 @@
 ﻿#nowarn "25"
 namespace Liyh
 
+module public LiyhVersion =
+    open System.Reflection
+
+    let public liyhVersion =
+        let asm = Assembly.GetExecutingAssembly()
+        let assemblyName = asm.GetName().Name
+
+        let resourceName = $"{assemblyName}.VERSION"
+        use stream = asm.GetManifestResourceStream(resourceName)
+
+        if stream <> null then
+            use reader = new System.IO.StreamReader(stream)
+            reader.ReadToEnd()
+        else
+            // this may not happen
+            failwithf "Unfound ressource: 'VERSION'."
+
 module Program =
     open System
     open Liyh.Core
@@ -369,7 +386,7 @@ module Program =
 
             printfn "\nDone! Go to %s and run the project using `liyh run main.liyh`." folderPath
 
-    let private version = "0.1.1"
+    let private version = LiyhVersion.liyhVersion
 
     // It's a bit pretentious, I think... but one can always dream. 🥹
     [<Literal>]
@@ -404,23 +421,23 @@ module Program =
 
                 match cli.GetSubCommand() with
                 | Version _ ->
-                    printfn "Liyh version: %s" version
-                
+                    printfn "Liyh version: v%s" version
+
                 | Repl _ ->
                     Repl.Repl.Repl().Run()
-                
+
                 | Init _ ->
                     ProjectInitialization.init ()
-                
+
                 | Server _ ->
                     // Liyh.LspServer.runServer() |> ignore
                     printfn "LSP Server not yet implemented."
-                
+
                 | Cloc clocArgs ->
                     let path = clocArgs.GetResult(ClocArgs.Path)
                     let result = Utils.LiyhCloc.countDir path
                     Utils.LiyhCloc.displayStats result
-                
+
                 | Run runArgs ->
                     let rootFile = runArgs.GetResult(ExecuteArgs.File)
                     let doOptimize = runArgs.Contains(ExecuteArgs.Optimize)
@@ -428,7 +445,7 @@ module Program =
                     let stfu = runArgs.Contains(ExecuteArgs.Stfu)
 
                     CompilationProcess.runOrCompile rootFile doOptimize true None None programArgs stfu
-                
+
                 | Compile compileArgs ->
                     let rootFile = compileArgs.GetResult(CompileArgs.File)
                     let doOptimize = compileArgs.Contains(CompileArgs.Optimize)

@@ -61,6 +61,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="VERSION" />
+
     <EmbeddedResource Include="C/rcl.c" />
 
     <EmbeddedResource Include="InitProjectRessources/Apache" />
