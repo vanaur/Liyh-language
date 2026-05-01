@@ -443,8 +443,9 @@ module public BytecodeCompiler =
         and compileTree
             (ctx: CompilationContext)
             (tree: DecisionTree)
-            (onMatch: int -> CompilationContext -> Reg)
-            (fallback: unit -> Reg)
+            (onMatch: int -> CompilationContext -> Reg option -> Reg)
+            (fallback: Reg option -> Reg)
+            (target: Reg option)
             : Reg =
 
             let inline branchContext (ctx': CompilationContext) =
@@ -453,7 +454,7 @@ module public BytecodeCompiler =
                     EvaluatedRegs = new HashSet<int>(ctx'.EvaluatedRegs) }
 
             match tree with
-            | Fail -> fallback()
+            | Fail -> fallback target
 
             | Leaf(ruleIndex, bindings) ->
                 let newEnv =
@@ -462,7 +463,7 @@ module public BytecodeCompiler =
                         Map.add varName reg env
                     ) ctx.Env
                 let leafCtx = { ctx with Env = newEnv }
-                onMatch ruleIndex leafCtx
+                onMatch ruleIndex leafCtx target
 
             | Switch(path, cases, defaultCase) ->
                 let pathReg = compilePath ctx path
@@ -488,40 +489,33 @@ module public BytecodeCompiler =
                     else pathReg
 
                 builder.Scope(fun _ ->
-                    let phiReg = builder.Alloc()
+                    let phiReg = defaultArg target (builder.Alloc())
 
                     for KeyValue((tagName, arity), subTree) in cases do
                         let nextLbl = freshLabel()
 
                         if tagName = "true" && arity = 0 then
-                            let trueReg = builder.LoadBool(true)
-                            let isEq = builder.Eq(testReg, trueReg)
-                            builder.JumpFalse(isEq, nextLbl)
+                            builder.JumpFalse(testReg, nextLbl)
 
                         elif tagName = "false" && arity = 0 then
-                            let falseReg = builder.LoadBool(false)
-                            let isEq = builder.Eq(testReg, falseReg)
-                            builder.JumpFalse(isEq, nextLbl)
+                            builder.JumpTrue(testReg, nextLbl)
 
                         else
                             builder.TestTag(testReg, tagName, nextLbl)
 
                         let ctxBranch = branchContext ctx
-                        let res = compileTree ctxBranch subTree onMatch fallback
+                        compileTree ctxBranch subTree onMatch fallback (Some phiReg) |> ignore
 
-                        emitMov (phiReg, res) ctxBranch
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
 
                     match defaultCase with
                     | Some def ->
                         let ctxDefault = branchContext ctx
-                        let res = compileTree ctxDefault def onMatch fallback
-                        emitMov (phiReg, res) ctxDefault
+                        compileTree ctxDefault def onMatch fallback (Some phiReg) |> ignore
 
                     | None ->
-                        let res = fallback()
-                        emitMov (phiReg, res) ctx
+                        fallback target |> ignore
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -537,31 +531,28 @@ module public BytecodeCompiler =
                     | _ -> pathReg
 
                 builder.Scope(fun _ ->
-                    let phiReg = builder.Alloc()
+                    let phiReg = defaultArg target (builder.Alloc())
 
                     for KeyValue(lit, subTree) in cases do
                         let nextLbl = freshLabel()
-                        let litReg = compileLiteral lit ctx
+                        let litReg = compileLiteral lit ctx None
 
                         let eq = builder.Eq(testReg, litReg)
                         builder.JumpFalse(eq, nextLbl)
 
                         let ctxBranch = branchContext ctx
-                        let res = compileTree ctxBranch subTree onMatch fallback
+                        compileTree ctxBranch subTree onMatch fallback (Some phiReg) |> ignore
 
-                        emitMov (phiReg, res) ctxBranch
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
                     
                     match defaultCase with
                     | Some def ->
                         let ctxDefault = branchContext ctx
-                        let res = compileTree ctxDefault def onMatch fallback
-                        emitMov (phiReg, res) ctxDefault
+                        compileTree ctxDefault def onMatch fallback (Some phiReg) |> ignore
 
                     | None ->
-                        let res = fallback()
-                        emitMov (phiReg, res) ctx
+                        fallback (Some phiReg) |> ignore
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -575,32 +566,26 @@ module public BytecodeCompiler =
                         ) ctx.Env
                     let guardCtx = { ctx with Env = guardEnv }
 
-                    let guardReg = compileTerm guardCtx false guardExpr
-                    let trueAtom = builder.LoadBool(true)
-                    let isTrue = builder.Eq(guardReg, trueAtom)
-
+                    let guardReg = compileTerm guardCtx false None guardExpr
                     let failLabel = freshLabel()
                     let endLabel = freshLabel()
-                    let phiReg = builder.Alloc()
+                    let phiReg = defaultArg target (builder.Alloc())
 
-                    builder.JumpFalse(isTrue, failLabel)
+                    builder.JumpFalse(guardReg, failLabel)
 
                     let ctxBranch = branchContext ctx
-                    let res = compileTree ctxBranch successTree onMatch fallback
+                    compileTree ctxBranch successTree onMatch fallback (Some phiReg) |> ignore
 
-                    emitMov (phiReg, res) ctxBranch
                     builder.Jump(endLabel)
                     builder.SetLabel(failLabel)
 
                     match failureTreeOpt with
                     | Some failTree ->
                         let ctxDefault = branchContext ctx
-                        let res = compileTree ctxDefault failTree onMatch fallback
-                        emitMov (phiReg, res) ctxDefault
+                        compileTree ctxDefault failTree onMatch fallback (Some phiReg) |> ignore
 
                     | None ->
-                        let res = fallback()
-                        emitMov (phiReg, res) ctx
+                        fallback (Some phiReg) |> ignore
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -609,7 +594,7 @@ module public BytecodeCompiler =
             | TypeCheck(path, cases, defaultCase) ->
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
-                let phiReg = builder.Alloc()
+                let phiReg = defaultArg target (builder.Alloc())
 
                 let testReg =
                     match ctx.Strategy with
@@ -625,21 +610,18 @@ module public BytecodeCompiler =
                         | _ -> builder.Jump(nextLbl)
 
                         let ctxBranch = branchContext ctx
-                        let res = compileTree ctxBranch subTree onMatch fallback
+                        compileTree ctxBranch subTree onMatch fallback (Some phiReg) |> ignore
 
-                        builder.Mov(phiReg, res)
                         builder.Jump(endLabel)
                         builder.SetLabel(nextLbl)
 
                     match defaultCase with
                     | Some d ->
                         let ctxDefault = branchContext ctx
-                        let res = compileTree ctxDefault d onMatch fallback
-                        emitMov (phiReg, res) ctxDefault
+                        compileTree ctxDefault d onMatch fallback (Some phiReg) |> ignore
 
                     | None ->
-                        let res = fallback()
-                        emitMov (phiReg, res) ctx
+                        fallback (Some phiReg) |> ignore
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -647,110 +629,85 @@ module public BytecodeCompiler =
             
             | other -> failwithf "TODO: %A" other
 
-        /// Compiles a term using a strict evaluation strategy.
-        and compileTermStrict (context: CompilationContext) (term: CoreTerm) =
-            let reg = compileTerm context false term
+        and compileTermStrict (context: CompilationContext) (target: Reg option) (term: CoreTerm) =
+            let rawReg = compileTerm context false target term
 
-            if context.EvaluatedRegs.Contains(reg.Index) then
-                reg
+            if context.EvaluatedRegs.Contains(rawReg.Index) then
+                rawReg
             else
-                let forcedReg = builder.Force(reg)
+                let forcedReg = builder.Force(rawReg, ?target = target)
                 MiscHelpers.markEvaluated forcedReg context
 
-        and compileOr (context: CompilationContext) (left: CoreTerm) (right: CoreTerm) =
-            let rRes = builder.Alloc()
-            let labelTrue = freshLabel()
-            let labelFalse = freshLabel()
+        and compileOr (context: CompilationContext) (target: Reg option) (left: CoreTerm) (right: CoreTerm) =
+            let rRes = defaultArg target (builder.Alloc())
             let labelEnd = freshLabel()
 
-            let rLeft = compileTermStrict context left
-            builder.JumpTrue(rLeft, labelTrue)
-
-            let rRight = compileTermStrict context right
-            builder.JumpTrue(rRight, labelTrue)
-
-            builder.SetLabel(labelFalse)
-            emitMov (rRes, builder.LoadBool(false)) context
-            builder.Jump(labelEnd)
-
-            builder.SetLabel(labelTrue)
-            emitMov (rRes, builder.LoadBool(true)) context
+            compileTermStrict context (Some rRes) left |> ignore
+            builder.JumpTrue(rRes, labelEnd)
+            compileTermStrict context (Some rRes) right |> ignore
 
             builder.SetLabel(labelEnd)
-
             MiscHelpers.markEvaluated rRes context
 
-        and compileAnd (context: CompilationContext) (left: CoreTerm) (right: CoreTerm) =
-            let rRes = builder.Alloc()
-            let labelTrue = freshLabel()
-            let labelFalse = freshLabel()
+        and compileAnd (context: CompilationContext) (target: Reg option) (left: CoreTerm) (right: CoreTerm) =
+            let rRes = defaultArg target (builder.Alloc())
             let labelEnd = freshLabel()
 
-            let rLeft = compileTermStrict context left
-            builder.JumpFalse(rLeft, labelFalse)
-
-            let rRight = compileTermStrict context right
-            builder.JumpFalse(rRight, labelFalse)
-
-            builder.SetLabel(labelTrue)
-            emitMov (rRes, builder.LoadBool(true)) context
-            builder.Jump(labelEnd)
-
-            builder.SetLabel(labelFalse)
-            emitMov (rRes, builder.LoadBool(false)) context
+            compileTermStrict context (Some rRes) left |> ignore
+            builder.JumpFalse(rRes, labelEnd)
+            compileTermStrict context (Some rRes) right |> ignore
 
             builder.SetLabel(labelEnd)
-
             MiscHelpers.markEvaluated rRes context
 
         /// Helper to compile the call to the internals functions for boolean comparisons.
         /// Returns a raw result (0 or 1). This is used when the user does not need the boolean result.
-        and tryCompileIntrinsicBoolean (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsicBoolean (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             match term with
             | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
-                let rLeft = compileTermStrict context left
-                let rRight = compileTermStrict context right
+                let rLeft = compileTermStrict context None left
+                let rRight = compileTermStrict context None right
 
                 let resReg =
                     match op with
-                    | Internals.Eq  -> builder.Eq(rLeft, rRight)
-                    | Internals.Neq -> builder.NotEqual(rLeft, rRight)
-                    | Internals.Le  -> builder.Le(rLeft, rRight)
-                    | Internals.Leq -> builder.Leq(rLeft, rRight)
-                    | Internals.Ge  -> builder.Ge(rLeft, rRight)
-                    | Internals.Geq -> builder.Geq(rLeft, rRight)
-                    | Internals.Or -> compileOr context left right
-                    | Internals.And -> compileAnd context left right
+                    | Internals.Eq  -> builder.Eq(rLeft, rRight, ?target = target)
+                    | Internals.Neq -> builder.NotEqual(rLeft, rRight, ?target = target)
+                    | Internals.Le  -> builder.Le(rLeft, rRight, ?target = target)
+                    | Internals.Leq -> builder.Leq(rLeft, rRight, ?target = target)
+                    | Internals.Ge  -> builder.Ge(rLeft, rRight, ?target = target)
+                    | Internals.Geq -> builder.Geq(rLeft, rRight, ?target = target)
+                    | Internals.Or -> compileOr context target left right
+                    | Internals.And -> compileAnd context target left right
                     | other -> failwithf "Unknown: %s" other
 
                 Some (MiscHelpers.markEvaluated resReg context)
             | _ -> None
 
         /// Helper to compile the call to the internals functions for arithmetic.
-        and tryCompileIntrinsicArithmetic (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsicArithmetic (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             match term with
             | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.arithmeticInternals) ->
 
-                let rLeft = compileTermStrict context left
-                let rRight = compileTermStrict context right
+                let rLeft = compileTermStrict context None left
+                let rRight = compileTermStrict context None right
 
                 let rawResult =
                     match op with
-                    | Internals.Add -> builder.Add(rLeft, rRight)
-                    | Internals.Sub -> builder.Sub(rLeft, rRight)
-                    | Internals.Mul -> builder.Mul(rLeft, rRight)
-                    | Internals.Div -> builder.Div(rLeft, rRight)
-                    | Internals.Mod -> builder.Mod(rLeft, rRight)
+                    | Internals.Add -> builder.Add(rLeft, rRight, ?target = target)
+                    | Internals.Sub -> builder.Sub(rLeft, rRight, ?target = target)
+                    | Internals.Mul -> builder.Mul(rLeft, rRight, ?target = target)
+                    | Internals.Div -> builder.Div(rLeft, rRight, ?target = target)
+                    | Internals.Mod -> builder.Mod(rLeft, rRight, ?target = target)
                     | _ -> failwith "??" // this may not happen
 
                 Some (MiscHelpers.markEvaluated rawResult context)
             | _ -> None
 
         /// Helper to compile the call to the internals functions for primitive type checking.
-        and tryCompileIntrinsicTypeCheck (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsicTypeCheck (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             match term with
             | Symbol { Symbol = symb; Children = [ arg ] } when
                 Array.contains symb Internals.primitiveTypeCheckingInternals ->
@@ -765,21 +722,20 @@ module public BytecodeCompiler =
                     | Internals.IsNumeric -> BindingRCL.SYM_NUM_NATIVE
                     | _ -> failwith "??" // this may not happen
 
-                let rArg = compileTermStrict context arg
-                let rRes = builder.Alloc()
+                let rArg = compileTermStrict context None arg
+                let rRes = defaultArg target (builder.Alloc())
                 let lblFail = freshLabel()
                 let lblEnd = freshLabel()
 
-                // TEST_TAG instruction
                 builder.TestTag(rArg, targetTag, lblFail)
 
                 // Success -> true
-                emitMov (rRes, builder.LoadBool(true)) context
+                builder.LoadBool(true, ?target = Some rRes) |> ignore
                 builder.Jump(lblEnd)
 
                 // Failure -> false
                 builder.SetLabel(lblFail)
-                emitMov (rRes, builder.LoadBool(false)) context
+                builder.LoadBool(false, ?target = Some rRes) |> ignore
 
                 // End label
                 builder.SetLabel(lblEnd)
@@ -789,29 +745,29 @@ module public BytecodeCompiler =
             | _ -> None
 
         /// Helper to compile the call to the internals functions for other primitives.
-        and tryCompileIntrinsicMisc (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsicMisc (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             match term with
             | Internals.Internal_print(x) ->
-                let xReg = compileTermStrict context x
+                let xReg = compileTermStrict context None x
                 builder.Print(xReg)
-                Some (builder.Unit())
-            
+                Some (builder.Unit(?target = target))
+
             | Internals.Internal_strcat(left, right) ->
-                let rLeft = compileTermStrict context left
-                let rRight = compileTermStrict context right
-                Some (builder.StrCat(rLeft, rRight))
+                let rLeft = compileTermStrict context None left
+                let rRight = compileTermStrict context None right
+                Some (builder.StrCat(rLeft, rRight, ?target = target))
 
             | Internals.Internal_ppshow(term) ->
-                let r = compileTermStrict context term
-                Some (builder.PPShow(r))
-            
+                let r = compileTermStrict context None term
+                Some (builder.PPShow(r, ?target = target))
+
             | _ -> None
 
-        and tryCompileIntrinsicTypeCast (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsicTypeCast (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
 
             let emitRawCast srcTerm targetType sourceType =
-                let srcReg = compileTermStrict context srcTerm
-                let resReg = builder.Cast(srcReg, targetType, sourceType) 
+                let srcReg = compileTermStrict context None srcTerm
+                let resReg = builder.Cast(srcReg, targetType, sourceType, ?target = target)
                 Some resReg
 
             match term with
@@ -834,14 +790,14 @@ module public BytecodeCompiler =
             | _ -> None
 
         /// Helper to compile internals if applyable.
-        and tryCompileIntrinsic (context: CompilationContext) (term: CoreTerm) =
+        and tryCompileIntrinsic (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             [ tryCompileIntrinsicBoolean
               tryCompileIntrinsicArithmetic
               tryCompileIntrinsicTypeCheck
               tryCompileIntrinsicMisc
               tryCompileIntrinsicTypeCast ]
 
-            |> List.tryPick (fun tryCompile -> tryCompile context term)
+            |> List.tryPick (fun tryCompile -> tryCompile context term target)
 
         /// Compiles a lazy closure or thunk by capturing free variables from the environment.
         /// 
@@ -852,7 +808,7 @@ module public BytecodeCompiler =
         /// - `isLazyThunk`: true to create a lazy thunk, false for a normal closure
         /// 
         /// Returns the register containing the created closure/thunk.
-        and compileCaptureScope (context: CompilationContext) (parameters: string list) (body: CoreTerm) (isLazyThunk: bool) (isTail: bool) =
+        and compileCaptureScope (context: CompilationContext) (parameters: string list) (body: CoreTerm) (isLazyThunk: bool) (isTail: bool) (target: Reg option) =
             let boundVars = if isLazyThunk then Set.empty else Set.ofList parameters
             let freeVars = BindingVariables.getBindingVariables boundVars body
 
@@ -891,7 +847,7 @@ module public BytecodeCompiler =
                         Arguments = Array.ofList argRegs
                         PathCache = Map.empty }
 
-                let resReg = compileTerm bodyContext isTail body
+                let resReg = compileTerm bodyContext isTail None body
                 builder.Ret(resReg)
                 builder.FinalizeFunction(patchIndex, savedMaxStack)
             )
@@ -899,8 +855,8 @@ module public BytecodeCompiler =
             // Creates a Closure or Delay with the captured upvalues.
 
             builder.SetLabel(labelSkip)
-            if isLazyThunk then builder.Delay(labelBody, captureRegs)
-            else builder.Closure(labelBody, captureRegs)
+            if isLazyThunk then builder.Delay(labelBody, captureRegs, ?target = target)
+            else builder.Closure(labelBody, captureRegs, ?target = target)
 
         and compileThunk (context: CompilationContext) (isTail: bool) (body: CoreTerm) =
             compileCaptureScope context [] body true isTail
@@ -947,18 +903,18 @@ module public BytecodeCompiler =
 
             | other ->
                 // The rest is not compilable as a symbolic data.
-                compileTerm context false other
+                compileTerm context false None other
 
 
         // --- Expression compiling --- //
 
 
-        and (|Intrinsic|_|) =
-            tryCompileIntrinsic
+        and (|Intrinsic|_|) (context: CompilationContext) (target: Reg option) (term: CoreTerm) =
+            tryCompileIntrinsic context term target
 
-        and compileMatch (match': CoreTermMatch) (context: CompilationContext) (isTail: bool) =
+        and compileMatch (match': CoreTermMatch) (context: CompilationContext) (isTail: bool) (target: Reg option) =
 
-            let toMatchReg = compileTerm context false match'.ToMatch
+            let toMatchReg = compileTerm context false None match'.ToMatch
             let occurrences =
                 match'.Cases
                 |> List.mapi (fun i (patt, _) ->
@@ -971,10 +927,10 @@ module public BytecodeCompiler =
             let tree = DecisionTreeCompiler.compile matrix
             let bodies = match'.Cases |> List.map snd |> Array.ofList
 
-            let onMatch ruleIndex leafContext =
-                compileTerm leafContext isTail bodies.[ruleIndex]
+            let onMatch ruleIndex leafContext matchTarget =
+                compileTerm leafContext isTail matchTarget bodies.[ruleIndex]
 
-            let onMismatch () =
+            let onMismatch mismatchTarget =
                 let gotReg = builder.PPShow toMatchReg
                 let allPatterns = match'.Cases |> List.map (fst >> PrettyPrinter.prettyPrintExpr)
 
@@ -998,22 +954,21 @@ module public BytecodeCompiler =
                 let msg2 = builder.LoadString "` instead."
 
                 let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
-                builder.RuntimeError finalMsg
+                builder.RuntimeError finalMsg |> ignore
+                builder.Unit(?target = mismatchTarget)
 
             builder.Scope(fun _ ->
                 let matchContext = { context with PathCache = Map.ofList [(Root, toMatchReg)] }
-                compileTree matchContext tree onMatch onMismatch)
+                compileTree matchContext tree onMatch onMismatch target)
 
-        and compileLet (let': CoreLet) (context: CompilationContext) =
-            let valReg = compileTerm context false let'.Value
-
-            let rootReg =
+        and compileLet (let': CoreLet) (context: CompilationContext) (target: Reg option) =
+            let evaluatedReg =
                 if let'.IsVariable then
-                    let r = builder.Alloc()
-                    emitMov (r, valReg) context
-                    r
+                    let varReg = builder.Alloc()
+                    compileTerm context false (Some varReg) let'.Value |> ignore
+                    varReg
                 else
-                    valReg
+                    compileTerm context false None let'.Value
 
             let occurrence =
                 { RuleIndex = 0; Pattern = let'.Pattern; Path = Root; Bindings = Map.empty; WhenClause = None }
@@ -1021,83 +976,84 @@ module public BytecodeCompiler =
             let matrix = { Occurrences = [occurrence]; RemainingPaths = [Root] }
             let tree = DecisionTreeCompiler.compile matrix
 
-            let onMatch _ _ = builder.Unit() // if it matches, it is handled in `valReg`
+            let onMatch _ _ _ = builder.Unit(?target = target) // if it matches, it is handled in `valReg`
 
-            let onMismatch () =
-                let gotReg = builder.PPShow valReg
+            let onMismatch mismatchTarget =
+                let gotReg = builder.PPShow evaluatedReg
                 let expected = PrettyPrinter.prettyPrintExpr let'.Pattern
 
                 let msg1 = builder.LoadString $"The case was incomplete. Expected pattern `{expected}`, but got `"
                 let msg2 = builder.LoadString "` instead."
 
                 let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
-                builder.RuntimeError finalMsg
+                builder.RuntimeError finalMsg |> ignore
+                builder.Unit(?target = mismatchTarget)
 
             builder.Scope(fun _ ->
-                let letContext = { context with PathCache = Map.ofList [(Root, rootReg)] }
-                compileTree letContext tree onMatch onMismatch)
+                let letContext = { context with PathCache = Map.ofList [(Root, evaluatedReg)] }
+                compileTree letContext tree onMatch onMismatch target)
 
-        and compileTermSequence (terms: CoreTerm list) (context: CompilationContext) (isTail: bool) =
+        and compileTermSequence (terms: CoreTerm list) (context: CompilationContext) (isTail: bool) (target: Reg option) =
 
             let rec compileSeq (currentEnv: Map<string, Reg>) (remaining: CoreTerm list) =
                 let seqContext = { context with Env = currentEnv }
 
                 match remaining with
-                | [] -> builder.Unit() // dummy
-                | [ x ] -> compileTerm seqContext isTail x
+                | [] -> builder.Unit(?target = target) // dummy
+                | [ x ] -> compileTerm seqContext isTail target x
                 | x :: xs ->
                     match x with
                     | CoreLet { Pattern = Variable name; Value = value; IsVariable = isVar } ->
-                        let valReg = compileTerm seqContext false value
 
                         let finalReg =
                             if isVar then
                                 let newReg = builder.Alloc()
-                                emitMov (newReg, valReg) context
+                                compileTerm seqContext false (Some newReg) value |> ignore
                                 newReg
                             else
-                                valReg
+                                compileTerm seqContext false None value
 
                         compileSeq (Map.add name finalReg currentEnv) xs
 
                     | CoreLet { Pattern = pattern; Value = value; IsVariable = isVar } ->
-                        let valReg = compileTerm seqContext false value
 
-                        let rootReg =
+                        let evaluatedReg =
                             if isVar then
                                 let r = builder.Alloc()
-                                emitMov (r, valReg) context
+                                compileTerm seqContext false (Some r) value |> ignore
                                 r
-                            else valReg
-                        
+                            else 
+                                compileTerm seqContext false None value
+
                         let occurence = { RuleIndex = 0; Pattern = pattern; Path = Root; Bindings = Map.empty; WhenClause = None }
                         let matrix = { Occurrences = [occurence]; RemainingPaths = [Root] }
                         let tree = DecisionTreeCompiler.compile matrix
 
-                        let onMatch _ (leafContext: CompilationContext) =
+                        let onMatch _ (leafContext: CompilationContext) matchTarget =
                             compileSeq leafContext.Env xs
 
-                        let onMismatch () =
-                            let gotReg = builder.PPShow valReg
+                        let onMismatch mismatchTarget =
+                            let gotReg = builder.PPShow evaluatedReg 
                             let expected = PrettyPrinter.prettyPrintExpr pattern
 
                             let msg1 = builder.LoadString $"The case was incomplete. Expected pattern `{expected}`, but got `"
                             let msg2 = builder.LoadString "` instead."
-
                             let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
-                            builder.RuntimeError finalMsg
+
+                            builder.RuntimeError finalMsg |> ignore
+                            builder.Unit(?target = mismatchTarget)
 
                         builder.Scope(fun _ ->
-                            let letContext = { seqContext with PathCache = Map.ofList [(Root, rootReg)] }
-                            compileTree letContext tree onMatch onMismatch)
+                            let letContext = { seqContext with PathCache = Map.ofList [(Root, evaluatedReg)] }
+                            compileTree letContext tree onMatch onMismatch None)
 
                     | _ ->
-                        compileTerm seqContext false x |> ignore
+                        compileTerm seqContext false None x |> ignore
                         compileSeq currentEnv xs
 
             compileSeq context.Env terms
 
-        and compileWhileLoop (whileLoop: CoreWhile) (context: CompilationContext) =
+        and compileWhileLoop (whileLoop: CoreWhile) (context: CompilationContext) (target: Reg option) =
             let loopLabel = freshLabel()
             let testLabel = freshLabel()
             let endLabel = freshLabel()
@@ -1107,98 +1063,98 @@ module public BytecodeCompiler =
 
             // The body of the loop.
             builder.SetLabel(loopLabel)
-            builder.Scope(fun _ -> compileTerm context false whileLoop.Body |> ignore)
+            builder.Scope(fun _ -> compileTerm context false None whileLoop.Body |> ignore)
 
             // The predicate check.
             builder.SetLabel(testLabel)
 
             // Attempts to compile the predicate as a native comparison.
             let predBool =
-                match tryCompileIntrinsicBoolean context whileLoop.Predicate with
+                match tryCompileIntrinsicBoolean context whileLoop.Predicate target with
                 | Some rawReg -> rawReg
-                | None -> compileTerm context false whileLoop.Predicate
+                | None -> compileTerm context false None whileLoop.Predicate
 
             // If true, jump back to the body.
             builder.JumpTrue(predBool, loopLabel)
 
             builder.SetLabel(endLabel)
-            builder.Unit()
+            builder.Unit(?target = target)
 
-        and compileRecordExtend (record: CoreRecordExtend) (context: CompilationContext) =
+        and compileRecordExtend (record: CoreRecordExtend) (context: CompilationContext) (target: Reg option) =
             let extensionRegs =
                 record.Extension
                 |> List.collect (fun (name, expr) ->
-                    let rVal = compileTerm context false expr
+                    let rVal = compileTerm context false None expr
                     let rKey = builder.LoadAtom name
                     [ rKey; rVal ])
 
             match record.BaseRecord with
-            | None -> builder.MkRecord(extensionRegs)
+            | None -> builder.MkRecord(extensionRegs, ?target = target)
             | Some baseTerm ->
-                let rBase = compileTerm context false baseTerm
-                builder.ExtendRecord(rBase, extensionRegs)
+                let rBase = compileTerm context false None baseTerm
+                builder.ExtendRecord(rBase, extensionRegs, ?target = target)
 
-        and compileSymbol (symbol: CoreSymbol) (context: CompilationContext) (isTail: bool) =
+        and compileSymbol (symbol: CoreSymbol) (context: CompilationContext) (isTail: bool) (target: Reg option) =
             let name = symbol.Symbol
             let children = symbol.Children
             let arity = List.length children
 
             match symbol with
             | { Symbol = "true"; Children = [] } ->
-                MiscHelpers.markEvaluated (builder.LoadBool(true)) context
+                MiscHelpers.markEvaluated (builder.LoadBool(true, ?target = target)) context
 
             | { Symbol = "false"; Children = [] } ->
-                MiscHelpers.markEvaluated (builder.LoadBool(false)) context
+                MiscHelpers.markEvaluated (builder.LoadBool(false, ?target = target)) context
 
             | { Symbol = "lazy"; Children = [ body ] } ->
-                compileThunk context isTail body
+                compileThunk context isTail body target
 
             | { Symbol = "force"; Children = [ expr ] } ->
-                let thunkReg = compileTerm context isTail expr
+                let thunkReg = compileTerm context isTail None expr
                 let res = builder.Force(thunkReg)
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_alloc"; Children = [ sizeExpr ] } ->
-                let sizeReg = compileTermStrict context sizeExpr
-                let res = builder.BufferAlloc(sizeReg)
+                let sizeReg = compileTermStrict context None sizeExpr
+                let res = builder.BufferAlloc(sizeReg, ?target = target)
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_get"; Children = [ bufExpr; indexExpr ] } ->
-                let bufReg = compileTermStrict context bufExpr
-                let indexReg = compileTermStrict context indexExpr
-                let res = builder.BufferGet(bufReg, indexReg)
+                let bufReg = compileTermStrict context None bufExpr
+                let indexReg = compileTermStrict context None indexExpr
+                let res = builder.BufferGet(bufReg, indexReg, ?target = target)
                 MiscHelpers.markEvaluated res context
-            
+
             | { Symbol = "__buffer_set"; Children = [ bufExpr; indexExpr; valExpr ] } ->
-                let bufReg = compileTermStrict context bufExpr
-                let indexReg = compileTermStrict context indexExpr
-                let valReg = compileTermStrict context valExpr
+                let bufReg = compileTermStrict context None bufExpr
+                let indexReg = compileTermStrict context None indexExpr
+                let valReg = compileTermStrict context None valExpr
 
                 builder.BufferSet(bufReg, indexReg, valReg) // in-place modification but still return the pointer
                 MiscHelpers.markEvaluated bufReg context
 
             | { Symbol = "__buffer_realloc"; Children = [ bufExpr; newSizeExpr ] } ->
-                let bufReg = compileTermStrict context bufExpr
-                let newSizeReg = compileTermStrict context newSizeExpr
+                let bufReg = compileTermStrict context None bufExpr
+                let newSizeReg = compileTermStrict context None newSizeExpr
 
                 builder.BufferRealloc(bufReg, newSizeReg) // in-place modification but still return the pointer
                 MiscHelpers.markEvaluated bufReg context
 
             | { Symbol = "__buffer_length"; Children = [ bufExpr ] } ->
-                let bufReg = compileTermStrict context bufExpr
-                let res = builder.BufferLength(bufReg)
+                let bufReg = compileTermStrict context None bufExpr
+                let res = builder.BufferLength(bufReg, ?target = target)
 
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_to_string"; Children = [ bufExpr ] } ->
-                let bufReg = compileTermStrict context bufExpr
-                let res = builder.BufferToString(bufReg)
+                let bufReg = compileTermStrict context None bufExpr
+                let res = builder.BufferToString(bufReg, ?target = target)
 
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__string_to_buffer"; Children = [ strExpr ] } ->
-                let strReg = compileTermStrict context strExpr
-                let res = builder.StringToBuffer(strReg)
+                let strReg = compileTermStrict context None strExpr
+                let res = builder.StringToBuffer(strReg, ?target = target)
 
                 MiscHelpers.markEvaluated res context
 
@@ -1210,11 +1166,11 @@ module public BytecodeCompiler =
                     match strategy with
                     | (Strict | Memoize) ->
                         // Strict: everything is evaluated before the call (default behavior).
-                        List.map (compileTermStrict context) children
+                        List.map (compileTermStrict context None) children
 
                     | Lazy ->
                         // Lazy: each argument is transformed into a Thunk.
-                        List.map (compileThunk context false) children
+                        List.map (fun child -> compileThunk context false child target) children
 
                     | (Outermost | Invalid) ->
                         // Outermost: each argument is reified in symbolic data.
@@ -1230,8 +1186,8 @@ module public BytecodeCompiler =
                     // Check in the FFI first
                     match context.Global.FFIRegistery.TryGetIndex(resolvedName) with
                     | Some ffiIndex ->
-                        let strictArgs = List.map (compileTermStrict context) children
-                        builder.CallFFI(ffiIndex, strictArgs)
+                        let strictArgs = List.map (compileTermStrict context None) children
+                        builder.CallFFI(ffiIndex, strictArgs, ?target = target)
 
                     | None ->
 
@@ -1242,9 +1198,9 @@ module public BytecodeCompiler =
                         | Some (label, strategy) ->
                             if isTail then
                                 builder.Tailcall(label, argsRegs strategy)
-                                Reg 0 // dummy
+                                defaultArg target (Reg 0)
                             else
-                                builder.Call(label, argsRegs strategy)
+                                builder.Call(label, argsRegs strategy, ?target = target)
 
                         | None ->
                             let args =
@@ -1252,19 +1208,19 @@ module public BytecodeCompiler =
                                 | Outermost ->
                                     // In the RHS of an outermost rule, we want to evaluate children
                                     // to allow function calls rather that a simple substitution.
-                                    List.map (compileTerm context false) children
+                                    List.map (compileTerm context false None) children
                                 | _ ->
                                     argsRegs context.Strategy
 
-                            builder.AllocData(name, args)
+                            builder.AllocData(name, args, ?target = target)
 
-        and compileSubstitution (substitution: CoreSubstitution) (context: CompilationContext) =
-            let astReg = compileTermStrict context substitution.InExpr
+        and compileSubstitution (substitution: CoreSubstitution) (context: CompilationContext) (target: Reg option) =
+            let astReg = compileTermStrict context None substitution.InExpr
 
             let finalReg =
                 substitution.Env
                 |> List.fold (fun currentTreeReg (sym, valExpr) ->
-                    let valReg = compileTermStrict context valExpr
+                    let valReg = compileTermStrict context None valExpr
                     let atomReg = builder.LoadAtom(sym.Symbol)
                     let nextReg = builder.Alloc()
 
@@ -1272,64 +1228,71 @@ module public BytecodeCompiler =
                     nextReg
                 ) astReg
 
-            finalReg
+            match target with
+            | Some t when t.Index <> finalReg.Index ->
+                emitMov (t, finalReg) context
+                t
+            | _ -> finalReg
 
-        and compileUsingContext (usingContext: CoreUsingContext) (context: CompilationContext) (isTail: bool) =
+        and compileUsingContext (usingContext: CoreUsingContext) (context: CompilationContext) (isTail: bool) (target: Reg option) =
             let usingContextName = usingContext.Context
 
             let contextDependencies = ContextResolution.getContextDependencies program usingContextName
             let addedContextDependencies = usingContextName :: contextDependencies @ context.ActiveContexts
             let newCompilationContext = { context with ActiveContexts = addedContextDependencies }
 
-            compileTerm newCompilationContext isTail usingContext.Expr
+            compileTerm newCompilationContext isTail target usingContext.Expr
 
-        and compileFunctionalApplication (fa: FunctionalApplication) (context: CompilationContext) =
-            let bReg = compileTerm context false fa.Base
+        and compileFunctionalApplication (fa: FunctionalApplication) (context: CompilationContext) (target: Reg option) =
+            let bReg = compileTerm context false None fa.Base
             let bStrict = builder.Force(bReg)
-            let argsRegs = List.map (compileTerm context false) fa.Arguments
+            let argsRegs = List.map (compileTerm context false None) fa.Arguments
 
-            builder.Apply(bStrict, argsRegs)
+            builder.Apply(bStrict, argsRegs, ?target = target)
 
-        and compileUpdateVariable (name: string, value: CoreTerm) (context: CompilationContext) =
-            let valReg = compileTerm context false value
-
+        and compileUpdateVariable (name: string, value: CoreTerm) (context: CompilationContext) (target: Reg option) =
             match Map.tryFind name context.Env with
             | None -> failwithf "Cannot compile the variable update '%s'." name
-            | Some targetReg ->
-                emitMov (targetReg, valReg) context
-                builder.Unit()
+            | Some varReg ->
+                compileTerm context false (Some varReg) value |> ignore
+                builder.Unit(?target = target)
 
-        and compileLiteral (lit: CoreLiteral) (context: CompilationContext) =
+        and compileLiteral (lit: CoreLiteral) (context: CompilationContext) (target: Reg option) =
             let reg =
                 match lit with
-                | Integer i -> builder.LoadInt (int i)
-                | Float f -> builder.LoadFloat f
-                | String s -> builder.LoadString s
-                | Char c -> builder.LoadChar c
+                | Integer i -> builder.LoadInt (int i, ?target = target)
+                | Float f -> builder.LoadFloat (f, ?target = target)
+                | String s -> builder.LoadString (s, ?target = target)
+                | Char c -> builder.LoadChar (c, ?target = target)
 
             MiscHelpers.markEvaluated reg context
 
-        and compileVariable (name: string) (context: CompilationContext) =
+        and compileVariable (name: string) (context: CompilationContext) (target: Reg option) =
             match Map.tryFind name context.Env with
-            | Some r -> r
+            | Some r ->
+                match target with
+                | Some t when t.Index <> r.Index ->
+                    emitMov (t, r) context
+                    t
+                | _ -> r
             | None -> failwithf "Variable '%s unfound." name
 
-        and compileTerm (context: CompilationContext) (isTail: bool) (term: CoreTerm) =
+        and compileTerm (context: CompilationContext) (isTail: bool) (target: Reg option) (term: CoreTerm) =
             match term with
-            | Intrinsic context reg -> reg
-            | Variable name -> compileVariable name context
-            | Literal lit -> compileLiteral lit context
-            | RecordExtend record -> compileRecordExtend record context
-            | CoreLet let' -> compileLet let' context
-            | Match match' -> compileMatch match' context isTail
-            | TermSequence terms -> compileTermSequence terms context isTail
-            | WhileLoop whileLoop -> compileWhileLoop whileLoop context
-            | Symbol symbol -> compileSymbol symbol context isTail
-            | FunctionalApplication fa -> compileFunctionalApplication fa context
-            | Closure closure -> compileClosure context closure.Parameters closure.Value isTail
-            | UpdateVariable(name, value) -> compileUpdateVariable (name, value) context
-            | Substitution sub -> compileSubstitution sub context
-            | UsingContext usingContext -> compileUsingContext usingContext context isTail
+            | Intrinsic context target reg -> reg
+            | Variable name -> compileVariable name context target
+            | Literal lit -> compileLiteral lit context target
+            | RecordExtend record -> compileRecordExtend record context target
+            | CoreLet let' -> compileLet let' context target
+            | Match match' -> compileMatch match' context isTail target
+            | TermSequence terms -> compileTermSequence terms context isTail target
+            | WhileLoop whileLoop -> compileWhileLoop whileLoop context target
+            | Symbol symbol -> compileSymbol symbol context isTail target
+            | FunctionalApplication fa -> compileFunctionalApplication fa context target
+            | Closure closure -> compileClosure context closure.Parameters closure.Value isTail target
+            | UpdateVariable(name, value) -> compileUpdateVariable (name, value) context target
+            | Substitution sub -> compileSubstitution sub context target
+            | UsingContext usingContext -> compileUsingContext usingContext context isTail target
             | _ -> failwithf "TODO: %s" (PrettyPrinter.prettyPrintExpr term)
 
         member public __.Compile() =
@@ -1400,7 +1363,7 @@ module public BytecodeCompiler =
                       ActiveContexts = activeContexts
                       EvaluatedRegs = new HashSet<int>() }
 
-                let fallback () =
+                let fallback mismatchTarget =
 
                     // The `tryFallbackToGlobal` mechanism prevents a local context from completely shadowing
                     // global functions that share the same name but do not satisfy the current context's rules.
@@ -1456,22 +1419,22 @@ module public BytecodeCompiler =
                             // already jumped in `tryFallbackToGlobal`
                             builder.Alloc() // dummy
                         else
-                            builder.AllocData(originalName, List.ofArray newArgs)
+                            builder.AllocData(originalName, List.ofArray newArgs, ?target = mismatchTarget)
 
                     | _ ->
                         if tryFallbackToGlobal() then
                             // already jumped in `tryFallbackToGlobal`
                             builder.Alloc() // dummy
                         else
-                            builder.AllocData(originalName, List.ofArray argRegs)
+                            builder.AllocData(originalName, List.ofArray argRegs, ?target = mismatchTarget)
 
-                let onMatch ruleIndex leafContext =
+                let onMatch ruleIndex leafContext matchTarget =
                     let rule = rulesArray.[ruleIndex]
                     let localStrategy = Strategy.FromAST rule.Strategy
 
                     match localStrategy with
                     | Strategy.Invalid ->
-                        let errorValReg = compileTerm leafContext false rule.RHS
+                        let errorValReg = compileTerm leafContext false None rule.RHS
                         let errorStrReg = builder.PPShow(errorValReg)
                         let header = ColorTerm.colorize (ColorTerm.Color.Basic "red") "Invalid rule matched: "
                         let prefixReg = builder.LoadString header
@@ -1481,10 +1444,10 @@ module public BytecodeCompiler =
 
                         builder.Print(fullMsgReg)
                         builder.Halt(1) // error
-                        builder.Alloc() // dummy
+                        builder.Unit(?target = matchTarget)
 
                     | _ ->
-                        compileTerm leafContext (symbolName <> "main") rule.RHS
+                        compileTerm leafContext (symbolName <> "main") matchTarget rule.RHS
 
                 let optimizedTree =
                     match tree with
@@ -1493,7 +1456,7 @@ module public BytecodeCompiler =
                         Option.defaultValue tree newTree
                     | _ -> tree
 
-                let result = compileTree context optimizedTree onMatch fallback
+                let result = compileTree context optimizedTree onMatch fallback None
 
                 if symbolName = "main" then builder.Halt() // stop the program
                 else builder.Ret(result)

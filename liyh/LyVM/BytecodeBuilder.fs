@@ -188,10 +188,10 @@ type public ByteCodeBuilder() =
         instructions.Add(Label labelId)
 
     member public __.Halt (returnValue: int) =
-        instructions.Add(Instr(OpCode.Halt, returnValue, 0, 0, 0));
+        instructions.Add(Instr(OpCode.Halt, returnValue, 0, 0, 0))
 
     member public this.Halt () =
-        this.Halt(0);
+        this.Halt(0)
 
     member public __.Jump (label: int) =
         instructions.Add(Instr(OpCode.Jump, label, 0, 0, 0))
@@ -210,24 +210,21 @@ type public ByteCodeBuilder() =
     member public __.Mov (Reg dst, Reg src) =
         instructions.Add(Instr(OpCode.Mov, dst, src, 0, 0))
 
-    member public this.Call (label: int, args: Reg list) =
+    member public this.Call (label: int, args: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
+
         // The VM needs the arguments to be continious, so we detect if the given registers
         // are already continious not the emit useless `mov` instructions.
         match this.TryGetContiguousBlock args with
         | Some (Reg startIdx) ->
-            let dst = this.Alloc()
-            let (Reg dstIdx) = dst
-
-            instructions.Add(Instr(OpCode.Call, label, startIdx, args.Length, dstIdx))
+            instructions.Add(Instr(OpCode.Call, label, startIdx, args.Length, dst.Index))
             dst
 
         | None ->
             let (blockStart, count) = this.PrepareBlock args
-            let dst = this.Alloc()
             let (Reg blockIdx) = blockStart
-            let (Reg dstIdx) = dst
 
-            instructions.Add(Instr(OpCode.Call, label, blockIdx, count, dstIdx))
+            instructions.Add(Instr(OpCode.Call, label, blockIdx, count, dst.Index))
             this.CompactStack(blockStart, count, dst)
 
     member public this.Tailcall (label: int, args: Reg list) =
@@ -243,177 +240,162 @@ type public ByteCodeBuilder() =
 
             instructions.Add(Instr(OpCode.Tailcall, label, blockIdx, count, 0))
 
-    member public this.Apply (Reg fnReg, args: Reg list) =
+    member public this.Apply (Reg fnReg, args: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
+
         // The VM needs the arguments to be continious, so we detect if the given registers
         // are already continious not the emit useless `mov` instructions.
         match this.TryGetContiguousBlock args with
         | Some (Reg startIdx) ->
-            let dst = this.Alloc()
-            let (Reg dstIdx) = dst
-
-            instructions.Add(Instr(OpCode.Apply, fnReg, startIdx, args.Length, dstIdx))
+            instructions.Add(Instr(OpCode.Apply, fnReg, startIdx, args.Length, dst.Index))
             dst
 
         | None ->
             let (blockStart, count) = this.PrepareBlock args
-            let dst = this.Alloc()
             let (Reg blockIdx) = blockStart
-            let (Reg dstIdx) = dst
 
-            instructions.Add(Instr(OpCode.Apply, fnReg, blockIdx, count, dstIdx))
+            instructions.Add(Instr(OpCode.Apply, fnReg, blockIdx, count, dst.Index))
             this.CompactStack(blockStart, count, dst)
 
-    member public this.LoadInt (value: int) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.LoadInt (value: int, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(OpCode.LoadInt, dstIdx, value, 0, 0))
+        instructions.Add(Instr(OpCode.LoadInt, dst.Index, value, 0, 0))
         dst
 
-    member public this.LoadChar (c: char) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.LoadChar (c: char, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(OpCode.LoadChar, dstIdx, int c, 0, 0))
+        instructions.Add(Instr(OpCode.LoadChar, dst.Index, int c, 0, 0))
         dst
 
-    member public this.LoadFloat (value: float) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.LoadFloat (value: float, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let bits = BitConverter.DoubleToInt64Bits value
 
-        instructions.Add(Instr(OpCode.LoadFloat, dstIdx, int bits, int (bits >>> 32), 0))
+        instructions.Add(Instr(OpCode.LoadFloat, dst.Index, int bits, int (bits >>> 32), 0))
         dst
 
-    member public this.LoadString (s: string) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.LoadString (s: string, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let strId = InternTable.StringTable.Intern s
 
-        instructions.Add(Instr(OpCode.LoadString, dstIdx, strId, 0, 0))
+        instructions.Add(Instr(OpCode.LoadString, dst.Index, strId, 0, 0))
         dst
 
-    member public this.LoadAtom (name: string) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.LoadAtom (name: string, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let atomId = InternTable.AtomTable.Intern name
 
-        instructions.Add(Instr(OpCode.LoadAtom, dstIdx, atomId, 0, 0))
+        instructions.Add(Instr(OpCode.LoadAtom, dst.Index, atomId, 0, 0))
         dst
 
-    member public this.LoadBool (value: bool) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
-        let rawVal = if value then 1 else 0
+    member public this.LoadBool (value: bool, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(OpCode.LoadBool, dstIdx, rawVal, 0, 0))
+        instructions.Add(Instr(OpCode.LoadBool, dst.Index, (if value then 1 else 0), 0, 0))
         dst
 
-    member public this.Cast (src: Reg, targetType: int, srcType: int) =
-        let dst = this.Alloc()
+    member public this.Cast (src: Reg, targetType: int, srcType: int, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
         instructions.Add(Instr(OpCode.Cast, dst.Index, src.Index, targetType, srcType))
         dst
 
     /// Used when the end of a computation require a register but no value. This method allows to avoid
     /// allocating the symbol unit for nothing.
-    member public this.Unit () =
-        this.Alloc()
+    member public this.Unit (?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
+        let atomId = InternTable.AtomTable.Intern "unit" // A free (unallocated) `unit` would be required at the VM level...
 
-    member private this.BinOp (opcode: OpCode, Reg left, Reg right) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
-
-        instructions.Add(Instr(opcode, dstIdx, left, right, 0))
+        instructions.Add(Instr(OpCode.LoadAtom, dst.Index, atomId, 0, 0))
         dst
 
-    member private this.UnOp (opcode: OpCode, Reg src) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member private this.BinOp (opcode: OpCode, Reg left, Reg right, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(opcode, dstIdx, src, 0, 0))
+        instructions.Add(Instr(opcode, dst.Index, left, right, 0))
         dst
 
-    member public this.Add (l, r) = this.BinOp(OpCode.Add, l, r)
-    member public this.Sub (l, r) = this.BinOp(OpCode.Sub, l, r)
-    member public this.Mul (l, r) = this.BinOp(OpCode.Mul, l, r)
-    member public this.Div (l, r) = this.BinOp(OpCode.Div, l, r)
-    member public this.Mod (l, r) = this.BinOp(OpCode.Mod, l, r)
-    member public this.Neg (src) = this.UnOp(OpCode.Neg, src)
+    member private this.UnOp (opcode: OpCode, Reg src, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-    member public this.Eq (l, r) = this.BinOp(OpCode.Equal, l, r)
-    member public this.NotEqual (l, r) = this.BinOp(OpCode.NotEqual, l, r)
-    member public this.Leq (l, r) = this.BinOp(OpCode.Leq, l, r)
-    member public this.Le (l, r) = this.BinOp(OpCode.Le, l, r)
-    member public this.Geq (l, r) = this.BinOp(OpCode.Geq, l, r)
-    member public this.Ge (l, r) = this.BinOp(OpCode.Ge, l, r)
-    member public this.Not (src) = this.UnOp(OpCode.Not, src)
+        instructions.Add(Instr(opcode, dst.Index, src, 0, 0))
+        dst
 
-    member public this.StrCat (l, r) =
-        this.BinOp(OpCode.StrCat, l, r)
+    member public this.Add (l, r, ?target: Reg) = this.BinOp(OpCode.Add, l, r, ?target = target)
+    member public this.Sub (l, r, ?target: Reg) = this.BinOp(OpCode.Sub, l, r, ?target = target)
+    member public this.Mul (l, r, ?target: Reg) = this.BinOp(OpCode.Mul, l, r, ?target = target)
+    member public this.Div (l, r, ?target: Reg) = this.BinOp(OpCode.Div, l, r, ?target = target)
+    member public this.Mod (l, r, ?target: Reg) = this.BinOp(OpCode.Mod, l, r, ?target = target)
+    member public this.Neg (src, ?target: Reg) = this.UnOp(OpCode.Neg, src, ?target = target)
 
-    member public this.MkRecord (fields: Reg list) =
+    member public this.Eq (l, r, ?target: Reg) = this.BinOp(OpCode.Equal, l, r, ?target = target)
+    member public this.NotEqual (l, r, ?target: Reg) = this.BinOp(OpCode.NotEqual, l, r, ?target = target)
+    member public this.Leq (l, r, ?target: Reg) = this.BinOp(OpCode.Leq, l, r, ?target = target)
+    member public this.Le (l, r, ?target: Reg) = this.BinOp(OpCode.Le, l, r, ?target = target)
+    member public this.Geq (l, r, ?target: Reg) = this.BinOp(OpCode.Geq, l, r, ?target = target)
+    member public this.Ge (l, r, ?target: Reg) = this.BinOp(OpCode.Ge, l, r, ?target = target)
+    member public this.Not (src, ?target: Reg) = this.UnOp(OpCode.Not, src, ?target = target)
+
+    member public this.StrCat (l, r, ?target: Reg) =
+        this.BinOp(OpCode.StrCat, l, r, ?target = target)
+
+    member public this.MkRecord (fields: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let (blockStart, count) = this.PrepareBlock fields
-        let dst = this.Alloc()
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.MkRecord, dstIdx, count, blockIdx, 0))
+        instructions.Add(Instr(OpCode.MkRecord, dst.Index, count, blockIdx, 0))
         this.CompactStack(blockStart, count, dst)
 
-    member public this.ExtendRecord (Reg baseReg, newFields: Reg list) =
+    member public this.ExtendRecord (Reg baseReg, newFields: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let (blockStart, count) = this.PrepareBlock newFields
-        let dst = this.Alloc()
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.ExtendRecord, dstIdx, baseReg, count, blockIdx))
+        instructions.Add(Instr(OpCode.ExtendRecord, dst.Index, baseReg, count, blockIdx))
         this.CompactStack(blockStart, count, dst)
 
-    member public this.GetField (Reg record, fieldName: string, failLabel: int) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.GetField (Reg record, fieldName: string, failLabel: int, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
         let fieldId = InternTable.AtomTable.Intern fieldName
-        instructions.Add(Instr(OpCode.GetField, dstIdx, record, fieldId, failLabel))
+        instructions.Add(Instr(OpCode.GetField, dst.Index, record, fieldId, failLabel))
         dst
 
-    member public this.AllocData (tagName: string, children: Reg list) =
+    member public this.AllocData (tagName: string, children: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let (blockStart, count) = this.PrepareBlock children
-        let dst = this.Alloc()
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
         let tagId = InternTable.AtomTable.Intern tagName
 
-        instructions.Add(Instr(OpCode.Alloc, dstIdx, tagId, count, blockIdx))
+        instructions.Add(Instr(OpCode.Alloc, dst.Index, tagId, count, blockIdx))
         this.CompactStack(blockStart, count, dst)
 
     member public __.Subst (dst: Reg, src: Reg, toRep: Reg, value: Reg) =
         instructions.Add(Instr(OpCode.Subst, dst.Index, src.Index, toRep.Index, value.Index))
 
-    member public this.Closure (label: int, captures: Reg list) =
+    member public this.Closure (label: int, captures: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let (blockStart, count) = this.PrepareBlock captures
-        let dst = this.Alloc()
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.Closure, dstIdx, label, count, blockIdx))
+        instructions.Add(Instr(OpCode.Closure, dst.Index, label, count, blockIdx))
         this.CompactStack(blockStart, count, dst)
 
-    member public this.CallClosure (Reg closure, args: Reg list) =
+    member public this.CallClosure (Reg closure, args: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let (blockStart, count) = this.PrepareBlock args
-        let dst = this.Alloc()
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.CallClosure, closure, blockIdx, count, dstIdx))
+        instructions.Add(Instr(OpCode.CallClosure, closure, blockIdx, count, dst.Index))
         this.CompactStack(blockStart, count, dst)
 
-    member public this.GetUpvalue (index: int) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.GetUpvalue (index: int, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(OpCode.GetUpvalue, dstIdx, index, 0, 0))
+        instructions.Add(Instr(OpCode.GetUpvalue, dst.Index, index, 0, 0))
         dst
 
     /// Test tag for user defined symbols.
@@ -428,27 +410,24 @@ type public ByteCodeBuilder() =
     member public __.TestRecord (Reg term, failLabel: int) =
         instructions.Add(Instr(OpCode.TestTag, term, SYM_RECORD_NATIVE, failLabel, 0))
 
-    member public this.Delay (label: int, captures: Reg list) =
+    member public this.Delay (label: int, captures: Reg list, ?target: Reg) =
         let (blockStart, count) = this.PrepareBlock captures
-        let dst = this.Alloc()
-
+        let dst = defaultArg target (this.Alloc())
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.Delay, dstIdx, label, count, blockIdx))
+        instructions.Add(Instr(OpCode.Delay, dst.Index, label, count, blockIdx))
         this.CompactStack(blockStart, count, dst)
 
-    member public this.Force (Reg thunkReg) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.Force (Reg thunkReg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(OpCode.Force, dstIdx, thunkReg, 0, 0))
+        instructions.Add(Instr(OpCode.Force, dst.Index, thunkReg, 0, 0))
         dst
 
-    member public this.Deconstruct (Reg term, childIndex: int) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
-        instructions.Add(Instr(OpCode.Deconstruct, dstIdx, term, childIndex, 0))
+    member public this.Deconstruct (Reg term, childIndex: int, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
+
+        instructions.Add(Instr(OpCode.Deconstruct, dst.Index, term, childIndex, 0))
         dst
 
     member public __.Print (Reg r) =
@@ -494,29 +473,27 @@ type public ByteCodeBuilder() =
 
         this.LoadInt(-1) // dummy
 
-    member public this.PPShow (Reg src) =
-        let dst = this.Alloc()
-        let (Reg dstIdx) = dst
+    member public this.PPShow (Reg src, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
 
-        instructions.Add(Instr(OpCode.PPShow, dstIdx, src, 0, 0))
+        instructions.Add(Instr(OpCode.PPShow, dst.Index, src, 0, 0))
         dst
 
-    member public this.CallFFI (ffiIndex: int, args: Reg list) =
+    member public this.CallFFI (ffiIndex: int, args: Reg list, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         let (blockStart, count) = this.PrepareBlock args
-        let dst = this.Alloc()
         let (Reg blockIdx) = blockStart
-        let (Reg dstIdx) = dst
 
-        instructions.Add(Instr(OpCode.CallFFI, dstIdx, ffiIndex, blockIdx, 0))
+        instructions.Add(Instr(OpCode.CallFFI, dst.Index, ffiIndex, blockIdx, 0))
         this.CompactStack(blockStart, count, dst)
 
-    member public this.BufferAlloc (sizeReg: Reg) =
-        let dst = this.Alloc()
+    member public this.BufferAlloc (sizeReg: Reg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         instructions.Add(Instr(OpCode.BufferAlloc, dst.Index, sizeReg.Index, 0, 0))
         dst
 
-    member public this.BufferGet (bufReg: Reg, indexReg: Reg) =
-        let dst = this.Alloc()
+    member public this.BufferGet (bufReg: Reg, indexReg: Reg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         instructions.Add(Instr(OpCode.BufferGet, dst.Index, bufReg.Index, indexReg.Index, 0))
         dst
 
@@ -526,18 +503,18 @@ type public ByteCodeBuilder() =
     member public this.BufferRealloc (bufReg: Reg, newSizeReg: Reg) =
         instructions.Add(Instr(OpCode.BufferRealloc, bufReg.Index, newSizeReg.Index, 0, 0))
 
-    member public this.BufferLength (bufReg: Reg) =
-        let dst = this.Alloc()
+    member public this.BufferLength (bufReg: Reg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         instructions.Add(Instr(OpCode.BufferLength, dst.Index, bufReg.Index, 0, 0))
         dst
 
-    member public this.BufferToString (bufReg: Reg) =
-        let dst = this.Alloc()
+    member public this.BufferToString (bufReg: Reg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         instructions.Add(Instr(OpCode.BufferToString, dst.Index, bufReg.Index, 0, 0))
         dst
 
-    member public this.StringToBuffer (bufReg: Reg) =
-        let dst = this.Alloc()
+    member public this.StringToBuffer (bufReg: Reg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
         instructions.Add(Instr(OpCode.StringToBuffer, dst.Index, bufReg.Index, 0, 0))
         dst
 
