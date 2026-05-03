@@ -346,12 +346,20 @@ static void drain_queue(dec_queue_t *queue, arena_t *arena)
                 rc_decrement(queue, h->children[i]);
         }
 
+        size_t alloc_words = arity;
+
+        if (h->id == SYM_STRING_NATIVE || h->id == SYM_PTR_NATIVE || h->id == SYM_FLOAT_NATIVE)
+            alloc_words = (sizeof(void *) + sizeof(term_t) - 1) / sizeof(term_t);
+
+        else if (h->id == SYM_BUFFER_NATIVE)
+            alloc_words = 2;
+
         // If the arity is in the bounds, recycle the memory of the dead object for a next use.
-        if (arity < MAX_RECYCLED_ARITY)
+        if (alloc_words < MAX_RECYCLED_ARITY)
         {
             free_node_t *dead_node = (free_node_t *)h;
-            dead_node->next = arena->free_lists[arity];
-            arena->free_lists[arity] = dead_node;
+            dead_node->next = arena->free_lists[alloc_words];
+            arena->free_lists[alloc_words] = dead_node;
         }
     }
 }
@@ -4082,7 +4090,6 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             memcpy(buffer + len1, s2, len2);
             buffer[len1 + len2] = '\0';
 
-            // make_string va allouer dans l'arène ARC et copier la chaîne
             term_t new_str = make_string(vm_ptr, buffer);
             free(buffer);
 
