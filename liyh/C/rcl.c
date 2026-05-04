@@ -348,10 +348,10 @@ static void drain_queue(dec_queue_t *queue, arena_t *arena)
 
         size_t alloc_words = arity;
 
-        if (h->id == SYM_STRING_NATIVE || h->id == SYM_PTR_NATIVE || h->id == SYM_FLOAT_NATIVE)
+        if (h->id == SYM_PTR_NATIVE || h->id == SYM_FLOAT_NATIVE)
             alloc_words = (sizeof(void *) + sizeof(term_t) - 1) / sizeof(term_t);
 
-        else if (h->id == SYM_BUFFER_NATIVE)
+        else if (h->id == SYM_BUFFER_NATIVE || h->id == SYM_STRING_NATIVE)
             alloc_words = 2;
 
         // If the arity is in the bounds, recycle the memory of the dead object for a next use.
@@ -1406,16 +1406,36 @@ static double get_float(term_t term)
 }
 
 /// Create a new string as a term (copy the given string).
-static term_t make_string(vm_t *vm_ptr, const char *s)
+static term_t make_string_with_len(vm_t *vm_ptr, const char *s, const size_t len)
 {
-    term_t term = arc_alloc_leaf(vm_ptr, SYM_STRING_NATIVE, sizeof(void *));
+    // Allocate 2 words: pointer (children[0]) + size (children[1])
+    const term_t term = arc_alloc_leaf(vm_ptr, SYM_STRING_NATIVE, 2 * sizeof(term_t));
     term_header_t *h = AS_HEADER(term);
 
-    char *buff = malloc(strlen(s) + 1);
-    strcpy(buff, s);
+    char *buff = malloc(len + 1);
+    memcpy(buff, s, len);
+    buff[len] = '\0';
 
     h->children[0] = (term_t)buff;
+    h->children[1] = MAKE_INT(len);
     return term;
+}
+
+/// Create a new string as a term (copy the given string).
+static term_t make_string(vm_t *vm_ptr, const char *s)
+{
+    return make_string_with_len(vm_ptr, s, strlen(s));
+}
+
+/// If the term is a string, then gets the string length, else returns 0.
+static size_t get_string_len(term_t term)
+{
+    term = resolve_indirection(term);
+
+    if (IS_PTR(term) && AS_HEADER(term)->id == SYM_STRING_NATIVE)
+        return (size_t)GET_INT(AS_HEADER(term)->children[1]);
+
+    return 0;
 }
 
 /// Gets a string from the given term.
@@ -1573,6 +1593,12 @@ static bool term_equals(term_t root_a, term_t root_b)
 
         if (ha->id == SYM_STRING_NATIVE)
         {
+            if (GET_INT(ha->children[1]) != GET_INT(hb->children[1]))
+            {
+                free(stack);
+                return false;
+            }
+
             if (strcmp((const char *)ha->children[0], (const char *)hb->children[0]) != 0)
             {
                 free(stack);
@@ -4079,19 +4105,25 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int lhs_reg = instr.b;
             const int rhs_reg = instr.c;
 
-            const char *s1 = get_string_ptr(regs[lhs_reg]);
-            const char *s2 = get_string_ptr(regs[rhs_reg]);
+            const term_t t1 = resolve_indirection(regs[lhs_reg]);
+            const term_t t2 = resolve_indirection(regs[rhs_reg]);
 
-            const size_t len1 = strlen(s1);
-            const size_t len2 = strlen(s2);
+            const char *s1 = get_string_ptr(t1);
+            const char *s2 = get_string_ptr(t2);
+
+            const size_t len1 = get_string_len(t1);
+            const size_t len2 = get_string_len(t2);
 
             char *buffer = malloc(len1 + len2 + 1);
             memcpy(buffer, s1, len1);
             memcpy(buffer + len1, s2, len2);
             buffer[len1 + len2] = '\0';
 
-            term_t new_str = make_string(vm_ptr, buffer);
-            free(buffer);
+            term_t new_str = arc_alloc_leaf(vm_ptr, SYM_STRING_NATIVE, 2 * sizeof(term_t));
+            term_header_t *h = AS_HEADER(new_str);
+
+            h->children[0] = (term_t)buffer;
+            h->children[1] = MAKE_INT(len1 + len2);
 
             arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
             break;
@@ -4138,8 +4170,9 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
                 memcpy(temp_str, buf_mem, size);
                 temp_str[size] = '\0';
 
-                term_t new_str = make_string(vm_ptr, temp_str);
-                free(temp_str);
+                term_t new_str = arc_alloc_leaf(vm_ptr, SYM_STRING_NATIVE, 2 * sizeof(term_t));
+                AS_HEADER(new_str)->children[0] = (term_t)temp_str;
+                AS_HEADER(new_str)->children[1] = MAKE_INT(size);
 
                 arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
             }
@@ -4165,7 +4198,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             if (IS_PTR(t) && AS_HEADER(t)->id == SYM_STRING_NATIVE)
             {
                 const char *str = get_string_ptr(t);
-                const int64_t size = strlen(str);
+                const int64_t size = get_string_len(t);
 
                 const term_t value = arc_alloc_leaf(vm_ptr, SYM_BUFFER_NATIVE, 2 * sizeof(term_t));
                 term_header_t *h = AS_HEADER(value);
@@ -4251,23 +4284,6 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
         free(stats[i].times);
 
     #endif
-
-    /*
-
-    struct GC_prof_stats_s stats;
-    GC_get_prof_stats(&stats, sizeof(stats));
-
-    printf("=== GC Stats ===\n");
-    printf("Heap size: %zu bytes (%.2f Mo)\n", stats.heapsize_full, stats.heapsize_full / (1024.0 * 1024.0));
-    printf("Free bytes: %zu\n", stats.free_bytes_full);
-    printf("Unmapped bytes: %zu\n", stats.unmapped_bytes);
-    printf("Bytes allocd since GC: %zu\n", stats.bytes_allocd_since_gc);
-
-    size_t gc_no = GC_get_gc_no();
-
-    printf("Number of collections done: %zu\n", gc_no);
-
-    */
 
     if (return_value == EXIT_FAILURE) // we should add a real check for runtime error
     {
