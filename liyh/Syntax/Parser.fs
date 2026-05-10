@@ -991,17 +991,17 @@ module Parser =
                 parseWithPos parseSymbolPattern
             ] <?> "atomic pattern" .>> spacesOrComment
 
-//        let private parseAtomicPattern =
-//            choice [
-//                attempt (parseWithPos parseVariablePattern)
-//                attempt (parseWithPos parseSymbolPattern)
-//                attempt (parseWithPos parseWildcard)
-//                attempt (parseWithPos parseLiteralPattern)
-//                attempt (parseWithPos parseTuplePattern)
-//                attempt (parseWithPos parseListPattern)
-//                attempt (parseWithPos parseRecordPattern)
-//                attempt (between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef)
-//            ] <?> "atomic pattern" .>> spacesOrComment
+        //        let private parseAtomicPattern =
+        //            choice [
+        //                attempt (parseWithPos parseVariablePattern)
+        //                attempt (parseWithPos parseSymbolPattern)
+        //                attempt (parseWithPos parseWildcard)
+        //                attempt (parseWithPos parseLiteralPattern)
+        //                attempt (parseWithPos parseTuplePattern)
+        //                attempt (parseWithPos parseListPattern)
+        //                attempt (parseWithPos parseRecordPattern)
+        //                attempt (between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef)
+        //            ] <?> "atomic pattern" .>> spacesOrComment
 
         let private parsePatternWithMixfixInternal () =
             fun (stream: CharStream<NotationState IndentState>) ->
@@ -1164,7 +1164,7 @@ module Parser =
                     Expression.ListComprehension { ItemValue = expr; Pattern = var; ListExpr = range; IfPred = condition })
 
         let parseList =
-            sepBy parseExpressionRef sep
+            sepEndBy parseExpressionRef sep
             |>> Expression.List
 
         let parseContent =
