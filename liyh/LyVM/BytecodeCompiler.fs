@@ -95,62 +95,179 @@ module public BytecodeCompiler =
         let rec private getPatternBindingVariables (patt: CoreTerm) =
             match patt with
             | Variable v -> Set.singleton v
-            | Symbol { Children = children } -> children |> List.map getPatternBindingVariables |> Set.unionMany
-            | CoreLet { Pattern = p } -> getPatternBindingVariables p
+
+            | Symbol { Children = children } -> 
+                children
+                |> List.map getPatternBindingVariables
+                |> Set.unionMany
+
+            | RecordExtend re ->
+                let baseVars =
+                    re.BaseRecord
+                    |> Option.map getPatternBindingVariables
+                    |> Option.defaultValue Set.empty
+
+                let extVars =
+                    re.Extension
+                    |> List.map (snd >> getPatternBindingVariables)
+                    |> Set.unionMany
+
+                Set.union baseVars extVars
+
+            | CoreLet { Pattern = p } -> 
+                getPatternBindingVariables p
+
+            | AsClause (p1, p2) -> 
+                Set.union (getPatternBindingVariables p1) (getPatternBindingVariables p2)
+
+            | WhenClause (p, _) -> 
+                getPatternBindingVariables p
+
+            | Substitution sub ->
+                getPatternBindingVariables sub.InExpr
+
             | _ -> Set.empty
 
         /// Gets the binding variables from the given term, with a set of already existing bindings.
         let rec public getBindingVariables (bound: Set<string>) (term: CoreTerm) =
             match term with
             | Variable v ->
-                if bound.Contains v
-                then Set.empty else Set.singleton v
+                if bound.Contains v then Set.empty else Set.singleton v
+
+            | Literal _ | Wildcard -> 
+                Set.empty
 
             | Symbol { Children = children } ->
                 children
                 |> List.map (getBindingVariables bound)
                 |> Set.unionMany
 
-            | FunctionalApplication { Base = f; Arguments = args } ->
-                let fFree = getBindingVariables bound f
+            | RecordExtend re ->
+                let baseFree =
+                    re.BaseRecord
+                    |> Option.map (getBindingVariables bound)
+                    |> Option.defaultValue Set.empty
+
+                let extFree =
+                    re.Extension
+                    |> List.map (snd >> getBindingVariables bound)
+                    |> Set.unionMany
+
+                Set.union baseFree extFree
+
+            | Match m ->
+                let tmFree = getBindingVariables bound m.ToMatch
+                let casesFree =
+                    m.Cases |> List.map (fun (p, b) ->
+                        let pVars = getPatternBindingVariables p
+                        let newBound = Set.union bound pVars
+
+                        let rec getPatternFreeVars p bound =
+                            match p with
+                            | WhenClause(innerP, cond) -> 
+                                let innerPVars = getPatternBindingVariables innerP
+                                let condFree = getBindingVariables (Set.union bound innerPVars) cond
+                                Set.union (getPatternFreeVars innerP bound) condFree
+
+                            | AsClause(p1, p2) ->
+                                Set.union (getPatternFreeVars p1 bound) (getPatternFreeVars p2 bound)
+
+                            | Symbol s ->
+                                s.Children
+                                |> List.map (fun c -> getPatternFreeVars c bound)
+                                |> Set.unionMany
+
+                            | RecordExtend re -> 
+                                let baseFree =
+                                    re.BaseRecord
+                                    |> Option.map (fun b -> getPatternFreeVars b bound)
+                                    |> Option.defaultValue Set.empty
+
+                                let extFree =
+                                    re.Extension
+                                    |> List.map (fun (_, v) -> getPatternFreeVars v bound)
+                                    |> Set.unionMany
+
+                                Set.union baseFree extFree
+
+                            | _ -> Set.empty
+
+                        let pattFree = getPatternFreeVars p bound
+                        let bodyFree = getBindingVariables newBound b
+                        Set.union pattFree bodyFree
+
+                    ) |> Set.unionMany
+                Set.union tmFree casesFree
+
+            | Closure c ->
+                let newBound = Set.union bound (Set.ofList c.Parameters)
+                getBindingVariables newBound c.Value
+
+            | FunctionalApplication fa ->
+                let fFree = getBindingVariables bound fa.Base
                 let argsFree =
-                    args
+                    fa.Arguments
                     |> List.map (getBindingVariables bound)
                     |> Set.unionMany
 
                 Set.union fFree argsFree
 
-            | Closure { Parameters = ps; Value = body } ->
-                let newBound = Set.union bound (Set.ofList ps)
-                getBindingVariables newBound body
+            | Substitution sub ->
+                let envFree =
+                    sub.Env
+                    |> List.map (snd >> getBindingVariables bound)
+                    |> Set.unionMany
+
+                let inExprFree = getBindingVariables bound sub.InExpr
+                Set.union envFree inExprFree
+
+            | UsingContext ctx ->
+                getBindingVariables bound ctx.Expr
 
             | TermSequence terms ->
-                let (free, _) =
-                    terms |> List.fold (fun (freeVars, boundVars) t ->
-                        match t with
-                        | CoreLet { Pattern = Variable v; Value = expr } ->
-                            let exprFree = getBindingVariables boundVars expr
-                            (Set.union freeVars exprFree, Set.add v boundVars)
-                        | _ ->
-                            let termFree = getBindingVariables boundVars t
-                            (Set.union freeVars termFree, boundVars)
-                    ) (Set.empty, bound)
-                free
-
-            | Match { ToMatch = tm; Cases = cases } ->
-                let tmFree = getBindingVariables bound tm
-                let casesFree =
-                    cases |> List.map (fun (p, b) ->
+                terms |> List.fold (fun (freeVars, boundVars) t ->
+                    match t with
+                    | CoreLet { Pattern = p; Value = expr } ->
+                        let exprFree = getBindingVariables boundVars expr
                         let pVars = getPatternBindingVariables p
-                        let newBound = Set.union bound pVars
-                        getBindingVariables newBound b
-                    ) |> Set.unionMany
-                Set.union tmFree casesFree
+                        (Set.union freeVars exprFree, Set.union boundVars pVars)
 
-            | CoreLet { Pattern = p; Value = v } ->
-                getBindingVariables bound v
+                    | _ ->
+                        let termFree = getBindingVariables boundVars t
+                        (Set.union freeVars termFree, boundVars)
 
-            | _ -> Set.empty
+                ) (Set.empty, bound)
+                |> fst
+
+            | CoreLet let' ->
+                getBindingVariables bound let'.Value
+
+            | WhileLoop w ->
+                let pFree = getBindingVariables bound w.Predicate
+                let bFree = getBindingVariables bound w.Body
+                Set.union pFree bFree
+
+            | UpdateVariable (v, expr) ->
+                let exprFree = getBindingVariables bound expr
+                if bound.Contains v then exprFree else Set.add v exprFree
+
+            | Resume r ->
+                let rwFree = getBindingVariables bound r.Rewrite
+                let stFree = getBindingVariables bound r.State
+                Set.union rwFree stFree
+                
+            | Handle h ->
+                let stFree = getBindingVariables bound h.State
+                let thFree = getBindingVariables bound h.ToHandle
+                Set.union stFree thFree
+
+            | WhenClause (patt, cond) ->
+                let pVars = getPatternBindingVariables patt
+                let condFree = getBindingVariables (Set.union bound pVars) cond
+                condFree
+
+            | AsClause (p1, p2) ->
+                Set.union (getBindingVariables bound p1) (getBindingVariables bound p2)
 
     module private ContextResolution =
 
@@ -515,7 +632,7 @@ module public BytecodeCompiler =
                         compileTree ctxDefault def onMatch fallback (Some phiReg) |> ignore
 
                     | None ->
-                        fallback target |> ignore
+                        fallback (Some phiReg) |> ignore
 
                     builder.SetLabel(endLabel)
                     phiReg
@@ -995,12 +1112,12 @@ module public BytecodeCompiler =
 
         and compileTermSequence (terms: CoreTerm list) (context: CompilationContext) (isTail: bool) (target: Reg option) =
 
-            let rec compileSeq (currentEnv: Map<string, Reg>) (remaining: CoreTerm list) =
+            let rec compileSeq (currentEnv: Map<string, Reg>) (currentTarget: Reg option) (remaining: CoreTerm list) =
                 let seqContext = { context with Env = currentEnv }
 
                 match remaining with
-                | [] -> builder.Unit(?target = target) // dummy
-                | [ x ] -> compileTerm seqContext isTail target x
+                | [] -> builder.Unit(?target = currentTarget) // dummy
+                | [ x ] -> compileTerm seqContext isTail currentTarget x
                 | x :: xs ->
                     match x with
                     | CoreLet { Pattern = Variable name; Value = value; IsVariable = isVar } ->
@@ -1013,7 +1130,7 @@ module public BytecodeCompiler =
                             else
                                 compileTerm seqContext false None value
 
-                        compileSeq (Map.add name finalReg currentEnv) xs
+                        compileSeq (Map.add name finalReg currentEnv) currentTarget xs
 
                     | CoreLet { Pattern = pattern; Value = value; IsVariable = isVar } ->
 
@@ -1030,12 +1147,11 @@ module public BytecodeCompiler =
                         let tree = DecisionTreeCompiler.compile matrix
 
                         let onMatch _ (leafContext: CompilationContext) matchTarget =
-                            compileSeq leafContext.Env xs
+                            compileSeq leafContext.Env matchTarget xs
 
                         let onMismatch mismatchTarget =
                             let gotReg = builder.PPShow evaluatedReg 
                             let expected = PrettyPrinter.prettyPrintExpr pattern
-
                             let msg1 = builder.LoadString $"The case was incomplete. Expected pattern `{expected}`, but got `"
                             let msg2 = builder.LoadString "` instead."
                             let finalMsg = builder.ConcatMany([msg1; gotReg; msg2])
@@ -1045,13 +1161,13 @@ module public BytecodeCompiler =
 
                         builder.Scope(fun _ ->
                             let letContext = { seqContext with PathCache = Map.ofList [(Root, evaluatedReg)] }
-                            compileTree letContext tree onMatch onMismatch None)
+                            compileTree letContext tree onMatch onMismatch currentTarget)
 
                     | _ ->
                         compileTerm seqContext false None x |> ignore
-                        compileSeq currentEnv xs
+                        compileSeq currentEnv currentTarget xs
 
-            compileSeq context.Env terms
+            compileSeq context.Env target terms
 
         and compileWhileLoop (whileLoop: CoreWhile) (context: CompilationContext) (target: Reg option) =
             let loopLabel = freshLabel()
@@ -1111,7 +1227,7 @@ module public BytecodeCompiler =
 
             | { Symbol = "force"; Children = [ expr ] } ->
                 let thunkReg = compileTerm context isTail None expr
-                let res = builder.Force(thunkReg)
+                let res = builder.Force(thunkReg, ?target = target)
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_alloc"; Children = [ sizeExpr ] } ->
@@ -1131,14 +1247,30 @@ module public BytecodeCompiler =
                 let valReg = compileTermStrict context None valExpr
 
                 builder.BufferSet(bufReg, indexReg, valReg) // in-place modification but still return the pointer
-                MiscHelpers.markEvaluated bufReg context
+
+                let finalReg =
+                    match target with
+                    | Some t when t.Index <> bufReg.Index ->
+                        emitMov (t, bufReg) context
+                        t
+                    | _ -> bufReg
+
+                MiscHelpers.markEvaluated finalReg context
 
             | { Symbol = "__buffer_realloc"; Children = [ bufExpr; newSizeExpr ] } ->
                 let bufReg = compileTermStrict context None bufExpr
                 let newSizeReg = compileTermStrict context None newSizeExpr
 
                 builder.BufferRealloc(bufReg, newSizeReg) // in-place modification but still return the pointer
-                MiscHelpers.markEvaluated bufReg context
+
+                let finalReg =
+                    match target with
+                    | Some t when t.Index <> bufReg.Index ->
+                        emitMov (t, bufReg) context
+                        t
+                    | _ -> bufReg
+
+                MiscHelpers.markEvaluated finalReg context
 
             | { Symbol = "__buffer_length"; Children = [ bufExpr ] } ->
                 let bufReg = compileTermStrict context None bufExpr

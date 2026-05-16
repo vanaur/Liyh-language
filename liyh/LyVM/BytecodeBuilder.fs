@@ -1066,13 +1066,17 @@ module public AOT =
         let outputFile = Path.Combine(Directory.GetCurrentDirectory(), fileName)
 
         let flags =
-            [ "-lm"                                 // Link math library (libm)
-              "-lffi"                               // Link libffi
-              "-DEMBEDDED"                          // Define EMBEDDED macro for standalone executable compilation
-              if optimize then "-O3"                // Aggressive optimization
-              if optimize then "-flto"              // Link-time optimization (whole-program analysis)
-              if optimize then "-fno-plt"           // Avoid PLT indirection for shared libraries (faster calls)
-              if optimize then "-march=native" ]    // Optimize for the current CPU architecture
+            [ "-lm"                                      // Link math library (libm)
+              "-lffi"                                    // Link libffi
+              "-DEMBEDDED"                               // Define EMBEDDED macro for standalone executable compilation
+
+              if not optimize then "-g"                  // Activate debug information if not not optimize
+              if not optimize then "-fsanitize=address"  // Activate asan if not optimize
+
+              if optimize then "-O3"                     // Aggressive optimization
+              if optimize then "-flto"                   // Link-time optimization (whole-program analysis)
+              if optimize then "-fno-plt"                // Avoid PLT indirection for shared libraries (faster calls)
+              if optimize then "-march=native" ]         // Optimize for the current CPU architecture
 
             |> String.concat " "
 

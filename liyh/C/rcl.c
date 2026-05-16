@@ -61,7 +61,7 @@ typedef uint32_t sym_id_t;
 #define TAG_BOOL        0x3 // tagged pointer (bool)
 #define TAG_MASK        0x3 // extract the 2 least significant bits
 
-#define IS_PTR(x)       (((x) & TAG_MASK) == TAG_PTR)
+#define IS_PTR(x)       ((x) != 0 && (((x) & TAG_MASK) == TAG_PTR))
 
 #define IS_INT(x)       (((x) & TAG_MASK) == TAG_INT)
 #define MAKE_INT(val)   ((((int64_t)(val)) << 2) | TAG_INT)
