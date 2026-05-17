@@ -1046,7 +1046,7 @@ module public AOT =
             if ffi.Arity > 0 then
                 let typesStr = ffi.ArgTypes |> Array.map (int >> string) |> String.concat ", "
                 appendLine($"    enum rcl_type ffi_args_{i}[] = {{ {typesStr} }};")
-                appendLine($"    rcl_env_register_ffi(env_ptr, \"{func}\", {ffi.Arity}, ffi_args_{i}, {int ffi.RetType});")
+                appendLine($"    rcl_env_register_ffi(env_ptr, \"{qual}\", \"{func}\", {ffi.Arity}, ffi_args_{i}, {int ffi.RetType});") 
             else
                 appendLine($"    rcl_env_register_ffi(env_ptr, \"{qual}\", \"{func}\", 0, NULL, {int ffi.RetType});")
 
