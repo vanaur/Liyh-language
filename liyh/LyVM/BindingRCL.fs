@@ -68,7 +68,7 @@ module public BindingRCL =
 
     /// Loads an external function from a dynamic library via the FFI.
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)>]
-    extern int public rcl_env_register_ffi(EnvPtr env, string func_name, int arity, int[] arg_types, int ret_type)
+    extern int public rcl_env_register_ffi(EnvPtr env, string qual_name, string func_name, int arity, int[] arg_types, int ret_type)
 
     /// Creates a new virtual machine given an execution environment.
     [<DllImport(librcl, CallingConvention = CallingConvention.Cdecl)>]
@@ -111,6 +111,7 @@ module public RclType =
 
 type public RCLFFIBinding =
     { Library: string
+      QualifiedName: string
       FunctionName: string
       Arity: int
       ArgTypes: RclType[]

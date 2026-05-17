@@ -450,6 +450,8 @@ struct ffi_info
     enum rcl_type return_type;          // RCL ffi C type for the return value
     
     ffi_type **ffi_arguments_types;     // libffi ffi C types for the arguments
+
+    sym_id_t sym_id;                    // symol ID
 };
 
 static void free_ffi_info(struct ffi_info *ffi_info)
@@ -993,6 +995,7 @@ bool rcl_env_load_library(vm_env_t *env_ptr, const char *path)
 /// Registers a new foreign function.
 int rcl_env_register_ffi(
     vm_env_t *env_ptr,
+    const char *qual_name,
     const char *func_name,
     size_t arity,
     enum rcl_type *arg_types,
@@ -1022,6 +1025,8 @@ int rcl_env_register_ffi(
     struct ffi_info *info = new_ffi_info(func_ptr, arity, arg_types, ret_type);
     if (info == NULL)
         return -1;
+
+    info->sym_id = intern_symbol(env_ptr, qual_name);
 
     if (env_ptr->ffi_count >= env_ptr->ffi_capacity)
     {
@@ -2178,7 +2183,7 @@ static inline int instruction_call_ffi(
     term_t *regs,
     const int dst_reg,
     const int ffi_index,
-    const int args_start
+    term_t *args_array
 )
 {
     if (ffi_index < 0 || ffi_index >= (int)vm_ptr->env_ptr->ffi_count)
@@ -2219,7 +2224,7 @@ static inline int instruction_call_ffi(
 
     for (size_t arg_index = 0; arg_index < arity; arg_index++)
     {
-        term_t arg_term = regs[args_start + arg_index];
+        term_t arg_term = args_array[arg_index];
 
         if (arg_term == (term_t)NULL)
         {
@@ -2227,7 +2232,7 @@ static inline int instruction_call_ffi(
             break;
         }
 
-        arg_term = resolve_indirection(regs[args_start + arg_index]);
+        arg_term = resolve_indirection(args_array[arg_index]);
         ffi_args[arg_index] = &arg_values[arg_index];
 
         switch (info->arguments_types[arg_index])
@@ -2423,7 +2428,7 @@ static inline int instruction_call_ffi(
 
     if (has_arg_error)
     {
-        const term_t bas_term = resolve_indirection(regs[args_start + arg_error_index]);
+        const term_t bas_term = resolve_indirection(args_array[arg_error_index]);
         size_t data_str_len = 0;
         char *data_str = term_to_string(vm_ptr->env_ptr, bas_term, 3, &data_str_len);
 
@@ -2740,8 +2745,21 @@ static inline int instruction_force(
             return EXIT_SUCCESS;
         }
 
-        
-        arc_assign_reg(vm_ptr, regs, dst_reg, t);// If no function found, it's just a symbolic data.
+        int ffi_target = -1;
+        for (size_t i = 0; i < vm_ptr->env_ptr->ffi_count; i++)
+        {
+            if (vm_ptr->env_ptr->ffi_table[i]->sym_id == sym_id &&
+                vm_ptr->env_ptr->ffi_table[i]->arity == arg_count)
+            {
+                ffi_target = (int)i;
+                break;
+            }
+        }
+
+        if (ffi_target != -1) // Found a FFI function
+            return instruction_call_ffi(vm_ptr, regs, dst_reg, ffi_target, h->children);
+
+        arc_assign_reg(vm_ptr, regs, dst_reg, t); // If no function found, it's just a symbolic data.
         return EXIT_SUCCESS;
     }
 
@@ -3234,7 +3252,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int ffi_index = instr.b;
             const int args_start = instr.c;
 
-            if (instruction_call_ffi(vm_ptr, regs, dst_reg, ffi_index, args_start) != EXIT_SUCCESS)
+            if (instruction_call_ffi(vm_ptr, regs, dst_reg, ffi_index, &regs[args_start]) != EXIT_SUCCESS)
             {
                 return_value = EXIT_FAILURE;
                 run = false;

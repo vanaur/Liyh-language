@@ -52,6 +52,7 @@ module public BytecodeCompiler =
 
                 let rclBinding =
                     { Library = info.LibraryPath
+                      QualifiedName = qualifiedName
                       FunctionName = info.FunctionName
                       Arity = info.Arity
                       ArgTypes = argTypes

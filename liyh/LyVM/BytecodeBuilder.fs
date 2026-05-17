@@ -806,7 +806,7 @@ type public VM() =
             let retTypeInt32 = RclType.RclTypeToInt32 ffi.RetType
 
             rcl_env_load_library(env, ffi.Library)
-            rcl_env_register_ffi(env, ffi.FunctionName, ffi.Arity, argTypesInt32, retTypeInt32)
+            rcl_env_register_ffi(env, ffi.QualifiedName, ffi.FunctionName, ffi.Arity, argTypesInt32, retTypeInt32)
 
         for instr in instructions do
             match instr with
@@ -1038,6 +1038,7 @@ module public AOT =
         for i = 0 to cp.FFIBinding.Length - 1 do
             let ffi = cp.FFIBinding.[i]
             let lib = escapeCString ffi.Library
+            let qual = escapeCString ffi.QualifiedName
             let func = escapeCString ffi.FunctionName
 
             appendLine($"    rcl_env_load_library(env_ptr, \"{lib}\");")
@@ -1047,7 +1048,7 @@ module public AOT =
                 appendLine($"    enum rcl_type ffi_args_{i}[] = {{ {typesStr} }};")
                 appendLine($"    rcl_env_register_ffi(env_ptr, \"{func}\", {ffi.Arity}, ffi_args_{i}, {int ffi.RetType});")
             else
-                appendLine($"    rcl_env_register_ffi(env_ptr, \"{func}\", 0, NULL, {int ffi.RetType});")
+                appendLine($"    rcl_env_register_ffi(env_ptr, \"{qual}\", \"{func}\", 0, NULL, {int ffi.RetType});")
 
         // Note: maybe, for AOT compilation, launching the FFI can be avoided.
 
