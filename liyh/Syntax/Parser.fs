@@ -543,8 +543,8 @@ module Parser =
         let public parseIdentifier =
             parseWithPos parseIdentifierName >>= fun firstName ->
                 let parseQualifier = pchar '.' >>. parseWithPos parseIdentifierName
-                
-                many parseQualifier |>> fun qualifierParts ->
+
+                many (attempt parseQualifier) |>> fun qualifierParts ->
                     match qualifierParts with
                     | [] -> { Qualifier = []; Name = firstName }
                     | qualifiers ->
