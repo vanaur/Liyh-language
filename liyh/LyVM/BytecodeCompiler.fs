@@ -473,6 +473,17 @@ module public BytecodeCompiler =
             then ctx.EvaluatedRegs.Add(dest.Index) |> ignore
             else ctx.EvaluatedRegs.Remove(dest.Index) |> ignore
 
+        let forceWithTracking (reg: Reg) (target: Reg option) (ctx: CompilationContext) =
+            if ctx.EvaluatedRegs.Contains(reg.Index) then
+                match target with
+                | Some t when t.Index <> reg.Index ->
+                    emitMov (t, reg) ctx
+                    t
+                | _ -> reg
+            else
+                let forced = builder.Force(reg, ?target = target)
+                MiscHelpers.markEvaluated forced ctx |> ignore
+                forced
 
         // --- Path and decision tree compilation --- //
 
@@ -506,7 +517,7 @@ module public BytecodeCompiler =
 
                         let effectiveParent =
                             match context.Strategy with
-                            | Strategy.Lazy -> builder.Force(parentReg)
+                            | Strategy.Lazy -> forceWithTracking parentReg None context
                             | _ -> parentReg
 
                         let childReg = builder.Deconstruct(effectiveParent, idx)
@@ -515,14 +526,14 @@ module public BytecodeCompiler =
                         // except for outermost (which wants to keep the symbolic structures)
                         match context.Strategy with
                         | Strategy.Outermost -> childReg
-                        | _ -> builder.Force(childReg)
+                        | _ -> forceWithTracking childReg None context
 
                     | Field(parent, name) ->
                         let parentReg = compilePath context parent
 
                         let effectiveParent =
                             match context.Strategy with
-                            | Strategy.Lazy -> builder.Force(parentReg)
+                            | Strategy.Lazy -> forceWithTracking parentReg None context
                             | _ -> parentReg
 
                         let failLabel = freshLabel()
@@ -544,7 +555,7 @@ module public BytecodeCompiler =
                         // except for outermost (which wants to keep the symbolic structures)
                         match context.Strategy with
                         | Strategy.Outermost -> res
-                        | _ -> builder.Force(res)
+                        | _ -> forceWithTracking res None context
 
                 context.PathCache <- Map.add path reg context.PathCache
                 reg
@@ -603,7 +614,7 @@ module public BytecodeCompiler =
                     | _ -> false
 
                 let testReg =
-                    if shouldForce then builder.Force(pathReg)
+                    if shouldForce then forceWithTracking pathReg None ctx
                     else pathReg
 
                 builder.Scope(fun _ ->
@@ -645,7 +656,7 @@ module public BytecodeCompiler =
 
                 let testReg =
                     match ctx.Strategy with
-                    | Strategy.Lazy -> builder.Force(pathReg)
+                    | Strategy.Lazy -> forceWithTracking pathReg None ctx
                     | _ -> pathReg
 
                 builder.Scope(fun _ ->
@@ -716,7 +727,7 @@ module public BytecodeCompiler =
 
                 let testReg =
                     match ctx.Strategy with
-                    | (Strategy.Outermost | Strategy.Lazy) -> builder.Force(pathReg)
+                    | (Strategy.Outermost | Strategy.Lazy) -> forceWithTracking pathReg None ctx
                     | _ -> pathReg
 
                 builder.Scope(fun _ ->
@@ -747,22 +758,17 @@ module public BytecodeCompiler =
             
             | other -> failwithf "TODO: %A" other
 
-        and compileTermStrict (context: CompilationContext) (target: Reg option) (term: CoreTerm) =
-            let rawReg = compileTerm context false target term
-
-            if context.EvaluatedRegs.Contains(rawReg.Index) then
-                rawReg
-            else
-                let forcedReg = builder.Force(rawReg, ?target = target)
-                MiscHelpers.markEvaluated forcedReg context
+        and compileTermStrict (context: CompilationContext) (isTail: bool) (target: Reg option) (term: CoreTerm) =
+            let rawReg = compileTerm context isTail target term
+            forceWithTracking rawReg target context
 
         and compileOr (context: CompilationContext) (target: Reg option) (left: CoreTerm) (right: CoreTerm) =
             let rRes = defaultArg target (builder.Alloc())
             let labelEnd = freshLabel()
 
-            compileTermStrict context (Some rRes) left |> ignore
+            compileTermStrict context false (Some rRes) left |> ignore
             builder.JumpTrue(rRes, labelEnd)
-            compileTermStrict context (Some rRes) right |> ignore
+            compileTermStrict context false (Some rRes) right |> ignore
 
             builder.SetLabel(labelEnd)
             MiscHelpers.markEvaluated rRes context
@@ -771,9 +777,9 @@ module public BytecodeCompiler =
             let rRes = defaultArg target (builder.Alloc())
             let labelEnd = freshLabel()
 
-            compileTermStrict context (Some rRes) left |> ignore
+            compileTermStrict context false (Some rRes) left |> ignore
             builder.JumpFalse(rRes, labelEnd)
-            compileTermStrict context (Some rRes) right |> ignore
+            compileTermStrict context false (Some rRes) right |> ignore
 
             builder.SetLabel(labelEnd)
             MiscHelpers.markEvaluated rRes context
@@ -785,8 +791,8 @@ module public BytecodeCompiler =
             | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
-                let rLeft = compileTermStrict context None left
-                let rRight = compileTermStrict context None right
+                let rLeft = compileTermStrict context false None left
+                let rRight = compileTermStrict context false None right
 
                 let resReg =
                     match op with
@@ -809,8 +815,8 @@ module public BytecodeCompiler =
             | Symbol { Symbol = op; Children = [left; right] }
                 when Set.contains op (Set.ofArray Internals.arithmeticInternals) ->
 
-                let rLeft = compileTermStrict context None left
-                let rRight = compileTermStrict context None right
+                let rLeft = compileTermStrict context false None left
+                let rRight = compileTermStrict context false None right
 
                 let rawResult =
                     match op with
@@ -840,7 +846,7 @@ module public BytecodeCompiler =
                     | Internals.IsNumeric -> BindingRCL.SYM_NUM_NATIVE
                     | _ -> failwith "??" // this may not happen
 
-                let rArg = compileTermStrict context None arg
+                let rArg = compileTermStrict context false None arg
                 let rRes = defaultArg target (builder.Alloc())
                 let lblFail = freshLabel()
                 let lblEnd = freshLabel()
@@ -866,17 +872,17 @@ module public BytecodeCompiler =
         and tryCompileIntrinsicMisc (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             match term with
             | Internals.Internal_print(x) ->
-                let xReg = compileTermStrict context None x
+                let xReg = compileTermStrict context false None x
                 builder.Print(xReg)
                 Some (builder.Unit(?target = target))
 
             | Internals.Internal_strcat(left, right) ->
-                let rLeft = compileTermStrict context None left
-                let rRight = compileTermStrict context None right
+                let rLeft = compileTermStrict context false None left
+                let rRight = compileTermStrict context false None right
                 Some (builder.StrCat(rLeft, rRight, ?target = target))
 
             | Internals.Internal_ppshow(term) ->
-                let r = compileTermStrict context None term
+                let r = compileTermStrict context false None term
                 Some (builder.PPShow(r, ?target = target))
 
             | _ -> None
@@ -884,7 +890,7 @@ module public BytecodeCompiler =
         and tryCompileIntrinsicTypeCast (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
 
             let emitRawCast srcTerm targetType sourceType =
-                let srcReg = compileTermStrict context None srcTerm
+                let srcReg = compileTermStrict context false None srcTerm
                 let resReg = builder.Cast(srcReg, targetType, sourceType, ?target = target)
                 Some resReg
 
@@ -1228,24 +1234,23 @@ module public BytecodeCompiler =
 
             | { Symbol = "force"; Children = [ expr ] } ->
                 let thunkReg = compileTerm context isTail None expr
-                let res = builder.Force(thunkReg, ?target = target)
-                MiscHelpers.markEvaluated res context
+                forceWithTracking thunkReg target context
 
             | { Symbol = "__buffer_alloc"; Children = [ sizeExpr ] } ->
-                let sizeReg = compileTermStrict context None sizeExpr
+                let sizeReg = compileTermStrict context false None sizeExpr
                 let res = builder.BufferAlloc(sizeReg, ?target = target)
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_get"; Children = [ bufExpr; indexExpr ] } ->
-                let bufReg = compileTermStrict context None bufExpr
-                let indexReg = compileTermStrict context None indexExpr
+                let bufReg = compileTermStrict context false None bufExpr
+                let indexReg = compileTermStrict context false None indexExpr
                 let res = builder.BufferGet(bufReg, indexReg, ?target = target)
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_set"; Children = [ bufExpr; indexExpr; valExpr ] } ->
-                let bufReg = compileTermStrict context None bufExpr
-                let indexReg = compileTermStrict context None indexExpr
-                let valReg = compileTermStrict context None valExpr
+                let bufReg = compileTermStrict context false None bufExpr
+                let indexReg = compileTermStrict context false None indexExpr
+                let valReg = compileTermStrict context false None valExpr
 
                 builder.BufferSet(bufReg, indexReg, valReg) // in-place modification but still return the pointer
 
@@ -1259,8 +1264,8 @@ module public BytecodeCompiler =
                 MiscHelpers.markEvaluated finalReg context
 
             | { Symbol = "__buffer_realloc"; Children = [ bufExpr; newSizeExpr ] } ->
-                let bufReg = compileTermStrict context None bufExpr
-                let newSizeReg = compileTermStrict context None newSizeExpr
+                let bufReg = compileTermStrict context false None bufExpr
+                let newSizeReg = compileTermStrict context false None newSizeExpr
 
                 builder.BufferRealloc(bufReg, newSizeReg) // in-place modification but still return the pointer
 
@@ -1274,19 +1279,19 @@ module public BytecodeCompiler =
                 MiscHelpers.markEvaluated finalReg context
 
             | { Symbol = "__buffer_length"; Children = [ bufExpr ] } ->
-                let bufReg = compileTermStrict context None bufExpr
+                let bufReg = compileTermStrict context false None bufExpr
                 let res = builder.BufferLength(bufReg, ?target = target)
 
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__buffer_to_string"; Children = [ bufExpr ] } ->
-                let bufReg = compileTermStrict context None bufExpr
+                let bufReg = compileTermStrict context false None bufExpr
                 let res = builder.BufferToString(bufReg, ?target = target)
 
                 MiscHelpers.markEvaluated res context
 
             | { Symbol = "__string_to_buffer"; Children = [ strExpr ] } ->
-                let strReg = compileTermStrict context None strExpr
+                let strReg = compileTermStrict context false None strExpr
                 let res = builder.StringToBuffer(strReg, ?target = target)
 
                 MiscHelpers.markEvaluated res context
@@ -1299,7 +1304,7 @@ module public BytecodeCompiler =
                     match strategy with
                     | (Strict | Memoize) ->
                         // Strict: everything is evaluated before the call (default behavior).
-                        List.map (compileTermStrict context None) children
+                        List.map (compileTermStrict context false None) children
 
                     | Lazy ->
                         // Lazy: each argument is transformed into a Thunk.
@@ -1319,7 +1324,7 @@ module public BytecodeCompiler =
                     // Check in the FFI first
                     match context.Global.FFIRegistery.TryGetIndex(resolvedName) with
                     | Some ffiIndex ->
-                        let strictArgs = List.map (compileTermStrict context None) children
+                        let strictArgs = List.map (compileTermStrict context false None) children
                         builder.CallFFI(ffiIndex, strictArgs, ?target = target)
 
                     | None ->
@@ -1348,12 +1353,12 @@ module public BytecodeCompiler =
                             builder.AllocData(name, args, ?target = target)
 
         and compileSubstitution (substitution: CoreSubstitution) (context: CompilationContext) (target: Reg option) =
-            let astReg = compileTermStrict context None substitution.InExpr
+            let astReg = compileTermStrict context false None substitution.InExpr
 
             let finalReg =
                 substitution.Env
                 |> List.fold (fun currentTreeReg (sym, valExpr) ->
-                    let valReg = compileTermStrict context None valExpr
+                    let valReg = compileTermStrict context false None valExpr
                     let atomReg = builder.LoadAtom(sym.Symbol)
                     let nextReg = builder.Alloc()
 
@@ -1378,7 +1383,7 @@ module public BytecodeCompiler =
 
         and compileFunctionalApplication (fa: FunctionalApplication) (context: CompilationContext) (target: Reg option) =
             let bReg = compileTerm context false None fa.Base
-            let bStrict = builder.Force(bReg)
+            let bStrict = forceWithTracking bReg None context
             let argsRegs = List.map (compileTerm context false None) fa.Arguments
 
             builder.Apply(bStrict, argsRegs, ?target = target)
@@ -1578,6 +1583,10 @@ module public BytecodeCompiler =
                         builder.Print(fullMsgReg)
                         builder.Halt(1) // error
                         builder.Unit(?target = matchTarget)
+
+                    | Strategy.Strict | Strategy.Memoize ->
+                        let isTail = (symbolName <> "main")
+                        compileTermStrict leafContext isTail matchTarget rule.RHS
 
                     | _ ->
                         compileTerm leafContext (symbolName <> "main") matchTarget rule.RHS
