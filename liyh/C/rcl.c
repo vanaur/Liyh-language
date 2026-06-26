@@ -448,7 +448,7 @@ struct ffi_info
 
     enum rcl_type *arguments_types;     // RCL ffi C types for the arguments
     enum rcl_type return_type;          // RCL ffi C type for the return value
-    
+
     ffi_type **ffi_arguments_types;     // libffi ffi C types for the arguments
 
     sym_id_t sym_id;                    // symol ID
@@ -488,12 +488,12 @@ static struct ffi_info *new_ffi_info(
 
     if (ffi_prep_cif(cif_ptr, FFI_DEFAULT_ABI, arity, ffi_return_type, ffi_arguments_types) == FFI_OK)
     {
-        *result = (struct ffi_info){ 
-            cif_ptr, 
-            function_pointer, 
-            arity, 
-            arguments_types, 
-            return_type, 
+        *result = (struct ffi_info){
+            cif_ptr,
+            function_pointer,
+            arity,
+            arguments_types,
+            return_type,
             ffi_arguments_types
         };
         return result;
@@ -751,7 +751,7 @@ typedef struct
     size_t loaded_libs_count;                   // actual size of the loaded dynamic libraries
     size_t loaded_libs_capacity;                // allocated size for the loaded dynamic libraries
 
-    struct ffi_info **ffi_table;                // table of external foreign functions 
+    struct ffi_info **ffi_table;                // table of external foreign functions
     size_t ffi_count;                           // actual size of the table of external functions
     size_t ffi_capacity;                        // allocated size of the table of external functions
 
@@ -798,16 +798,13 @@ void destroy_env(vm_env_t *env_ptr)
     if (env_ptr == NULL)
         return;
 
-    // Libération du code
     free(env_ptr->program);
     free(env_ptr->labels);
 
-    // Libération des chaînes
     for (size_t i = 0; i < env_ptr->string_pool_count; i++)
         free(env_ptr->string_pool[i]);
     free(env_ptr->string_pool);
 
-    // Libération des symboles (liste chaînée)
     for (size_t i = 0; i < env_ptr->symbol_pool_count; i++) {
         atom_t *curr = env_ptr->symbol_pool[i];
         while (curr) {
@@ -819,7 +816,6 @@ void destroy_env(vm_env_t *env_ptr)
     }
     free(env_ptr->symbol_pool);
 
-    // Libération de la dispatch table (liste chaînée)
     for (size_t i = 0; i < env_ptr->dispatch_table_capacity; i++) {
         dispatch_entry_t *curr = env_ptr->dispatch_table[i];
         while (curr) {
@@ -830,7 +826,6 @@ void destroy_env(vm_env_t *env_ptr)
     }
     free(env_ptr->dispatch_table);
 
-    // Libération du FFI
     for (size_t i = 0; i < env_ptr->loaded_libs_count; i++) {
         if (env_ptr->loaded_libs[i])
             RCL_CLOSE_LIB(env_ptr->loaded_libs[i]);
@@ -1045,7 +1040,7 @@ int rcl_env_register_ffi(
 
     const int ffi_index = (int)env_ptr->ffi_count;
     env_ptr->ffi_table[env_ptr->ffi_count++] = info;
-    
+
     return ffi_index;
 }
 
@@ -1130,13 +1125,13 @@ void emit_load_string(vm_env_t *env_ptr, const int dst_reg, const char *s)
 /*
 The VM is a stack-based virtual machine with register windows.
 
-Temporary virtual registers reside in a single linear stack (`stack[]`), 
+Temporary virtual registers reside in a single linear stack (`stack[]`),
 but the architecture mainly uses two distinct memory areas at runtime:
 
  - `stack[]`: window of active virtual registers (offsets relative to bp)
  - `frames[]`: stack of call frames containing metadata (ret_pc, prev_bp, etc.)
 
-The execution stack (`stack[]`) and the frame stack (`frames[]`) follow 
+The execution stack (`stack[]`) and the frame stack (`frames[]`) follow
 a LIFO discipline for managing function calls.
 
 Virtual registers are aliases over the stack:
@@ -1316,7 +1311,7 @@ static term_t arc_alloc_leaf(vm_t *vm_ptr, sym_id_t id, size_t playload_bytes)
 {
     size_t words = (playload_bytes + sizeof(term_t) - 1) / sizeof(term_t);
     term_header_t *h = (term_header_t *)arena_alloc_term(&vm_ptr->arena, words);
-    
+
     h->rc = 0;
     h->id = id;
     h->arity = 0;
@@ -1334,7 +1329,7 @@ static inline void arc_clean_stack_window(vm_t *vm_ptr, int old_sp, int new_sp)
         term_t obj = vm_ptr->stack[i];
         if (obj && IS_PTR(obj))
             rc_decrement(&vm_ptr->dec_queue, obj);
-        
+
         vm_ptr->stack[i] = 0;
     }
 
@@ -1353,7 +1348,7 @@ static inline void arc_assign_reg(vm_t *vm_ptr, term_t *regs, const int reg_inde
     //
     //    if (unlikely(old == new_val))
     //        return;
-    //    
+    //
     //    regs[reg_index] = new_val;
     //
     //    if (unlikely(IS_PTR(old) || IS_PTR(new_val)))
@@ -1494,7 +1489,7 @@ static term_t make_record_from_pairs(vm_t *vm_ptr, record_field_t *pairs, const 
         term_t val = pairs[i].value;
         if (val && IS_PTR(val))
             rc_increment(val);
-        
+
         header->children[i * 2 + 1] = val;
     }
 
@@ -1675,14 +1670,15 @@ static term_t perform_substitution(vm_t *vm_ptr, term_t root, sym_id_t toRepId, 
 
             child = resolve_indirection(child);
 
-            if (!IS_PTR(child)) {
+            if (!IS_PTR(child))
+            {
                 if (result_sp == result_capacity)
                 {
                     result_capacity *= 2;
                     result_stack = realloc(result_stack, result_capacity * sizeof(term_t));
                 }
                 result_stack[result_sp++] = child;
-            } 
+            }
             else
             {
                 if (work_sp == work_capacity)
@@ -1776,7 +1772,7 @@ static term_t perform_substitution(vm_t *vm_ptr, term_t root, sym_id_t toRepId, 
 
     free(work_stack);
     free(result_stack);
-    
+
     return final;
 }
 
@@ -2103,7 +2099,7 @@ static term_t make_cast_result(vm_t *vm_ptr, const bool success, const term_t va
 {
     record_field_t pairs[2];
 
-    pairs[0].key = intern_symbol(vm_ptr->env_ptr, "success"); 
+    pairs[0].key = intern_symbol(vm_ptr->env_ptr, "success");
     pairs[0].value = MAKE_INT(success ? 1 : 0);
 
     pairs[1].key = intern_symbol(vm_ptr->env_ptr, "value");
@@ -2809,7 +2805,7 @@ static inline int instruction_force(
         (term_t)h,          // The thunk is its own environment
         t                   // Update 't' with result (memoization)
     );
-    
+
     return EXIT_SUCCESS;
 }
 
@@ -2842,7 +2838,7 @@ static inline int instruction_cast(
     {
         // Mismatch between compiler expectation and runtime reality.
         const term_t value = make_cast_result(vm_ptr, false, MAKE_INT(0));
-        arc_assign_reg(vm_ptr, regs, dst_reg, value); 
+        arc_assign_reg(vm_ptr, regs, dst_reg, value);
         return EXIT_SUCCESS;
     }
 
@@ -2875,7 +2871,7 @@ static inline int instruction_cast(
         }
 
         // Int to Int
-        else if (target_type == SYM_INT_NATIVE) 
+        else if (target_type == SYM_INT_NATIVE)
         {
             result_val = src;
         }
@@ -2989,7 +2985,7 @@ static inline int instruction_cast(
             success = false;
         }
     }
-    else 
+    else
     {
         success = false;
     }
@@ -2997,7 +2993,7 @@ static inline int instruction_cast(
     // The result is a record { Success = (0 | 1), Value = <converted value or default> }
     const term_t value = make_cast_result(vm_ptr, success, success ? result_val : MAKE_INT(0));
     arc_assign_reg(vm_ptr, regs, dst_reg, value);
-    
+
     return EXIT_SUCCESS;
 }
 
@@ -3038,7 +3034,7 @@ static void print_stack_trace(vm_t *vm_ptr)
     for (int i = vm_ptr->fp - 1; i >= 0; i--)
     {
         frame_t *frame = &vm_ptr->frames[i];
-        fprintf(stderr, "  at pc: %d\n", frame->ret_pc - 1); 
+        fprintf(stderr, "  at pc: %d\n", frame->ret_pc - 1);
     }
     fprintf(stderr, "----------------------------------------------------------\n");
 }
@@ -3085,10 +3081,27 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
     bool run = true;
     int return_value = EXIT_SUCCESS;
 
+    size_t drain_treshold = 1024;
+    size_t drain_count = 0;
+
     while (run)
     {
         const instr_t instr = program[pc++];
         term_t *regs = &stack[bp]; // virtual registers are indexed relative to the base pointer
+
+//        const size_t dec_queue_size = vm_ptr->dec_queue.size;
+//        if (dec_queue_size >= drain_treshold)
+//        {
+//            drain_queue(&vm_ptr->dec_queue, &vm_ptr->arena);
+//            const size_t freed = dec_queue_size - vm_ptr->dec_queue.size;
+//            drain_count = drain_count + 1;
+//
+//            if (freed > drain_treshold / 2) drain_treshold = drain_treshold * 3 / 4;
+//            else drain_treshold = drain_treshold * 3 / 2;
+//
+//            if (drain_treshold < 256) drain_treshold = 256;
+//            if (drain_treshold > 65536) drain_treshold = 65536;
+//        }
 
         #ifdef STATS
 
@@ -3187,7 +3200,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             const term_t val = regs[src_reg];
 
-            if (!IS_BOOL(val)) 
+            if (!IS_BOOL(val))
             {
                 char *s = term_to_string(vm_ptr->env_ptr, val, 3, NULL);
                 fprintf(stderr, "Runtime Error: Condition must be a boolean (got value '%s').\n", s);
@@ -3321,7 +3334,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
         // BUFFER_SET buf_reg, index_reg, val_reg
         case INSTR_BUFFER_SET:
         {
-            const int buf_reg = instr.a; 
+            const int buf_reg = instr.a;
             const int index_reg = instr.b ;
             const int val_reg = instr.c ;
 
@@ -3808,7 +3821,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int src_reg = instr.b;
 
             const term_t v = regs[src_reg];
-            
+
             if (IS_BOOL(v))
             {
                 const term_t value = MAKE_BOOL(GET_BOOL(v) == 0);
@@ -4248,7 +4261,7 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
             const int src_reg = instr.b;
 
             char *s = term_to_string(vm_ptr->env_ptr, regs[src_reg], 0, NULL);
-            
+
             term_t new_str = make_string(vm_ptr, s);
             free(s);
             arc_assign_reg(vm_ptr, regs, dst_reg, new_str);
