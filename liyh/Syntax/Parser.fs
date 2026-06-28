@@ -1698,17 +1698,18 @@ module Parser =
     type private NotationField =
         | Name of string
         | Assoc of Associativity
+        | Comm of bool
         | Prec of uint32
 
     let private parseNotation =
 
         let parseAnyNonSpace =
-            many1Satisfy (fun c -> c <> ' ' && c <> '\n' && c <> '\r' && c <> ''' && c <> '"')
+            many1Satisfy (fun c -> c <> ' ' && c <> '\n' && c <> '\r' && c <> '\'' && c <> '"')
 
         let parseMixfixPattern =
             let validatedPatternPart =
                 let parseHole =
-                    skipChar ''' >>. NameParser.parseName false |>> HolePart <?> "hole"
+                    skipChar '\'' >>. NameParser.parseName false |>> HolePart <?> "hole"
 
                 let parseFixedPart =
                     parseAnyNonSpace >>= fun fixedPart ->
@@ -1717,7 +1718,7 @@ module Parser =
                         else preturn (FixedPart fixedPart)
 
                 choiceL [
-                    lookAhead (pchar ''') >>. parseHole;
+                    lookAhead (pchar '\'') >>. parseHole;
                     parseFixedPart
                 ] "hole or fixed part"
 
@@ -1725,9 +1726,9 @@ module Parser =
                 attempt (spaces >>. skipString "->")
 
             pipe2
-                (spaces >>? validatedPatternPart) // Parse la première partie (pour simuler many1)
-                (manyTill (spaces >>? validatedPatternPart) (lookAhead parseTerminator)) // Parse les suivantes
-                (fun part parts -> part :: parts) // Combine les résultats
+                (spaces >>? validatedPatternPart)
+                (manyTill (spaces >>? validatedPatternPart) (lookAhead parseTerminator))
+                (fun part parts -> part :: parts)
 
         let parseNotationName =
             pipe2
@@ -1745,6 +1746,15 @@ module Parser =
                         skipStringCI "none" >>% Associativity.None ])
                 (fun _ assoc -> Assoc assoc)
 
+        let parseNotationCommutative =
+            pipe2
+                (spaces >>. (skipStringCI "commutative" <?> "commutativity"))
+                (spaces >>. skipChar ':' >>. spaces >>.
+                    choice [
+                        skipStringCI "true" >>% true
+                        skipStringCI "false" >>% false ])
+                (fun _ comm -> Comm comm)
+
         let parseNotationPrecedence =
             pipe2
                 (spaces >>. (skipStringCI "precedence" <?> "precedence"))
@@ -1755,6 +1765,7 @@ module Parser =
             choice [
                 parseNotationName
                 parseNotationAssociativity
+                parseNotationCommutative
                 parseNotationPrecedence ]
             |> parseWithPos <?> ""
 
@@ -1763,6 +1774,7 @@ module Parser =
             >>= fun fields ->
                 let names = fields |> List.choose (function { Node = Name _ } as f -> Some f | _ -> None)
                 let assocs = fields |> List.choose (function { Node = Assoc _ } as f -> Some f | _ -> None)
+                let comms = fields |> List.choose (function { Node = Comm _ } as f -> Some f | _ -> None)
                 let precs = fields |> List.choose (function { Node = Prec _ } as f -> Some f | _ -> None)
 
                 let errors = [
@@ -1772,12 +1784,14 @@ module Parser =
                     if assocs.Length = 0 then "The `associativity` field is missing in the notation definition"
                     elif assocs.Length > 1 then "The `associativity` field appears more than once in the notation definition"
 
+                    if comms.Length > 1 then "The `commutative` field appears more than once in the notation definition"
+
                     if precs.Length = 0 then "The `precedence` field is missing in the notation definition"
                     elif precs.Length > 1 then "The `precedence` field appears more than once in the notation definition"
                 ]
 
                 match errors with
-                | [] -> preturn (names.Head, assocs.Head, precs.Head)
+                | [] -> preturn (names.Head, assocs.Head, precs.Head, comms |> List.tryHead)
                 | errors -> fail (String.concat "\n" errors)
 
         parse {
@@ -1787,7 +1801,8 @@ module Parser =
             let! pattern = spaces >>. parseMixfixPattern
             do! spaces >>. (skipString "->") <?> "rewriting the notation (`is/->`)"
             let! is = spaces >>. parseExpressionRef
-            let! name, assoc, prec = greater pos parseFields
+
+            let! name, assoc, prec, commOpt = greater pos parseFields
 
             let! pos' = getPosition
 
@@ -1795,11 +1810,17 @@ module Parser =
             let { Node = Assoc assoc; Pos = pos2; Pos' = pos2' } = assoc
             let { Node = Prec prec; Pos = pos3; Pos' = pos3' } = prec
 
+            let commNode =
+                match commOpt with
+                | Some { Node = Comm comm; Pos = p; Pos' = p' } -> { Node = comm; Pos = p; Pos' = p' }
+                | _ -> { Node = false; Pos = pos; Pos' = pos' }
+
             let notation =
                 { NotationName = { Node = name; Pos = pos1; Pos' = pos1' }
                   NotationPattern = { Node = pattern; Pos = pos; Pos' = pos' }
                   NotationPrecedence = { Node = prec; Pos = pos3; Pos' = pos3' }
                   NotationAssociativity = { Node = assoc; Pos = pos2; Pos' = pos2' }
+                  NotationCommutative = commNode
                   NotationIs = is }
 
             do! addMixfixOperator (notationPatternToMixfixOperator notation)

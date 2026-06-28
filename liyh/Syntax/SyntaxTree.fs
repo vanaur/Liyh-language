@@ -24,6 +24,7 @@ module SyntaxTree =
           BindingPatterns: NotationPattern list
           Precedence: uint
           Associativity: Associativity
+          IsCommutative: bool // default: false
           RewritesTo: ExpressionWithPos
           Position: Position * Position }
 
@@ -237,6 +238,7 @@ module SyntaxTree =
           NotationPattern: NotationPattern list WithPos
           NotationPrecedence: uint WithPos
           NotationAssociativity: Associativity WithPos
+          NotationCommutative: bool WithPos
           NotationIs: ExpressionWithPos }
 
     and public NotationPattern =
@@ -326,6 +328,7 @@ module SyntaxTree =
           BindingPatterns = removePos notation.NotationPattern
           Precedence = removePos notation.NotationPrecedence
           Associativity = removePos notation.NotationAssociativity
+          IsCommutative = removePos notation.NotationCommutative
           RewritesTo = notation.NotationIs
           Position = notation.NotationPattern.PosTuple }
 
