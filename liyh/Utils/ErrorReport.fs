@@ -65,13 +65,16 @@ module ErrorReporter =
         isUtf8 || langUtf8 || isWindowsUtf8
 
     let private sym =
-        let isCool =
-            true // let's be cool until someone complain
-            || Environment.GetEnvironmentVariable("LIYH_FANCY_SYMBOLS") = "1"
+        // Not all environments support fancy Unicode symbols. To use them, one has to
+        // explicitly enable them if the environment supports them.
+        let explicit = Environment.GetEnvironmentVariable("LIYH_FANCY_SYMBOLS")
 
-        if isCool then SymbolSet.UnicodeSetCool
-        elif detectUnicodeSupport() then SymbolSet.UnicodeSetClassical
-        else SymbolSet.AsciiSet
+        match explicit with
+        | "1" | "cool" -> SymbolSet.UnicodeSetCool
+        | "0" | "ascii" -> SymbolSet.AsciiSet
+        | _ ->
+            if detectUnicodeSupport() then SymbolSet.UnicodeSetClassical
+            else SymbolSet.AsciiSet
 
     type private SeverityPalette =
         { Primary   : ColorTerm.Color

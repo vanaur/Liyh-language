@@ -290,11 +290,17 @@ module LiyhPackage =
             let pgraph = build rootFilePath Set.empty ProjectGraph.Empty
             match ProjectGraph.tryGetCycles pgraph with
             | None ->
+                let absoluteRootPath = Path.GetFullPath rootFilePath
+
                 let rootModule =
                     ProjectGraph.getModules pgraph
-                    |> Seq.find (fun mi -> identifierToPath mi.Identifier = rootFilePath)
+                    |> Seq.find (fun mi ->
+                        let absoluteModulePath = resolveFromProjectRoot projectRoot mi.Identifier
+                        String.Equals(absoluteModulePath, absoluteRootPath, StringComparison.OrdinalIgnoreCase)
+                    )
 
                 Some (pgraph, rootModule)
+
             | Some cycle ->
                 let showCycle =
                     let allNames =

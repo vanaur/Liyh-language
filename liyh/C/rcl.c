@@ -274,7 +274,7 @@ static void free_queue(dec_queue_t *queue)
 
 /// Increments the reference count of the given term. If it is not a heap allocated
 /// object, then do nothing (for example, a simple integer is not boxed).
-static __always_inline void rc_increment(term_t obj)
+static inline void rc_increment(term_t obj)
 {
     if (unlikely(!obj || !IS_PTR(obj)))
         return; // not an object on the heap
@@ -286,7 +286,7 @@ static __always_inline void rc_increment(term_t obj)
 /// Decrements the reference count of the given term. If it is not a heap allocated
 /// object, then do nothing (for example, a simple integer is not boxed). If the reference
 /// count reaches zero, add the object to the pending queue for freeing or recycling.
-static __always_inline void rc_decrement(dec_queue_t *queue, term_t obj)
+static inline void rc_decrement(dec_queue_t *queue, term_t obj)
 {
     if (!obj || !IS_PTR(obj))
         return; // not an object on the heap
@@ -309,7 +309,7 @@ static __always_inline void rc_decrement(dec_queue_t *queue, term_t obj)
 
 /// Assigns a refcounted value to a target refcounted value, and handle the reference count of each one.
 /// If one or each of the objects are boxed, then no refcount will occur since it is not necessary.
-static __always_inline void rc_assign(dec_queue_t *queue, term_t *target, term_t new_val)
+static inline void rc_assign(dec_queue_t *queue, term_t *target, term_t new_val)
 {
     term_t old_val = *target;
 
