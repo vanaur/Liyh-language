@@ -1064,36 +1064,71 @@ module public AOT =
         let tempCFile = Path.GetTempFileName() + ".c"
         File.WriteAllText(tempCFile, result)
 
+        let baseDir = AppDomain.CurrentDomain.BaseDirectory
+        let configPath = Path.Combine(baseDir, ".compiler_config")
+        let mutable ccPath = "cc"
+        let mutable ffiFlags = "-lffi"
+
+        if File.Exists(configPath) then
+            let config =
+                File.ReadAllLines(configPath)
+                |> Array.map _.Split([|'='|], 2)
+                |> Array.filter (fun p -> p.Length = 2)
+                |> Array.map (fun p -> (p.[0], p.[1]))
+                |> Map.ofArray
+
+            if config.ContainsKey("CC_PATH") then
+                ccPath <- config.["CC_PATH"]
+            
+            if config.ContainsKey("FFI_INCLUDE_DIR") && config.ContainsKey("FFI_LIB_DIR") then
+                let incDir = config.["FFI_INCLUDE_DIR"]
+                let libDir = config.["FFI_LIB_DIR"]
+
+                ffiFlags <- sprintf "-I\"%s\" -L\"%s\" -lffi" incDir libDir
+
         let outputFile = Path.Combine(Directory.GetCurrentDirectory(), fileName)
+        let isWin = Environment.OSVersion.Platform = PlatformID.Win32NT
 
         let flags =
-            [ "-lm"                                      // Link math library (libm)
-              "-lffi"                                    // Link libffi
-              "-DEMBEDDED"                               // Define EMBEDDED macro for standalone executable compilation
+            [ if not isWin then "-lm"                           // Link math library (libm)
+              ffiFlags                                          // Link libffi
+              "-DEMBEDDED"                                      // Define EMBEDDED macro for standalone executable compilation
 
-              if not optimize then "-g"                  // Activate debug information if not not optimize
-              if not optimize then "-fsanitize=address"  // Activate asan if not optimize
+              if not optimize then "-g"                         // Activate debug information if not not optimize
+              if not optimize
+                 && not isWin then "-fsanitize=address"         // Activate asan if not optimize
 
-              if optimize then "-O3"                     // Aggressive optimization
-              if optimize then "-flto"                   // Link-time optimization (whole-program analysis)
-              if optimize then "-fno-plt"                // Avoid PLT indirection for shared libraries (faster calls)
-              if optimize then "-march=native" ]         // Optimize for the current CPU architecture
+              if optimize then "-O3"                            // Aggressive optimization
+              if optimize then "-flto"                          // Link-time optimization (whole-program analysis)
+              if optimize && not isWin then "-fno-plt"          // Avoid PLT indirection for shared libraries (faster calls)
+              if optimize && not isWin then "-march=native" ]   // Optimize for the current CPU architecture
 
             |> String.concat " "
 
         let compileArgs =
-            $"-o {outputFile} {flags} {tempCFile}"
+            sprintf "-o \"%s\" \"%s\" %s" outputFile tempCFile flags
 
         let processInfo = ProcessStartInfo("cc", compileArgs)
         processInfo.UseShellExecute <- false
         processInfo.RedirectStandardOutput <- true
         processInfo.RedirectStandardError <- true
 
+        if ccPath <> "cc" then
+            let gccDir = Path.GetDirectoryName(ccPath)
+            let envPath = System.Environment.GetEnvironmentVariable("PATH")
+            processInfo.EnvironmentVariables.["PATH"] <- sprintf "%s;%s" gccDir envPath
+
         use proc = Process.Start(processInfo)
+
+        let outputTask = proc.StandardOutput.ReadToEndAsync()
+        let errorTask = proc.StandardError.ReadToEndAsync()
+
         proc.WaitForExit()
 
+        let output = outputTask.Result
+        let error = errorTask.Result
+
         if proc.ExitCode <> 0 then
-            let error = proc.StandardError.ReadToEnd()
-            failwith $"Compilation failed: {error}"
+            failwith (sprintf "Compilation failed with ExitCode %d.\nSTDOUT:\n%s\nSTDERR:\n%s" proc.ExitCode output error)
 
         File.Delete(tempCFile)
