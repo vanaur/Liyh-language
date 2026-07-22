@@ -873,6 +873,7 @@ type public VM() =
 
 [<RequireQualifiedAccess>]
 module public AOT =
+    open Liyh.Utils.ErrorReporter
     open System.Text
     open System.IO
     open System.Diagnostics
@@ -892,9 +893,35 @@ module public AOT =
          .Replace("\r", "\\r")
          .Replace("\t", "\\t")
 
+    let private tryFindExecutable (name: string) =
+        if Path.IsPathRooted(name) then
+            if File.Exists(name) then Some name else None
+        else
+            let envPath = Environment.GetEnvironmentVariable("PATH")
+            let isWin = Environment.OSVersion.Platform = PlatformID.Win32NT
+            let separator = if isWin then ";" else ":"
+
+            let extensions =
+                if isWin && String.IsNullOrEmpty(Path.GetExtension(name)) then
+                    [| ""; ".exe"; ".cmd"; ".bat" |]
+                else
+                    [| "" |]
+
+            if String.IsNullOrWhiteSpace(envPath) then
+                None
+            else
+                envPath.Split(separator, StringSplitOptions.RemoveEmptyEntries)
+                |> Seq.collect (fun dir ->
+                    extensions |> Seq.map (fun ext ->
+                        try Path.Combine(dir.Trim('"', ' '), name + ext)
+                        with _ -> ""
+                    )
+                )
+                |> Seq.tryFind File.Exists
+
     /// Produces an executable at the given path.
     /// This executable contains the whole runtime and the compiled bytecode embedded as static arrays.
-    let public compile (cp: CompiledProgram) (fileName: string) (optimize: bool) =
+    let public compile (cp: CompiledProgram) (fileName: string) (cc: string option) (optimize: bool) =
         let sb = StringBuilder()
 
         let inline appendLine (line: string) =
@@ -1066,7 +1093,8 @@ module public AOT =
 
         let baseDir = AppDomain.CurrentDomain.BaseDirectory
         let configPath = Path.Combine(baseDir, ".compiler_config")
-        let mutable ccPath = "cc"
+
+        let mutable ccPath = Option.defaultValue "cc" cc
         let mutable ffiFlags = "-lffi"
 
         if File.Exists(configPath) then
@@ -1077,7 +1105,7 @@ module public AOT =
                 |> Array.map (fun p -> (p.[0], p.[1]))
                 |> Map.ofArray
 
-            if config.ContainsKey("CC_PATH") then
+            if config.ContainsKey("CC_PATH") && cc.IsNone then
                 ccPath <- config.["CC_PATH"]
             
             if config.ContainsKey("FFI_INCLUDE_DIR") && config.ContainsKey("FFI_LIB_DIR") then
@@ -1108,27 +1136,58 @@ module public AOT =
         let compileArgs =
             sprintf "-o \"%s\" \"%s\" %s" outputFile tempCFile flags
 
-        let processInfo = ProcessStartInfo("cc", compileArgs)
-        processInfo.UseShellExecute <- false
-        processInfo.RedirectStandardOutput <- true
-        processInfo.RedirectStandardError <- true
+        match tryFindExecutable ccPath with
+        | None ->
+            if File.Exists(tempCFile) then File.Delete(tempCFile)
+            
+            let report =
+                { ErrorType = Package
+                  ErrorCode = null
+                  EnclosingPosition = (None, None)
+                  Description = sprintf "The specified C compiler (`%s`) was not found on the system." ccPath
+                  AllLines = Seq.empty
+                  Informations = List.empty
+                  Hint = "Generally, the default option is preferable to a custom C compiler." }
 
-        if ccPath <> "cc" then
-            let gccDir = Path.GetDirectoryName(ccPath)
-            let envPath = System.Environment.GetEnvironmentVariable("PATH")
-            processInfo.EnvironmentVariables.["PATH"] <- sprintf "%s;%s" gccDir envPath
+            let errQ = ErrorQueue()
+            errQ.AddError(report)
+            errQ.ReportAll Console.Out true
 
-        use proc = Process.Start(processInfo)
+            false
 
-        let outputTask = proc.StandardOutput.ReadToEndAsync()
-        let errorTask = proc.StandardError.ReadToEndAsync()
+        | Some resolvedCcPath ->
+            let processInfo = ProcessStartInfo(resolvedCcPath, compileArgs)
 
-        proc.WaitForExit()
+            processInfo.UseShellExecute <- false
+            processInfo.RedirectStandardOutput <- true
+            processInfo.RedirectStandardError <- true
 
-        let output = outputTask.Result
-        let error = errorTask.Result
+            let compilationSucceeded =
+                try
+                    use proc = Process.Start(processInfo)
+                    proc.OutputDataReceived.Add(fun _ -> ())
+                    proc.ErrorDataReceived.Add(fun _ -> ())
+                    proc.BeginOutputReadLine()
+                    proc.BeginErrorReadLine()
+                    proc.WaitForExit()
+                    proc.ExitCode = 0
+                with
+                | _ -> false
 
-        if proc.ExitCode <> 0 then
-            failwith (sprintf "Compilation failed with ExitCode %d.\nSTDOUT:\n%s\nSTDERR:\n%s" proc.ExitCode output error)
+            if not compilationSucceeded then
+                let report =
+                    { ErrorType = Package
+                      ErrorCode = null
+                      EnclosingPosition = (None, None)
+                      Description = sprintf "The AOT compilation failed due to the external code-generation tool (`%s`)." ccPath
+                      AllLines = Seq.empty
+                      Informations = [ sprintf "It is likely that `%s` is not a valid C compiler." ccPath ]
+                      Hint = null }
 
-        File.Delete(tempCFile)
+                let errQ = ErrorQueue()
+                errQ.AddError(report)
+                errQ.ReportAll Console.Out true
+
+            File.Delete(tempCFile)
+            compilationSucceeded
+

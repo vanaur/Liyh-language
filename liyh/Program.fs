@@ -34,6 +34,7 @@ module Program =
             | [<AltCommandLine("-o")>] Output of path: string
             | [<AltCommandLine("-O")>] Optimize
             | [<AltCommandLine("-s")>] Stfu
+            | [<AltCommandLine("-cc")>] CCompiler of cc: string
             | Emit of file: string
 
             interface IArgParserTemplate with
@@ -44,6 +45,7 @@ module Program =
                     | Optimize -> "Activate the optimizations."
                     | Emit _ -> "Write the compiled bytecode in the given file for textual visualization."
                     | Stfu -> "Displays only the necessary information."
+                    | CCompiler _ -> "The C compiler to use (default is `cc` on Unix)"
 
         type ExecuteArgs =
             | [<MainCommand; ExactlyOnce>] File of string
@@ -146,6 +148,7 @@ module Program =
 
         let public runOrCompile
             (rootFile: string)
+            (cc: string option)
             (doOptimize: bool)
             (run: bool)
             (output: string option)
@@ -212,8 +215,8 @@ module Program =
                 vm.EmitFromCompiledProgram cp
 
                 let compileTo (destFile: string) =
-                    LyVM.AOT.compile cp destFile doOptimize
-                    printfn "Compiled %s to %s." rootFile destFile
+                    if LyVM.AOT.compile cp destFile cc doOptimize then
+                        printfn "Compiled %s to %s." rootFile destFile
 
                 match output with
                 | None when not run ->
@@ -444,7 +447,7 @@ module Program =
                     let programArgs = runArgs.GetResult(ExecuteArgs.ProgramArgs, [])
                     let stfu = runArgs.Contains(ExecuteArgs.Stfu)
 
-                    CompilationProcess.runOrCompile rootFile doOptimize true None None programArgs stfu
+                    CompilationProcess.runOrCompile rootFile None doOptimize true None None programArgs stfu
 
                 | Compile compileArgs ->
                     let rootFile = compileArgs.GetResult(CompileArgs.File)
@@ -452,8 +455,9 @@ module Program =
                     let emit = compileArgs.TryGetResult(CompileArgs.Emit)
                     let output = compileArgs.TryGetResult(CompileArgs.Output)
                     let stfu = compileArgs.Contains(CompileArgs.Stfu)
+                    let cc = compileArgs.TryGetResult(CompileArgs.CCompiler)
 
-                    CompilationProcess.runOrCompile rootFile doOptimize false output emit [] stfu
+                    CompilationProcess.runOrCompile rootFile cc doOptimize false output emit [] stfu
 
                 | Explain explainArgs ->
                     let code = explainArgs.GetResult(ExplainArgs.Code)
