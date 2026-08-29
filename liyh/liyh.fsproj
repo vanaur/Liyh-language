@@ -30,6 +30,7 @@
     <Compile Include="ModuleSystem/LiyhPackage.fs" />
 
     <Compile Include="Typecheck/TypeCheck.fs" />
+    <Compile Include="Typecheck/Notations.fs" />
 
     <Compile Include="Core/Core.fs" />
     <Compile Include="Core/Helper.fs" />

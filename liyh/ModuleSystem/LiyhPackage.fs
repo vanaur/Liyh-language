@@ -461,18 +461,17 @@ module LiyhPackage =
         tryGetEntryPoint pgraph
         |> Option.isSome
 
-    // For debug purpose.
+    // Returns the list of all the notations associated to a given module.
     let public getAllNotations (ProjectGraph pgraph) =
-        let mutable result = []
-
-        for modl in pgraph.Keys do
+        pgraph.Keys
+        |> Seq.toList
+        |> List.collect (fun modl ->
             Definitions.classifyDefinitions modl
             |> Map.tryFind Definitions.DefinitionType.Notation
             |> Option.map (List.map (removePos >> function Notation notation -> notation))
-            |> Option.map (fun newNotations -> result <- result @ newNotations)
-            |> ignore
-
-        result
+            |> Option.map (List.map (fun notation -> (modl, notation)))
+            |> Option.defaultValue []
+        )
 
     /// The Global FFI Bindings is a Map of keys 'Module Name' and value 'Module FFI Bindings'.
     type public GlobalFFIBindings = Map<string, FFIBinding list>
