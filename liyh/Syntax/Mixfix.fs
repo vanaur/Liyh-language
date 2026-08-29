@@ -79,7 +79,17 @@ module private MixfixEngine =
                 | Some s -> Set.add s currentStopTokens
                 | None -> currentStopTokens
 
-            let context = sprintf "argument #%d of operator '%s'" (accArgs.Length + 1) opName
+            let context =
+                let nth =
+                    function
+                    | 1 -> "first"
+                    | 2 -> "second"
+                    | 3 -> "third"
+                    | 4 -> "fourth"
+                    | 5 -> "fifth"
+                    | n -> sprintf "%dth" n  // Who actually uses more than two operands in practice?
+
+                sprintf "the %s argument of the '%s' operator" (nth (accArgs.Length + 1)) opName
 
             termParser childStopTokens <?> context 
             >>= fun arg ->
@@ -161,6 +171,7 @@ module private MixfixEngine =
                         |> choice
 
                     let opReply = symbolMatcher stream
+                    let opEndState = stream.State
                     let opEndPos = stream.Position
 
                     // Check for the longest match between the two previous parsing result.
@@ -169,8 +180,17 @@ module private MixfixEngine =
 
                     if not atomOk && not opOk then
                         // No success at all.
-                        stream.BacktrackTo(startState)
-                        Reply<'Node>(Error, messageError "Expected expression")
+
+                        if atomEndPos.Index >= opEndPos.Index then
+                            stream.BacktrackTo(atomEndState)
+                            let err = mergeErrors atomReply.Error (expected "expression")
+                            let status = if atomReply.Status = FatalError then FatalError else Error
+                            Reply<'Node>(status, err)
+                        else
+                            stream.BacktrackTo(opEndState)
+                            let err = mergeErrors opReply.Error (expected "expression")
+                            let status = if opReply.Status = FatalError then FatalError else Error
+                            Reply<'Node>(status, err)
 
                     elif atomOk && (not opOk || atomEndPos.Index > opEndPos.Index) then
                         // The atom wins, we continue with its parsing state.

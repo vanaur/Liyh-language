@@ -132,14 +132,23 @@ module private ParsingErorr =
         |> Array.distinct
         |> Array.toList
 
-    let public findRelevantPosition (errorList: ErrorMessageList) (defaultPosition: Position) =
+    let public findRelevantPosition (errorList: ErrorMessageList) (defaultPosition: Position) (maxPosition: Position option) =
         let rec findNestedPosition (messages: ErrorMessage[]) =
             messages
             |> Array.choose (fun msg ->
                 match msg.Type with
                 | ErrorMessageType.NestedError ->
                     let nested = msg :?> ErrorMessage.NestedError
-                    Some nested.Position
+                    let pos = nested.Position
+
+                    let isAfterStart = pos.Index >= defaultPosition.Index
+                    let isBeforeEnd =
+                        match maxPosition with
+                        | Some max -> pos.Index <= max.Index
+                        | None -> true
+                    
+                    if isAfterStart && isBeforeEnd then Some pos
+                    else None
                 | _ -> None)
             |> Array.tryLast
 
@@ -188,7 +197,7 @@ module private ParsingErorr =
     let public buildErrorReport (sourceCode: string) (startPos: Position) (endPos: Position) (errors: ErrorMessageList) =
         let formattedErrors = groupAndFormatErrors errors
         let description = formatErrorMessage formattedErrors
-        let relevantPos = findRelevantPosition errors startPos
+        let relevantPos = findRelevantPosition errors startPos (Some endPos)
 
         let informations =
             if startPos <> relevantPos
@@ -1340,7 +1349,7 @@ module Parser =
     do PatternParser.createPatternParser () |> ignore
 
     let private parseApplyArguments =
-        sepBy parseExpressionRef (spacesOrComment >>. pchar ',' >>. spacesOrComment)
+        sepBy (attempt parseExpressionRef) (spacesOrComment >>. pchar ',' >>. spacesOrComment)
 
     let private parseTermRefHolder = createParserForwardedToRef<ExpressionWithPos, NotationState IndentState>()
     let private parseTerm = fst parseTermRefHolder
@@ -1348,7 +1357,12 @@ module Parser =
 
     let private parsePostfixNotations =
         let functionCall =
-            parseWithPos (between (skipChar '[' <?> "" .>> spacesOrComment) (skipChar ']' <?> "closing '['") parseApplyArguments)
+            parseWithPos (
+                between
+                    (skipChar '[' <?> "" .>> spacesOrComment)
+                    (skipChar ']' <?> "closing '['")
+                    parseApplyArguments
+            )
             |>> fun args expr ->
                 { Pos = expr.Pos
                   Node = Expression.Apply { LHS = expr; Arguments = args.Node } //(expr, args)
@@ -1427,10 +1441,28 @@ module Parser =
                         | false ->
                             let! isAligned = attempt (exact pos (preturn ())) >>% true <|>% false
                             if isAligned then
-                                let! item = safeExprParser
-                                let! endPos = getPosition
-                                if pos = endPos then return List.rev (item :: acc)
-                                else return! loop (item :: acc)
+                                // let! item = safeExprParser
+                                // let! endPos = getPosition
+                                // if pos = endPos then return List.rev (item :: acc)
+                                // else return! loop (item :: acc)
+
+                                let! isSeparator =
+                                    lookAhead (choice [
+                                        skipChar ','
+                                        skipChar ']'
+                                        skipChar ')'
+                                        skipChar '}'
+                                        skipString "->"
+                                    ]) >>% true <|>% false
+                                
+                                if isSeparator then
+                                    return List.rev acc
+                                else
+                                    let! item = safeExprParser
+                                    let! endPos = getPosition
+                                    if pos = endPos then return List.rev (item :: acc)
+                                    else return! loop (item :: acc)
+
                             else return List.rev acc
                     }
                     let! tail = loop []
@@ -1795,31 +1827,35 @@ module Parser =
                 | errors -> fail (String.concat "\n" errors)
 
         parse {
-            let! pos = getPosition
+            let! startPos = getPosition
 
             do! spaces >>. keyword "notation"
+
+            let! patternStart = getPosition
             let! pattern = spaces >>. parseMixfixPattern
+            let! patternEnd = getPosition
+            
             do! spaces >>. (skipString "->") <?> "rewriting the notation (`is/->`)"
             let! is = spaces >>. parseExpressionRef
 
-            let! name, assoc, prec, commOpt = greater pos parseFields
+            let! name, assoc, prec, commOpt = greater startPos parseFields
 
-            let! pos' = getPosition
+            let { Node = Name nameNode; Pos = pos1; Pos' = pos1' } = name
+            let { Node = Assoc assocNode; Pos = pos2; Pos' = pos2' } = assoc
+            let { Node = Prec precNode; Pos = pos3; Pos' = pos3' } = prec
 
-            let { Node = Name name; Pos = pos1; Pos' = pos1' } = name
-            let { Node = Assoc assoc; Pos = pos2; Pos' = pos2' } = assoc
-            let { Node = Prec prec; Pos = pos3; Pos' = pos3' } = prec
+            let! endFieldsPos = getPosition
 
             let commNode =
                 match commOpt with
                 | Some { Node = Comm comm; Pos = p; Pos' = p' } -> { Node = comm; Pos = p; Pos' = p' }
-                | _ -> { Node = false; Pos = pos; Pos' = pos' }
+                | _ -> { Node = false; Pos = endFieldsPos; Pos' = endFieldsPos }
 
             let notation =
-                { NotationName = { Node = name; Pos = pos1; Pos' = pos1' }
-                  NotationPattern = { Node = pattern; Pos = pos; Pos' = pos' }
-                  NotationPrecedence = { Node = prec; Pos = pos3; Pos' = pos3' }
-                  NotationAssociativity = { Node = assoc; Pos = pos2; Pos' = pos2' }
+                { NotationName = { Node = nameNode; Pos = pos1; Pos' = pos1' }
+                  NotationPattern = { Node = pattern; Pos = patternStart; Pos' = patternEnd }
+                  NotationPrecedence = { Node = precNode; Pos = pos3; Pos' = pos3' }
+                  NotationAssociativity = { Node = assocNode; Pos = pos2; Pos' = pos2' }
                   NotationCommutative = commNode
                   NotationIs = is }
 
@@ -1993,7 +2029,7 @@ module Parser =
         )
 
     let private handleParseFailure (str: string) (err: ParserError) (position: Position) =
-        let relevantPosition = ParsingErorr.findRelevantPosition err.Messages position
+        let relevantPosition = ParsingErorr.findRelevantPosition err.Messages position None
         let formattedErrors = ParsingErorr.groupAndFormatErrors err.Messages
         let errorMessage = ParsingErorr.formatErrorMessage formattedErrors
 
