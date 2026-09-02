@@ -1193,7 +1193,7 @@ module public BytecodeCompiler =
 
             // Attempts to compile the predicate as a native comparison.
             let predBool =
-                match tryCompileIntrinsicBoolean context whileLoop.Predicate target with
+                match tryCompileIntrinsicBoolean context whileLoop.Predicate None with
                 | Some rawReg -> rawReg
                 | None -> compileTerm context false None whileLoop.Predicate
 
