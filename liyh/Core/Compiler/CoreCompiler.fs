@@ -284,17 +284,26 @@ module CoreCompiler =
                 Builtin.symbolReverse resultVar
             ]
 
-    and private compileApply (cstate: State) { LHS = lhs; Arguments = args } =
-        let lhs = compileExpression cstate lhs
-        let args = List.map (compileExpression cstate) args
+    and private compileApply (cstate: State) (apply: Apply) =
+        let args = List.map (compileExpression cstate) apply.Arguments
 
-        match lhs with
-        | Symbol symb ->
-            if symb.Children.IsEmpty then copySymbolWithNewChildren symb args
-            else FunctionalApplication { Base = lhs; Arguments = args }
+        match removePos apply.LHS with
+        | Identifier id -> symbol (string (removePos id)) args
+        | _ ->
+            let lhsTerm = compileExpression cstate apply.LHS
+            FunctionalApplication { Base = lhsTerm; Arguments = args }
 
-        | Closure _ -> FunctionalApplication { Base = lhs; Arguments = args }
-        | x -> FunctionalApplication { Base = x; Arguments = args }
+    //    and private compileApply (cstate: State) { LHS = lhs; Arguments = args } =
+    //        let lhs = compileExpression cstate lhs
+    //        let args = List.map (compileExpression cstate) args
+    //
+    //        match lhs with
+    //        | Symbol symb ->
+    //            if symb.Children.IsEmpty then copySymbolWithNewChildren symb args
+    //            else FunctionalApplication { Base = lhs; Arguments = args }
+    //
+    //        | Closure _ -> FunctionalApplication { Base = lhs; Arguments = args }
+    //        | x -> FunctionalApplication { Base = x; Arguments = args }
 
     and private compileInterpolatedString (cstate: State) (lstr: InterpolatedPart list) =
 

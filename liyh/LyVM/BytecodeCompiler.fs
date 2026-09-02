@@ -1328,9 +1328,8 @@ module public BytecodeCompiler =
                         builder.CallFFI(ffiIndex, strictArgs, ?target = target)
 
                     | None ->
-
                         let dp = context.Global.SymbolLabels
-                        let resolvedInfo = DispatchTable.tryFindByNameArity (resolvedName, List.length children) dp
+                        let resolvedInfo = DispatchTable.tryFindByNameArity (resolvedName, arity) dp
 
                         match resolvedInfo with
                         | Some (label, strategy) ->
@@ -1350,7 +1349,7 @@ module public BytecodeCompiler =
                                 | _ ->
                                     argsRegs context.Strategy
 
-                            builder.AllocData(name, args, ?target = target)
+                            builder.AllocData(resolvedName, args, ?target = target)
 
         and compileSubstitution (substitution: CoreSubstitution) (context: CompilationContext) (target: Reg option) =
             let astReg = compileTermStrict context false None substitution.InExpr
