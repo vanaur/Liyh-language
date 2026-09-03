@@ -18,6 +18,7 @@ module CoreCompiler =
     open Liyh.Module
     open Liyh.Syntax.SyntaxTree
     open Liyh.Core.Helper
+    open LiyhPackage
 
     type private WhileLoopVariableSource =
         | FromPattern of PatternWithPos
@@ -743,7 +744,15 @@ module CoreCompiler =
 
     // --- Module --- //
 
-    and private compileModule (modl: ModuleInfo) =
+    type public CoreNotationInfo =
+        { Name: string
+          Associativity: Associativity
+          IsCommutative: bool }
+
+    /// Dictionary between notation's name/arity and their core informations.
+    type public NotationEnv = Map<string * int, CoreNotationInfo>
+
+    let private compileModule (modl: ModuleInfo) =
         let definitions = Definitions.classifyDefinitions modl
 
         let notations =
@@ -755,15 +764,77 @@ module CoreCompiler =
         let cstate = { State.Empty with Notations = notations }
         let definitions = Map.remove Definitions.DefinitionType.Notation definitions
 
-        definitions.Values
-        |> List.ofSeq
-        |> List.concat
-        |> List.choose (compileDefinition cstate)
+        let notationsInfo =
+            notations
+            |> List.map (fun nt ->
+                let key =
+                    match compileExpression cstate nt.NotationIs with
+                    | Symbol { Symbol = symb; Children = children } -> (symb, children.Length)
+                    | other -> failwithf "Notations can only rewrite to symbols, but got `%A`." other
+
+                key,
+                    { Name = removePos nt.NotationName
+                      Associativity = removePos nt.NotationAssociativity
+                      IsCommutative = removePos nt.NotationCommutative })
+            |> Map.ofList
+
+        let compiledModule =
+            definitions.Values
+            |> List.ofSeq
+            |> List.concat
+            |> List.choose (compileDefinition cstate)
+
+        (compiledModule, notationsInfo)
+
+    type public LayeredCompilationEnv =
+        { Definitions: CoreDefinition list
+          NotationEnv: NotationEnv }
 
     /// Compiles each modules of the list to the LiyhCore intermediate representation.
-    /// The compilation is done in parallel.
-    and public compileModules (modules: ModuleInfo list) =
-        modules
-        |> Array.ofList
-        |> Array.Parallel.collect (compileModule >> Array.ofList)
+    /// The compilation is done in parallel for each modules.
+    let public compileModules (modules: ModuleInfo list) : LayeredCompilationEnv =
+        let compiledResults =
+            modules
+            |> Array.ofList
+            |> Array.Parallel.map compileModule
+
+        let compiledModuleDefinitions, notationsMaps = Array.unzip compiledResults
+        let mergedModuleDefinitions =  List.concat compiledModuleDefinitions
+
+        // Some upstream checks verify for collisions, so we do not
+        // have to handle this here for the map's keys.
+
+        let mergedNotations =
+            notationsMaps
+            |> Seq.collect Map.toSeq
+            |> Map.ofSeq
+
+        { Definitions = mergedModuleDefinitions
+          NotationEnv = mergedNotations }
+
+    type public GlobalCompilationEnv =
+        { FFIBindings: GlobalFFIBindings
+          Definitions: CoreDefinition list
+          NotationEnv: NotationEnv }
+
+    /// Merges compilation environment tables for each layer into a global environment.
+    /// Assumes no collisions between definitions across layers.
+    let public getGlobalCompilationEnv
+        (ffiBindings: GlobalFFIBindings)
+        (compilationEnvLayers: LayeredCompilationEnv array)
+        : GlobalCompilationEnv =
+
+        let coreDefinitions =
+            compilationEnvLayers
+            |> Array.map _.Definitions
+            |> List.concat
+
+        let allNotationsInformation =
+            compilationEnvLayers
+            |> Seq.collect (_.NotationEnv >> Map.toSeq)
+            |> Map.ofSeq
+
+        { Definitions = coreDefinitions
+          NotationEnv = allNotationsInformation
+          FFIBindings = ffiBindings }
 

@@ -171,16 +171,25 @@ module Program =
                 let pgraph, rootModule = fillProjectGraph rootModule pgraph errorQueue
                 errorQueue.ReportIfNeeded Console.Error
 
-                let coreDefinitions =
+                let compiledLayers =
                     pgraph
                     |> ProjectGraph.topologicalLayers
                     |> Array.ofList
-                    |> Array.Parallel.collect (fun layer ->
+                    |> Array.Parallel.map (fun layer ->
                         // let typechecked = TypeCheck.run layer errorQueue
                         CoreCompiler.compileModules layer)
-                    |> Array.toList
 
                 errorQueue.ReportIfNeeded Console.Error
+
+                (*
+
+                /// Check the expressions semantically. If no problems are found, group the expressions by
+                /// their rewritten form and the information related to commutativity and associativity.
+                let notationsInfo = TypeCheck.CheckNotations.check pgraph errorQueue
+
+                errorQueue.ReportIfNeeded Console.Error
+
+                *)
 
                 if not (containsEntryPoint pgraph) then
                     let report =
@@ -198,18 +207,19 @@ module Program =
                     errorQueue.ReportAll Console.Error true
                     exit 1
 
-                // We add the Foreign Function Interface bindings to the pipeline for the compiler.
+                // Building the global compilation environment.
 
                 let ffiBindings = getFFIBindings pgraph
+                let globalCompilationEnv = CoreCompiler.getGlobalCompilationEnv ffiBindings compiledLayers
+
                 checkGlobalFFIBindings ffiBindings [] errorQueue |> ignore
                 errorQueue.ReportIfNeeded Console.Error
 
-                // The compiled program.
-                let cp = LyVM.BytecodeCompiler.compile ffiBindings coreDefinitions
+                // The compiled program (bytecode).
+                let cp = LyVM.BytecodeCompiler.compile globalCompilationEnv
 
-                Option.iter
-                    (LyVM.PrettyPrinter.saveToFile cp)
-                    emitBytecode
+                // Saves the compiled bytecode to a file if requested by the user.
+                Option.iter (LyVM.PrettyPrinter.saveToFile cp) emitBytecode
 
                 let vm = new LyVM.VM()
                 vm.EmitFromCompiledProgram cp

@@ -437,16 +437,19 @@ module public BytecodeCompiler =
             ctx.EvaluatedRegs.Add(reg.Index) |> ignore
             reg
 
+
     // --- The actual compiler class --- //
 
 
     /// Class containing all compilation logic, encapsulates mutable states and numerous functions using them.
     /// The only public member is `__.Compile` which returns the compiled bytecode of the given program.
-    type private Compiler(globalFFIBindings: GlobalFFIBindings, program: CoreProgram) =
+    type private Compiler(globalCompilationEnv: CoreCompiler.GlobalCompilationEnv) =
         let builder = new ByteCodeBuilder()
         let mutable nextLabelId = 1000
 
-        let ffiRegistery = FFIRegistry(globalFFIBindings)
+        let program = globalCompilationEnv.Definitions
+        let notationsInfo = globalCompilationEnv.NotationEnv
+        let ffiRegistery = FFIRegistry(globalCompilationEnv.FFIBindings)
 
 
         // --- General helpers --- //
@@ -484,6 +487,7 @@ module public BytecodeCompiler =
                 let forced = builder.Force(reg, ?target = target)
                 MiscHelpers.markEvaluated forced ctx |> ignore
                 forced
+
 
         // --- Path and decision tree compilation --- //
 
@@ -1030,6 +1034,294 @@ module public BytecodeCompiler =
                 compileTerm context false None other
 
 
+        // --- AC matching on rules --- //
+
+
+        /// Emits dynamic tests and branches to `failNext` in case of failure.
+        /// Binds free variables to the `reg` register by enriching the env environment.
+        and emitMatchAndBind
+            (patt: CoreTerm)
+            (reg: Reg)
+            (env: Map<string, Reg>)
+            (ctx: CompilationContext)
+            (failNext: int)
+            =
+            match patt with
+            | Variable v ->
+                match Map.tryFind v env with
+                | Some existingReg ->
+                    let forcedCandidate = forceWithTracking reg None ctx
+                    let forcedExisting = forceWithTracking existingReg None ctx
+                    let eq = builder.Eq(forcedCandidate, forcedExisting)
+                    builder.JumpFalse(eq, failNext)
+                    env
+
+                | None ->
+                    Map.add v reg env
+            
+            | Symbol { Symbol = tag; Children = children } ->
+                builder.TestTag(reg, tag, failNext)
+
+                let mutable currentEnv = env
+
+                for ci, childPatt in List.indexed children do
+                    let childReg = builder.Deconstruct(reg, ci)
+                    currentEnv <- emitMatchAndBind childPatt childReg currentEnv ctx failNext
+
+                currentEnv
+
+            | Literal lit ->
+                let forcedReg = forceWithTracking reg None ctx
+                let litReg = compileLiteral lit ctx None
+                let eq = builder.Eq(forcedReg, litReg)
+                builder.JumpFalse(eq, failNext)
+                env
+
+            | Wildcard ->
+                env
+
+            | RecordExtend re ->
+                let mutable currentEnv = env
+
+                for fieldName, fieldPatt in re.Extension do
+                    let fieldReg = builder.GetField(reg, fieldName, failNext)
+                    currentEnv <- emitMatchAndBind fieldPatt fieldReg currentEnv ctx failNext
+                
+                match re.BaseRecord with
+                | Some basePatt -> emitMatchAndBind basePatt reg currentEnv ctx failNext
+                | None -> currentEnv
+
+            | AsClause(patt1, patt2) ->
+                let env' = emitMatchAndBind patt1 reg env ctx failNext
+                emitMatchAndBind patt2 reg env' ctx failNext
+
+            | other ->
+                failwithf "compileACMatchingTree: unexpected pattern form '%s' in AC rule LHS"
+                    (PrettyPrinter.prettyPrintExpr other)
+
+        /// Compile an AC matching's rule with a recursive AC matching algorithm on the LHS patterns.
+        and compileACMatchingTree
+            (ctx: CompilationContext)
+            (tree: DecisionTree)
+            (onMatch: bool -> int -> CompilationContext -> Reg option -> Reg)
+            (fallback: Reg option -> Reg)
+            (symbolName: string)
+            (originalName: string)
+            (arity: int)
+            (argRegs: Reg[])
+            (rules: CoreRule[])
+            (target: Reg option)
+            : Reg =
+
+            // AC operators are exclusively symbols, so we only have to check for them.
+            let rec flattenLHS (patt: CoreTerm) =
+                match patt with
+                | Symbol { Symbol = s; Children = [ left; right ] }
+                    when s = originalName || s = symbolName || s.StartsWith(originalName + "$$") ->
+                    flattenLHS left @ flattenLHS right
+                | _ -> [ patt ]
+
+            /// Generates the helper function 'rev_append' that reverse a first list
+            /// and prefix it to a second list. For example, if `acc = [1; 2; 3]` and
+            /// `tail = [4; 5]`, then the function produces `[3; 2; 1; 4; 5]`.
+            let emitReverseAppend (accReg: Reg) (tailReg: Reg) : Reg =
+                let cursorReg = builder.Alloc()
+                let resultReg = builder.Alloc()
+                let loopLabel = freshLabel()
+                let endLabel = freshLabel()
+
+                builder.Mov(cursorReg, accReg)
+                builder.Mov(resultReg, tailReg)
+
+                builder.SetLabel(loopLabel)
+
+                builder.TestTag(cursorReg, "cons", endLabel)
+
+                let headReg = builder.Deconstruct(cursorReg, 0)
+                let tail2Reg = builder.Deconstruct(cursorReg, 1)
+
+                builder.AllocData("cons", [ headReg; resultReg ], target = resultReg) |> ignore
+                builder.Mov(cursorReg, tail2Reg)
+                builder.Jump(loopLabel)
+
+                builder.SetLabel(endLabel)
+                resultReg
+
+            /// Emits and executes a 'collect' helper that flattens an associative binary tree
+            /// (matching either `symbolName` or `originalName`) into a 'cons'/'nil' list.
+            /// Given two subtrees `leftReg` and `rightReg`, it produces `[leftReg... ; rightReg...]`.
+            let emitCollectList (symbolName: string) (originalName: string) (leftReg: Reg) (rightReg: Reg) : Reg =
+                let collectFnLabel = freshLabel()
+                let afterCollectFn = freshLabel()
+
+                builder.Jump(afterCollectFn)
+                builder.SetLabel(collectFnLabel)
+
+                // Define the recursive collect function.
+                builder.Scope(fun _ ->
+                    let (collectArgs, collectPatchIdx, collectSavedMax) = builder.DefineFunction(2)
+                    let termIn = collectArgs.[0]
+                    let accIn = collectArgs.[1]
+
+                    let isSameTagLabel = freshLabel()
+                    let checkOriginalLabel = freshLabel()
+                    let fallbackConsLabel = freshLabel()
+
+                    // Check for mangled tag (for contexts)
+                    builder.TestTag(termIn, symbolName, checkOriginalLabel)
+                    builder.Jump(isSameTagLabel)
+
+                    // Check for original tag (when no context)
+                    builder.SetLabel(checkOriginalLabel)
+                    if symbolName <> originalName then
+                        builder.TestTag(termIn, originalName, fallbackConsLabel)
+                        builder.Jump(isSameTagLabel)
+                    else
+                        builder.Jump(fallbackConsLabel)
+
+                    // Wrap the term into the accumulator
+                    builder.SetLabel(fallbackConsLabel)
+                    let consReg = builder.AllocData("cons", [ termIn; accIn ])
+                    builder.Ret(consReg)
+
+                    // Recurse right, then recurse left
+                    builder.SetLabel(isSameTagLabel)
+                    let rightIn = builder.Deconstruct(termIn, 1)
+                    let leftIn = builder.Deconstruct(termIn, 0)
+                    let savedLeft = builder.Alloc()
+                    builder.Mov(savedLeft, leftIn)
+
+                    let accRight = builder.Call(collectFnLabel, [ rightIn; accIn ])
+                    let accFull = builder.Call(collectFnLabel, [ savedLeft; accRight ])
+                    builder.Ret(accFull)
+
+                    builder.FinalizeFunction(collectPatchIdx, collectSavedMax)
+                )
+
+                builder.SetLabel(afterCollectFn)
+
+                let savedLeftArg = builder.Alloc()
+                builder.Mov(savedLeftArg, leftReg)
+
+                // Flatten: right subtree into nil, then left subtree into that accumulator
+                let nilReg = builder.AllocData("nil", [])
+                let acc1 = builder.Call(collectFnLabel, [ rightReg; nilReg ])
+                let savedAcc1 = builder.Alloc()
+                builder.Mov(savedAcc1, acc1)
+
+                // Resulting reg of the flattened list
+                builder.Call(collectFnLabel, [ savedLeftArg; savedAcc1 ])
+
+            let flatList = emitCollectList symbolName originalName argRegs.[0] argRegs.[1]
+
+            // Now, for each rule, flatten its LHS into sub-patterns and search
+            // in flatList for a matching binding of distinct elments.
+            //
+            // The search is a recursive chain of cursor loops (one per
+            // sub-pattern), each carrying the environment accumulated so far
+            // (for nonlinear constraints) and working on the remainder list
+            // after previously chosen elements have been removed.
+
+            let phiReg = defaultArg target (builder.Alloc())
+            let endLabel = freshLabel()
+
+            for i = 0 to rules.Length - 1 do
+                let rule = rules.[i]
+                let failRuleLabel = freshLabel()
+
+                let subPatterns = flattenLHS rule.LHS
+
+                let rec emitSearch
+                    (patts: CoreTerm list)
+                    (remainingReg: Reg)
+                    (env: Map<string, Reg>)
+                    (failLabel: int)
+                    =
+
+                    match patts with
+                    | [] ->
+                        let matchCtx = { ctx with Env = env }
+
+                        rule.WhenClause |> Option.iter (fun guard ->
+                            let guardReg = compileTerm matchCtx false None guard
+                            builder.JumpFalse(guardReg, failLabel)
+                        )
+
+                        let ruleResult = onMatch false i matchCtx (Some phiReg)
+                        if ruleResult.Index <> phiReg.Index then
+                            builder.Mov(phiReg, ruleResult)
+
+                        // Rebuild the tree using the unused portion.
+                        let rebuildLoopLabel = freshLabel()
+                        let rebuildDoneLabel = freshLabel()
+                        let cursorReg = builder.Alloc()
+
+                        let opLabel =
+                            match DispatchTable.tryFindByNameArity (symbolName, 2) ctx.Global.SymbolLabels with
+                            | Some (label, _) -> label
+                            | None -> failwithf "Cannot find label for operator '%s/2' in AC loop" symbolName // this might not happen
+
+                        builder.Mov(cursorReg, remainingReg)
+
+                        builder.SetLabel(rebuildLoopLabel)
+                        builder.TestTag(cursorReg, "cons", rebuildDoneLabel)
+
+                        let headReg = builder.Deconstruct(cursorReg, 0)
+                        let tailReg = builder.Deconstruct(cursorReg, 1)
+
+                        // Restart the reduction on the new subtree.
+                        builder.Call(opLabel, [ phiReg; headReg ], target = phiReg) |> ignore
+
+                        builder.Mov(cursorReg, tailReg)
+                        builder.Jump(rebuildLoopLabel)
+
+                        builder.SetLabel(rebuildDoneLabel)
+                        builder.Jump(endLabel)
+
+                    | patt :: restPatts ->
+                        let cursorReg = builder.Alloc()
+                        let skippedReg = builder.Alloc()
+                        let nilReg = builder.AllocData("nil", [])
+
+                        builder.Mov(cursorReg, remainingReg)
+                        builder.Mov(skippedReg, nilReg)
+
+                        let loopLabel = freshLabel()
+                        let nextElem = freshLabel()
+
+                        builder.SetLabel(loopLabel)
+
+                        // If the end of the list is reached, it means the element was not found,
+                        // so we backtrack to the parent level.
+                        builder.TestTag(cursorReg, "cons", failLabel)
+
+                        // Else, the cursor points to a valid element.
+
+                        let headReg = builder.Deconstruct(cursorReg, 0)
+                        let tailReg = builder.Deconstruct(cursorReg, 1)
+
+                        let env' = emitMatchAndBind patt headReg env ctx nextElem
+
+                        // Success case: we re-attach the missing elements to the rest of the list, and move down.
+                        let restReg = emitReverseAppend skippedReg tailReg
+                        emitSearch restPatts restReg env' nextElem
+
+                        // Failure case: we add the rejected element to `skippedReg`, move on, and repeat the loop.
+                        builder.SetLabel(nextElem)
+                        builder.AllocData("cons", [ headReg; skippedReg ], target = skippedReg) |> ignore
+                        builder.Mov(cursorReg, tailReg)
+                        builder.Jump(loopLabel)
+
+                emitSearch subPatterns flatList ctx.Env failRuleLabel
+                builder.SetLabel(failRuleLabel)
+
+            // When all the AC permutations fail, we reach the fallback
+            compileTree ctx tree (onMatch true) fallback (Some phiReg) |> ignore
+
+            builder.SetLabel(endLabel)
+            phiReg
+
+
         // --- Expression compiling --- //
 
 
@@ -1513,17 +1805,17 @@ module public BytecodeCompiler =
                       ActiveContexts = activeContexts
                       EvaluatedRegs = new HashSet<int>() }
 
+                let originalName =
+                    match ruleInfo.ContextName with
+                    | Some contextName -> ContextResolution.uncreateContextualName symbolName contextName
+                    | None -> symbolName
+
                 let fallback mismatchTarget =
 
                     // The `tryFallbackToGlobal` mechanism prevents a local context from completely shadowing
                     // global functions that share the same name but do not satisfy the current context's rules.
                     // This ensures the implementation of the "overlay" resolution semantics: local definitions
                     // take precedence, followed by global ones, and finally symbolic data constructions.
-
-                    let originalName =
-                        match ruleInfo.ContextName with
-                        | Some contextName -> ContextResolution.uncreateContextualName symbolName contextName
-                        | None -> symbolName
 
                     let tryFallbackToGlobal () =
                         if DispatchTable.contains (originalName, arity) globalLabels then
@@ -1578,7 +1870,7 @@ module public BytecodeCompiler =
                         else
                             builder.AllocData(originalName, List.ofArray argRegs, ?target = mismatchTarget)
 
-                let onMatch ruleIndex leafContext matchTarget =
+                let onMatch isTail ruleIndex leafContext matchTarget =
                     let rule = rulesArray.[ruleIndex]
                     let localStrategy = Strategy.FromAST rule.Strategy
 
@@ -1597,11 +1889,10 @@ module public BytecodeCompiler =
                         builder.Unit(?target = matchTarget)
 
                     | Strategy.Strict | Strategy.Memoize ->
-                        let isTail = (symbolName <> "main")
-                        compileTermStrict leafContext isTail matchTarget rule.RHS
+                        compileTermStrict leafContext (isTail && symbolName <> "main") matchTarget rule.RHS
 
                     | _ ->
-                        compileTerm leafContext (symbolName <> "main") matchTarget rule.RHS
+                        compileTerm leafContext (isTail && symbolName <> "main") matchTarget rule.RHS
 
                 let optimizedTree =
                     match tree with
@@ -1610,7 +1901,22 @@ module public BytecodeCompiler =
                         Option.defaultValue tree newTree
                     | _ -> tree
 
-                let result = compileTree context optimizedTree onMatch fallback None
+                // To test the compilation ignoring all AC matching:
+                //   let result = compileTree context optimizedTree (onMatch true) fallback None
+
+                let isCommutative =
+                    match Map.tryFind (originalName, arity) notationsInfo with
+                    | Some { IsCommutative = true } -> true
+                    | _ -> false
+
+                let result =
+                    // AC matching is implemented for arity-2 operators, for now.
+                    if isCommutative && arity = 2 then
+                        compileACMatchingTree
+                            context optimizedTree onMatch fallback symbolName
+                            originalName arity argRegs rulesArray None
+                    else
+                        compileTree context optimizedTree (onMatch true) fallback None
 
                 if symbolName = "main" then builder.Halt() // stop the program
                 else builder.Ret(result)
@@ -1621,8 +1927,7 @@ module public BytecodeCompiler =
             builder.Compile(entryPointLabel, dispatchTable, ffiRegistery.Entries)
 
     /// Compiles a LiyhCore program into a LyVM's bytecode equivalent program.
-    /// The `optimize` flag has no effect, for now.
-    let public compile (ffiBindings: LiyhPackage.GlobalFFIBindings) (program: CoreProgram) =
-        let compiler = new Compiler(ffiBindings, program)
+    let public compile (globalCompilationEnv: CoreCompiler.GlobalCompilationEnv) =
+        let compiler = new Compiler(globalCompilationEnv)
         compiler.Compile()
 
