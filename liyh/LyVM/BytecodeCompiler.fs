@@ -1296,6 +1296,19 @@ module public BytecodeCompiler =
 
                 MiscHelpers.markEvaluated res context
 
+            | { Symbol = "__arity"; Children = [ expr ] } ->
+                let exprReg = compileAsData context expr
+                let res = builder.Arity(exprReg, ?target = target)
+
+                MiscHelpers.markEvaluated res context
+
+            | { Symbol = "__deconstruct_dyn"; Children = [ expr; idxExpr ] } ->
+                let exprReg = compileAsData context expr
+                let idxReg = compileTerm context false None idxExpr
+                let res = builder.DeconstructDyn(exprReg, idxReg, ?target = target)
+
+                MiscHelpers.markEvaluated res context
+
             | _ ->
 
                 // Arguments are prepared differently depending on the main strategy associated

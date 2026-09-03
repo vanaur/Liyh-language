@@ -598,6 +598,11 @@ typedef enum
     INSTR_TEST_TAG,                                     // TEST_TAG src_reg, tag_id, fail_label, _
     INSTR_DECONSTRUCT,                                  // DECONSTRUCT dst_reg, src_reg, index, _
 
+    // dynamic arity and deconstruction
+
+    INSTR_ARITY,                                        // ARITY dst_reg, src_reg, _, _
+    INSTR_DECONSTRUCT_DYN,                              // DECONSTRUCT_DYN dst_reg, src_reg, index_reg, _
+
     // lazy evaluation instructions
 
     INSTR_DELAY,                                        // DELAY dst_reg, label, capture_count, capture_start
@@ -634,59 +639,61 @@ typedef enum
 
 /// String representation of the opcodes for debugging purpose.
 static const char* opcode_names[] = {
-    [INSTR_HALT] =          "HALT",
-    [INSTR_JUMP] =          "JUMP",
-    [INSTR_JUMP_FALSE] =    "JUMP_FALSE",
-    [INSTR_JUMP_TRUE] =     "JUMP_TRUE",
-    [INSTR_RESERVE] =       "RESERVE",
-    [INSTR_CALL] =          "CALL",
-    [INSTR_TAILCALL] =      "TAILCALL",
-    [INSTR_RET] =           "RET",
-    [INSTR_APPLY] =         "APPLY",
-    [INSTR_MOV] =           "MOV",
-    [INSTR_LOAD_INT] =      "LOAD_INT",
-    [INSTR_LOAD_ATOM] =     "LOAD_ATOM",
-    [INSTR_LOAD_FLOAT] =    "LOAD_FLOAT",
-    [INSTR_LOAD_CHAR] =     "LOAD_CHAR",
-    [INSTR_LOAD_STRING] =   "LOAD_STRING",
-    [INSTR_LOAD_BOOL] =     "LOAD_BOOL",
-    [INSTR_ADD] =           "ADD",
-    [INSTR_SUB] =           "SUB",
-    [INSTR_MUL] =           "MUL",
-    [INSTR_DIV] =           "DIV",
-    [INSTR_MOD] =           "MOD",
-    [INSTR_NEG] =           "NEG",
-    [INSTR_EQUAL] =         "EQUAL",
-    [INSTR_NOT_EQUAL] =     "NOT_EQUAL",
-    [INSTR_NOT] =           "NOT",
-    [INSTR_LEQ] =           "LEQ",
-    [INSTR_LE] =            "LE",
-    [INSTR_GE] =            "GE",
-    [INSTR_GEQ] =           "GEQ",
-    [INSTR_STR_CAT] =       "STR_CAT",
-    [INSTR_MK_RECORD] =     "MK_RECORD",
-    [INSTR_EXTEND_RECORD] = "EXTEND_RECORD",
-    [INSTR_GET_FIELD] =     "GET_FIELD",
-    [INSTR_ALLOC] =         "ALLOC",
-    [INSTR_SUBST] =         "SUSBT",
-    [INSTR_CLOSURE] =       "CLOSURE",
-    [INSTR_CALL_CLOSURE] =  "CALL_CLOSURE",
-    [INSTR_GET_UPVALUE] =   "GET_UPVALUE",
-    [INSTR_TEST_TAG] =      "TEST_TAG",
-    [INSTR_DECONSTRUCT] =   "DECONSTRUCT",
-    [INSTR_DELAY] =         "DELAY",
-    [INSTR_FORCE] =         "FORCE",
-    [INSTR_CAST] =          "CAST",
-    [INSTR_CALL_FFI] =      "CALL_FFI",
-    [INSTR_BUFFER_ALLOC] =  "BUFFER_ALLOC",
-    [INSTR_BUFFER_GET] =    "BUFFER_GET",
-    [INSTR_BUFFER_SET] =    "BUFFER_SET",
-    [INSTR_BUFFER_REALLOC] ="BUFFER_REALLOC",
-    [INSTR_BUFFER_LENGTH] = "BUFFER_LENGTH",
-    [INSTR_BUFFER_TO_STRING] ="BUFFER_TO_STRING",
-    [INSTR_STRING_TO_BUFFER] ="STRING_TO_BUFFER",
-    [INSTR_PPSHOW] =        "PPSHOW",
-    [INSTR_PRINT] =         "PRINT",
+    [INSTR_HALT] =              "HALT",
+    [INSTR_JUMP] =              "JUMP",
+    [INSTR_JUMP_FALSE] =        "JUMP_FALSE",
+    [INSTR_JUMP_TRUE] =         "JUMP_TRUE",
+    [INSTR_RESERVE] =           "RESERVE",
+    [INSTR_CALL] =              "CALL",
+    [INSTR_TAILCALL] =          "TAILCALL",
+    [INSTR_RET] =               "RET",
+    [INSTR_APPLY] =             "APPLY",
+    [INSTR_MOV] =               "MOV",
+    [INSTR_LOAD_INT] =          "LOAD_INT",
+    [INSTR_LOAD_ATOM] =         "LOAD_ATOM",
+    [INSTR_LOAD_FLOAT] =        "LOAD_FLOAT",
+    [INSTR_LOAD_CHAR] =         "LOAD_CHAR",
+    [INSTR_LOAD_STRING] =       "LOAD_STRING",
+    [INSTR_LOAD_BOOL] =         "LOAD_BOOL",
+    [INSTR_ADD] =               "ADD",
+    [INSTR_SUB] =               "SUB",
+    [INSTR_MUL] =               "MUL",
+    [INSTR_DIV] =               "DIV",
+    [INSTR_MOD] =               "MOD",
+    [INSTR_NEG] =               "NEG",
+    [INSTR_EQUAL] =             "EQUAL",
+    [INSTR_NOT_EQUAL] =         "NOT_EQUAL",
+    [INSTR_NOT] =               "NOT",
+    [INSTR_LEQ] =               "LEQ",
+    [INSTR_LE] =                "LE",
+    [INSTR_GE] =                "GE",
+    [INSTR_GEQ] =               "GEQ",
+    [INSTR_STR_CAT] =           "STR_CAT",
+    [INSTR_MK_RECORD] =         "MK_RECORD",
+    [INSTR_EXTEND_RECORD] =     "EXTEND_RECORD",
+    [INSTR_GET_FIELD] =         "GET_FIELD",
+    [INSTR_ALLOC] =             "ALLOC",
+    [INSTR_SUBST] =             "SUSBT",
+    [INSTR_CLOSURE] =           "CLOSURE",
+    [INSTR_CALL_CLOSURE] =      "CALL_CLOSURE",
+    [INSTR_GET_UPVALUE] =       "GET_UPVALUE",
+    [INSTR_TEST_TAG] =          "TEST_TAG",
+    [INSTR_DECONSTRUCT] =       "DECONSTRUCT",
+    [INSTR_ARITY] =             "ARITY",
+    [INSTR_DECONSTRUCT_DYN] =   "DECONSTRUCT_DYN",
+    [INSTR_DELAY] =             "DELAY",
+    [INSTR_FORCE] =             "FORCE",
+    [INSTR_CAST] =              "CAST",
+    [INSTR_CALL_FFI] =          "CALL_FFI",
+    [INSTR_BUFFER_ALLOC] =      "BUFFER_ALLOC",
+    [INSTR_BUFFER_GET] =        "BUFFER_GET",
+    [INSTR_BUFFER_SET] =        "BUFFER_SET",
+    [INSTR_BUFFER_REALLOC] =    "BUFFER_REALLOC",
+    [INSTR_BUFFER_LENGTH] =     "BUFFER_LENGTH",
+    [INSTR_BUFFER_TO_STRING] =  "BUFFER_TO_STRING",
+    [INSTR_STRING_TO_BUFFER] =  "STRING_TO_BUFFER",
+    [INSTR_PPSHOW] =            "PPSHOW",
+    [INSTR_PRINT] =             "PRINT",
 };
 
 /// Four-operands instruction.
@@ -3162,6 +3169,78 @@ int run_vm(vm_t *vm_ptr, const int entry, term_t program_args)
 
             const term_t t = resolve_indirection(regs[src_reg]);
             arc_assign_reg(vm_ptr, regs, dst_reg, AS_HEADER(t)->children[index]);
+            break;
+        }
+
+        // ARITY dst_reg, src_reg
+        //
+        // Reads the arity (number of children) of a structured term into
+        // dst_reg, as a tagged int. Used to iterate over the children of
+        // variable-arity nodes (e.g. flattened AC operators) at runtime.
+        case INSTR_ARITY:
+        {
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+
+            const term_t t = resolve_indirection(regs[src_reg]);
+
+            if (!IS_PTR(t))
+            {
+                fprintf(stderr, "Runtime Error: ARITY expects a structured term.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            arc_assign_reg(vm_ptr, regs, dst_reg, MAKE_INT(AS_HEADER(t)->arity));
+            break;
+        }
+
+        // DECONSTRUCT_DYN dst_reg, src_reg, index_reg
+        //
+        // Same as DECONSTRUCT, but the child index is read from a register
+        // (computed at runtime) rather than taken as an immediate constant.
+        // Needed to index into the children of a variable-arity node, where
+        // the index isn't known until the node itself is inspected (ARITY).
+        case INSTR_DECONSTRUCT_DYN:
+        {
+            const int dst_reg = instr.a;
+            const int src_reg = instr.b;
+            const int index_reg = instr.c;
+
+            const term_t t = resolve_indirection(regs[src_reg]);
+
+            if (!IS_PTR(t))
+            {
+                fprintf(stderr, "Runtime Error: DECONSTRUCT_DYN expects a structured term.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            const term_t index_val = resolve_indirection(regs[index_reg]);
+
+            if (!IS_INT(index_val))
+            {
+                fprintf(stderr, "Runtime Error: DECONSTRUCT_DYN index must be an integer.\n");
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            const int64_t index = GET_INT(index_val);
+            const term_header_t *h = AS_HEADER(t);
+
+            if (index < 0 || (uint32_t)index >= h->arity)
+            {
+                fprintf(stderr, "Runtime Error: DECONSTRUCT_DYN index out of bounds (%lld for arity %u).\n",
+                        (long long)index, h->arity);
+                return_value = EXIT_FAILURE;
+                run = false;
+                break;
+            }
+
+            arc_assign_reg(vm_ptr, regs, dst_reg, h->children[index]);
             break;
         }
 

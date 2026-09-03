@@ -430,6 +430,18 @@ type public ByteCodeBuilder() =
         instructions.Add(Instr(OpCode.Deconstruct, dst.Index, term, childIndex, 0))
         dst
 
+    member public this.DeconstructDyn (Reg term, Reg childIndexReg, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
+
+        instructions.Add(Instr(OpCode.DeconstructDyn, dst.Index, term, childIndexReg, 0))
+        dst
+
+    member public this.Arity (Reg term, ?target: Reg) =
+        let dst = defaultArg target (this.Alloc())
+
+        instructions.Add(Instr(OpCode.Arity, dst.Index, term, 0, 0))
+        dst
+
     member public __.Print (Reg r) =
         instructions.Add(Instr(OpCode.Print, r, 0, 0, 0))
 
@@ -703,6 +715,12 @@ module public PrettyPrinter =
 
         | Instr(OpCode.Deconstruct, dst, term, index, _) ->
             $"    {reg dst} = deconstruct {reg term}[{index}]"
+
+        | Instr(OpCode.DeconstructDyn, dst, term, indexReg, _) ->
+            $"    {reg dst} = deconstruct_dyn {reg term}[{reg indexReg}]"
+
+        | Instr(OpCode.Arity, dst, term, _, _) ->
+            $"    {reg dst} = arity {reg term}"
 
         | Instr(OpCode.Delay, dst, label, count, capturesStart) ->
             $"    {reg dst} = delay {lbl label}[{reg capturesStart}..+{count}]"
