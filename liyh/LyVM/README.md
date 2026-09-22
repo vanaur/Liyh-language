@@ -24,7 +24,7 @@ LyVM is an attempt for a virtual machine for Liyh. The runtime and the library a
  - Contiguous register calling convention (each call to a function label requires the arguments to be in the form of contiguous registers from the caller).
  - Support for floats (64 bits), closures, records, immuable strings (and string concatenation) and pattern matching.
  - Support for lazy evaluation (using the `delay` and `force` instructions) and [black-holes](https://downloads.haskell.org/~ghc/0.29/docs/users_guide/user_86.html) detection.
- - Quite small (~2 kLoC for now).
+ - Quite small.
 
 ### Supported paradigms
 
@@ -121,7 +121,7 @@ into (without showing the generation of the list)
     ret r3
 ```
 
-and runs (on a i9-13900H) in an average between `195ms` to `228.2ms`.
+and runs (on a i9-13900H) in an average between `90ms` to `195ms`.
 
 ### AOT compilation
 
