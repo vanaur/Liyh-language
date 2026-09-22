@@ -516,6 +516,50 @@ module public BytecodeCompiler =
                         // semantic gap, but it is far from being the most important feature.
                         compilePath context parent
 
+//
+//      -- ATTEMPT: Make this decision tree path more generic to allow for deeper pattern matching
+//                  on nested variable data. For example:
+//
+//                      test_function1['f['x]] outermost -> 'x + 'f[42]
+//                      test_function2['f['x, 'y]] outermost -> 'f['x, 'x] + 'f['y, 'y]
+//
+//
+//                  but this is only a superficial modification, since I think a more dedicated VM
+//                  instruction would be better suited to handle this.
+//      ------------
+//
+//                    | Tag parent ->
+//                        let parentReg = compilePath context parent
+//                        let effectiveParent =
+//                            match context.Strategy with
+//                            | Strategy.Lazy -> forceWithTracking parentReg None context
+//                            | _ -> parentReg
+//
+//                        // Retrieves all known function symbols in the programme
+//                        let knownSymbols =
+//                            context.Global.SymbolLabels
+//                            |> Map.toList
+//                            |> List.map (fun (info, _) -> info.Name)
+//                            |> List.distinct
+//
+//                        let resultReg = builder.Alloc()
+//                        let endLabel = freshLabel()
+//
+//                        // Generates a dynamic dispatch via TestTag
+//                        for symName in knownSymbols do
+//                            let nextLabel = freshLabel()
+//                            builder.TestTag(effectiveParent, symName, nextLabel)
+//                            let atomReg = builder.LoadAtom(symName)
+//                            emitMov (resultReg, atomReg) context
+//                            builder.Jump(endLabel)
+//                            builder.SetLabel(nextLabel)
+//
+//                        // If no known symbol matches, fall back on the parent term
+//                        emitMov (resultReg, effectiveParent) context
+//                        builder.SetLabel(endLabel)
+//
+//                        resultReg
+
                     | Child(parent, idx) ->
                         let parentReg = compilePath context parent
 
