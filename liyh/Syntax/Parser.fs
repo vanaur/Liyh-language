@@ -1345,6 +1345,11 @@ module Parser =
               parseWithPos parseHandleEffect ]
 
         choice parsers <?> "valid expression" .>> spacesOrComment
+        //             ^^^^^^^^^^^^^^^^^^^^^^
+        // This hides useful error information. See, for example:
+        //
+        //      LibC.puts["{ 'lstr |> length |> ['x] -> 'x +  }"]
+        //
 
     do PatternParser.createPatternParser () |> ignore
 
