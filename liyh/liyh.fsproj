@@ -8,11 +8,9 @@
 
   <ItemGroup>
     <Compile Include="Utils/Utils.fs" />
-    <Compile Include="Utils/Trampoline.fs" />
     <Compile Include="Utils/DamerauLevenshtein.fs" />
     <Compile Include="Utils/ColorTerm.fs" />
     <Compile Include="Utils/ErrorReport.fs" />
-    <Compile Include="Utils/UnionFind.fs" />
     <Compile Include="Utils/ProgressBar.fs" />
     <Compile Include="Utils/LiyhCloc.fs" />
 
@@ -23,7 +21,6 @@
     <Compile Include="Syntax/PrettyPrint.fs" />
 
     <Compile Include="FFI/GeneralFFI.fs" />
-    <Compile Include="FFI/C/CFFI.fs" />
 
     <Compile Include="ModuleSystem/Module.fs" />
     <Compile Include="ModuleSystem/Definition.fs" />
