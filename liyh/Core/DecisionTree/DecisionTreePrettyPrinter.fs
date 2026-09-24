@@ -36,10 +36,6 @@ module DecisionTreePrinter =
 
             appendLine $"{indented}└─ MATCH rule #{ruleIndex}{bindingsStr}"
 
-        | Bind(varName, path, continuation) ->
-            appendLine $"{indented}├─ BIND {varName} ← {pathToString path}"
-            prettyPrintTree continuation (level + 1) sb
-
         | WhenGuard(guard, bindings, success, failure) ->
             let bindingsStr =
                 if Map.isEmpty bindings then ""
@@ -93,37 +89,10 @@ module DecisionTreePrinter =
                 appendLine $"{indented}│ └─ _ → (default)"
                 prettyPrintTree def (level + 2) sb
 
-        | ArityCheck(path, arity, success, failure) ->
-            appendLine $"{indented}├─ ARITY CHECK on {pathToString path} == {arity}?"
-            appendLine $"{indented}│   └─ yes →"
-            prettyPrintTree success (level + 2) sb
-            match failure with
-            | None -> ()
-            | Some f ->
-                appendLine $"{indented}│   └─ no →"
-                prettyPrintTree f (level + 2) sb
-
-        | TypeCheck(path, cases, defaultCase) ->
+        | RecordCheck(path, successTree, defaultCase) ->
             appendLine $"{indented}├─ TYPE CHECK on {pathToString path}"
-
-            let typeToString tt =
-                match tt with
-                | TSymbol -> "symbol"
-                | TVariable -> "variable"
-                | TLiteral TInteger -> "integer"
-                | TLiteral TFloat -> "float"
-                | TLiteral TString -> "string"
-                | TLiteral TChar -> "char"
-                | TClosure -> "closure"
-                | TRecord -> "record"
-                | TWildcard -> "_"
-
-            let caseList = cases |> Map.toList
-            caseList |> List.iteri (fun i (tt, subtree) ->
-                let branch = if i = caseList.Length - 1 && Option.isNone defaultCase then "└─" else "├─"
-                appendLine $"{indented}│ {branch} {typeToString tt} →"
-                prettyPrintTree subtree (level + 2) sb
-            )
+            appendLine $"{indented}│ ├─ success →"
+            prettyPrintTree successTree (level + 2) sb
 
             match defaultCase with
             | None -> ()
@@ -188,11 +157,6 @@ module DecisionTreeDotPrinter =
             let label = escape $"MATCH #{ruleIndex}{bindingsStr}"
             appendLine $"  {currentId} [label=\"{label}\", shape=box, style=filled, fillcolor=lightgreen];"
 
-        | Bind(varName, path, continuation) ->
-            let label = escape $"BIND\\n{varName} ← {pathToString path}"
-            appendLine $"  {currentId} [label=\"{label}\", shape=ellipse];"
-            buildGraph continuation (Some currentId) sb None
-
         | WhenGuard(guard, bindings, success, failure) ->
             let bindingsStr =
                 if Map.isEmpty bindings then ""
@@ -232,34 +196,10 @@ module DecisionTreeDotPrinter =
             | Some def -> buildGraph def (Some currentId) sb (Some "_")
             | None -> ()
 
-        | ArityCheck(path, arity, success, failure) ->
-            let label = escape $"ARITY\\n{pathToString path} = {arity}?"
-            appendLine $"  {currentId} [label=\"{label}\", shape=diamond];"
-            
-            buildGraph success (Some currentId) sb (Some "yes")
-            match failure with
-            | Some f -> buildGraph f (Some currentId) sb (Some "no")
-            | None -> ()
-
-        | TypeCheck(path, cases, defaultCase) ->
+        | RecordCheck(path, successTree, defaultCase) ->
             let label = escape $"TYPE\\n{pathToString path}"
             appendLine $"  {currentId} [label=\"{label}\", shape=diamond];"
-
-            let typeToString tt =
-                match tt with
-                | TSymbol -> "symbol"
-                | TVariable -> "variable"
-                | TLiteral TInteger -> "int"
-                | TLiteral TFloat -> "float"
-                | TLiteral TString -> "string"
-                | TLiteral TChar -> "char"
-                | TClosure -> "closure"
-                | TRecord -> "record"
-                | TWildcard -> "_"
-
-            cases |> Map.iter (fun tt subtree ->
-                buildGraph subtree (Some currentId) sb (Some (typeToString tt))
-            )
+            buildGraph successTree (Some currentId) sb (Some "record")
 
             match defaultCase with
             | Some def -> buildGraph def (Some currentId) sb (Some "_")

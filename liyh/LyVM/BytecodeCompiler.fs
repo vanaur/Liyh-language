@@ -786,9 +786,10 @@ module public BytecodeCompiler =
                     phiReg
                 )
 
-            | TypeCheck(path, cases, defaultCase) ->
+            | RecordCheck(path, successTree, defaultCase) ->
                 let pathReg = compilePath ctx path
                 let endLabel = freshLabel()
+                let nextLbl = freshLabel()
                 let phiReg = defaultArg target (builder.Alloc())
 
                 let testReg =
@@ -797,32 +798,25 @@ module public BytecodeCompiler =
                     | _ -> pathReg
 
                 builder.Scope(fun _ ->
-                    for KeyValue(t, subTree) in cases do
-                        let nextLbl = freshLabel()
+                    // if not a record, jump out
+                    builder.TestRecord(testReg, nextLbl)
 
-                        match t with
-                        | TRecord -> builder.TestRecord(testReg, nextLbl)
-                        | _ -> builder.Jump(nextLbl)
+                    // success branch
+                    let ctxBranch = branchContext ctx
+                    compileTree ctxBranch successTree onMatch fallback (Some phiReg) |> ignore
+                    builder.Jump(endLabel)
 
-                        let ctxBranch = branchContext ctx
-                        compileTree ctxBranch subTree onMatch fallback (Some phiReg) |> ignore
-
-                        builder.Jump(endLabel)
-                        builder.SetLabel(nextLbl)
-
+                    // fallback branch
+                    builder.SetLabel(nextLbl)
                     match defaultCase with
+                    | None -> fallback (Some phiReg) |> ignore
                     | Some d ->
                         let ctxDefault = branchContext ctx
                         compileTree ctxDefault d onMatch fallback (Some phiReg) |> ignore
 
-                    | None ->
-                        fallback (Some phiReg) |> ignore
-
                     builder.SetLabel(endLabel)
                     phiReg
                 )
-            
-            | other -> failwithf "TODO: %A" other
 
         and compileTermStrict (context: CompilationContext) (isTail: bool) (target: Reg option) (term: CoreTerm) =
             let rawReg = compileTerm context isTail target term
@@ -1416,7 +1410,7 @@ module public BytecodeCompiler =
             let occurrences =
                 match'.Cases
                 |> List.mapi (fun i (patt, _) ->
-                    { RuleIndex = i; Pattern = patt; Path = Root; Bindings = Map.empty; WhenClause = None })
+                    { RuleIndex = i; Pattern = patt; Bindings = Map.empty; WhenClause = None })
 
             let matrix =
                 { Occurrences = occurrences
@@ -1469,7 +1463,7 @@ module public BytecodeCompiler =
                     compileTerm context false None let'.Value
 
             let occurrence =
-                { RuleIndex = 0; Pattern = let'.Pattern; Path = Root; Bindings = Map.empty; WhenClause = None }
+                { RuleIndex = 0; Pattern = let'.Pattern; Bindings = Map.empty; WhenClause = None }
 
             let matrix = { Occurrences = [occurrence]; RemainingPaths = [Root] }
             let tree = DecisionTreeCompiler.compile matrix
@@ -1523,7 +1517,7 @@ module public BytecodeCompiler =
                             else 
                                 compileTerm seqContext false None value
 
-                        let occurence = { RuleIndex = 0; Pattern = pattern; Path = Root; Bindings = Map.empty; WhenClause = None }
+                        let occurence = { RuleIndex = 0; Pattern = pattern; Bindings = Map.empty; WhenClause = None }
                         let matrix = { Occurrences = [occurence]; RemainingPaths = [Root] }
                         let tree = DecisionTreeCompiler.compile matrix
 

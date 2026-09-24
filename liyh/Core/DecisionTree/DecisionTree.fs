@@ -2,14 +2,29 @@ namespace Liyh.Core.DecisionTree
 
 open Liyh.Core
 
+/// Describes how to reach a sub-value inside the scrutinee of a pattern match,
+/// as a sequence of steps starting from the root.
 type public Path =
-    | Child of Path * int
-    | Field of Path * string    // for record fields
-    | Tag of Path               // head symbol
+
+    /// The `position`-th positional argument of the constructor/symbol found at the `parent` path.
+    | Child of parent: Path * position: int
+
+    /// The record field named `name` of the given value found at the `parent` path.
+    | Field of parent: Path * name: string
+
+    /// The head symbol of the value found at the `parentè path.
+    | Tag of parent: Path
+
+    /// The scrutinee itself: the starting point of evry path.
     | Root
 
-    member this.Extend(index: int) = Child(this, index)
-    member this.Access(field: string) = Field(this, field)
+    /// Returns the path to the child at position `index` of this path.
+    member public this.Extend(index: int) =
+        Child(this, index)
+
+    /// Returns the path to the record field `field` of this path.
+    member public this.Access(field: string) =
+        Field(this, field)
 
     override this.ToString() =
         let rec build path acc =
@@ -20,92 +35,50 @@ type public Path =
             | Tag parent -> build parent (sprintf ":" :: acc)
         build this []
 
+/// The decision tree used to compile pattern matching.
 type public DecisionTree =
+
+    /// Tests the constructor/symbol (tag and arity) of the value found at `_path`,
+    /// then continues with the subtree matching that constructor/symbol.
+    /// Falls back to `_default` when no case matches.
     | Switch of
         _path: Path *
         _cases: Map<string * int, DecisionTree> *
         _default: DecisionTree option
 
+    /// Tests the value found at `_path` against a set of literal constants,
+    /// then continues with the matching subtree.
+    /// Falls back to `_default` when no literal matches.
     | SwitchLiteral of
         _path: Path *
         _cases: Map<CoreLiteral, DecisionTree> *
         _default: DecisionTree option
 
-    | ArityCheck of
+    /// Checks that the value found at `_path` is a record (e.g. that the
+    /// expected fields are present), then continues with `_success`.
+    /// Falls back to `_default` if the check fails.
+    | RecordCheck of
         _path: Path *
-        _arity: int *
         _success: DecisionTree *
-        _failure: DecisionTree option
-
-    | TypeCheck of
-        _path: Path *
-        _cases: Map<TermType, DecisionTree> *
         _default: DecisionTree option
 
-    | Bind of
-        _varName: string *
-        _path: Path *
-        _continuation: DecisionTree
-    
+    /// Evaluates the guard expression `_guard` (a `when`-clause) with the
+    /// variables given in `bindings`. Continues with `_success` if it
+    /// evaluates to true, otherwise with `_failure` if any.
     | WhenGuard of
         _guard: CoreTerm *
         _bindings: Map<string, Path> *
         _success: DecisionTree *
         _failure: DecisionTree option
 
+    /// Terminal node: the match succeeded and the rule at `_ruleIndex` is
+    /// selected. `_bindings` maps each pattern variable to the path of the
+    /// sub-value it captures, for use in the rule's body.
     | Leaf of
         _ruleIndex: int *
         _bindings: Map<string, Path>
-    
+
+    /// Terminal node: no rules matches, i.e. the match is non-exhaustive
+    /// along this branch.
     | Fail
-
-and public TermType =
-    | TSymbol
-    | TVariable
-    | TLiteral of LiteralType
-    | TClosure
-    | TRecord
-    | TWildcard
-
-and public LiteralType =
-    | TInteger
-    | TFloat
-    | TString
-    | TChar
-
-module public PathAccess =
-
-    let rec public access (path: Path) (term: CoreTerm) =
-        match path with
-        | Root -> term
-        | Child(parent, idx) ->
-            let parentTerm = access parent term
-            match parentTerm with
-            | Symbol { Children = children } when idx >= 0 && idx < children.Length ->
-                children.[idx]
-            | Symbol { Children = children } ->
-                failwithf "Path %O out of bounds: index %d, but term %s has only %d children"
-                    path idx (PrettyPrinter.prettyPrintExpr parentTerm) children.Length
-            | _ ->
-                failwithf "Path %O cannot descend into non-symbol term: %s"
-                    path (PrettyPrinter.prettyPrintExpr parentTerm)
-
-        | Field(parent, name) ->
-            let parentTerm = access parent term
-            match parentTerm with
-            | RecordExtend { Extension = fields } ->
-                match List.tryFind (fun (k, _) -> k = name) fields with
-                | Some (_, v) -> v
-                | None -> failwithf "Field '%s' not found in record." name
-            | _ ->
-                failwithf "Path %O expects a record, but got '%s'"
-                    path (PrettyPrinter.prettyPrintExpr parentTerm)
-
-        | Tag parent ->
-            let parentTerm = access parent term
-            match parentTerm with
-            | Symbol { Symbol = name } -> simpleSymbol name
-            | _ ->
-                failwithf "Path %O expects a symbol to extract tag, but got '%s'"
-                    path (PrettyPrinter.prettyPrintExpr parentTerm)
 

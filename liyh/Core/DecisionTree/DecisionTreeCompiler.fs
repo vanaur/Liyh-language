@@ -4,18 +4,9 @@ module DecisionTreeCompiler =
     open Liyh.Core.DecisionTree
     open Liyh.Core
 
-    type public PatternInfo =
-        { Variables: Set<string>
-          HasWhenClause: bool }
-
-        static member simple (variables: Set<string>) =
-            { Variables = variables
-              HasWhenClause = false }
-
     type public PatternOccurrence =
         { RuleIndex: int
           Pattern: CoreTerm
-          Path: Path
           Bindings: Map<string, Path>
           WhenClause: CoreTerm option }
 
@@ -192,11 +183,20 @@ module DecisionTreeCompiler =
 
         (byConstructor, byLiteral, byRecord, defaults, others)
 
+    let private bindVar (path: Path) (v: string) (occ: PatternOccurrence) : PatternOccurrence =
+        match Map.tryFind v occ.Bindings with
+        | None -> { occ with Bindings = Map.add v path occ.Bindings }
+        | Some _ ->
+            let tempVarName = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
+            let equalityCheck = mkEqualityGuard v tempVarName
+            let newGuard = mergeGuards occ.WhenClause equalityCheck
+
+            { occ with Bindings = Map.add tempVarName path occ.Bindings; WhenClause = Some newGuard }
+
     let private specializeOccurrence (path: Path) (symbolName: string) (occ: PatternOccurrence) =
         match safeAccess path occ.Pattern with
         | Symbol { Symbol = sym } when sym = symbolName -> Some [occ]
         | Wildcard -> Some [occ]
-
         | VariableApply(v, _) ->
             // Bind `v` to the symbol's tag and propagate the occurrence to check its arguments
             match Map.tryFind v occ.Bindings with
@@ -208,30 +208,14 @@ module DecisionTreeCompiler =
                 
                 Some [{ occ with Bindings = Map.add tempVarName (Tag path) occ.Bindings; WhenClause = Some newGuard }]
 
-        | Variable v ->
-            match Map.tryFind v occ.Bindings with
-            | None -> Some [{ occ with Bindings = Map.add v path occ.Bindings }]
-            | Some _ ->
-                let tempVarName = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
-                let equalityCheck = mkEqualityGuard v tempVarName
-                let newGuard = mergeGuards occ.WhenClause equalityCheck
-
-                Some [{ occ with Bindings = Map.add tempVarName path occ.Bindings; WhenClause = Some newGuard }]
-
+        | Variable v -> Some [ bindVar path v occ ]
         | _ -> None
 
     let private specializeLiteral (path: Path) (lit: CoreLiteral) (occ: PatternOccurrence) =
         match safeAccess path occ.Pattern with
         | Literal l when l = lit -> Some [occ]
         | Wildcard -> Some [occ]
-        | Variable v -> 
-            match Map.tryFind v occ.Bindings with
-            | None -> Some [{ occ with Bindings = Map.add v path occ.Bindings }]
-            | Some _ -> 
-                let tempVarName = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
-                let equalityCheck = mkEqualityGuard v tempVarName
-                let newGuard = mergeGuards occ.WhenClause equalityCheck
-                Some [{ occ with Bindings = Map.add tempVarName path occ.Bindings; WhenClause = Some newGuard }]
+        | Variable v -> Some [ bindVar path v occ ]
         | _ -> None
 
     let rec private compileBindings 
@@ -241,17 +225,6 @@ module DecisionTreeCompiler =
 
         let mutable additionalPaths: Path list = List.empty
 
-        let nextOccurenceVariableAndVariableSymbol (occ: PatternOccurrence) (isVarSymbol: bool) (v: string) =
-            match Map.tryFind v occ.Bindings with
-            | None ->
-                let boundPath = if isVarSymbol then Tag path else path
-                { occ with Bindings = Map.add v boundPath occ.Bindings }
-
-            | Some _ ->
-                let tempVar = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
-                let newGuard = mergeGuards occ.WhenClause (mkEqualityGuard v tempVar)
-                { occ with Bindings = Map.add tempVar path occ.Bindings; WhenClause = Some newGuard }
-
         let nextOccurrences =
             occurrences
             |> List.map (fun occ ->
@@ -259,10 +232,10 @@ module DecisionTreeCompiler =
                 | VariableApply (v, children) ->
                     let childPaths = List.init children.Length (fun i -> path.Extend i)
                     additionalPaths <- additionalPaths @ childPaths
-                    nextOccurenceVariableAndVariableSymbol occ true v
+                    bindVar (Tag path) v occ
 
                 | Variable v ->
-                    nextOccurenceVariableAndVariableSymbol occ false v
+                    bindVar path v occ
 
                 | _ -> occ
             )
@@ -500,13 +473,7 @@ module DecisionTreeCompiler =
             occurrences
             |> List.map (fun occ ->
                 match safeAccess path occ.Pattern with
-                | Variable v ->
-                    match Map.tryFind v occ.Bindings with
-                    | None -> { occ with Bindings = Map.add v path occ.Bindings }
-                    | Some _ ->
-                        let tempVar = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
-                        let newGuard = mergeGuards occ.WhenClause (mkEqualityGuard v tempVar)
-                        { occ with Bindings = Map.add tempVar path occ.Bindings; WhenClause = Some newGuard }
+                | Variable v -> bindVar path v occ
                 | _ -> occ
             )
 
@@ -518,7 +485,7 @@ module DecisionTreeCompiler =
                 { Occurrences = specializedOccurrences
                   RemainingPaths = newRemainingPaths }
 
-        DecisionTree.TypeCheck(path, Map.ofList [ (TRecord, successTree) ], Some DecisionTree.Fail)
+        DecisionTree.RecordCheck(path, successTree, Some DecisionTree.Fail)
 
     and private compileWhenClauses (occurrences: PatternOccurrence list) =
         match occurrences with
@@ -545,7 +512,6 @@ module DecisionTreeCompiler =
             |> Array.mapi (fun i rule ->
                 { RuleIndex = i
                   Pattern = rule.LHS
-                  Path = Root
                   Bindings = Map.empty
                   WhenClause = rule.WhenClause })
             |> Array.toList
