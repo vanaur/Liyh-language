@@ -42,8 +42,6 @@
     <Compile Include="Core/DecisionTree/DecisionTreePrettyPrinter.fs" />
     <Compile Include="Core/Compiler/AlphaConversion.fs" />
     <Compile Include="Core/Compiler/CoreCompiler.fs" />
-    <Compile Include="Core/Execution/FFI.fs" />
-    <Compile Include="Core/Execution/Interpreter.fs" />
 
     <Compile Include="LyVM/Optimizer.fs" />
 
