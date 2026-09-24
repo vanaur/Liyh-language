@@ -12,10 +12,18 @@ module public CoreTermSubstitution =
             | Symbol sym ->
                 let newChildren = List.map (replaceCoreTerm substitutions) sym.Children
                 if newChildren = sym.Children then term
-                else copySymbolWithNewChildren sym newChildren
+                else Symbol { sym with Children = newChildren }
 
             | Variable _ -> term
             | Literal _ -> term
+
+            | VariableApply(v, args) ->
+                let newChildren = List.map (replaceCoreTerm substitutions) args
+
+                match Map.tryFind (Variable v) substitutions with
+                | Some (Variable newV) -> VariableApply(newV, newChildren)
+                | Some (Symbol sym) -> Symbol { sym with Children = newChildren }
+                | _ -> VariableApply(v, newChildren)
 
             | RecordExtend ext ->
                 let newBase = Option.map (replaceCoreTerm substitutions) ext.BaseRecord

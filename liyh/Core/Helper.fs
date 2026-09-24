@@ -26,7 +26,10 @@ module public Helper =
             TermSequence flattenedTerms
 
         | Symbol symbol ->
-            copySymbolWithNewChildren symbol (List.map flattenTermSequence symbol.Children)
+            Symbol { symbol with Children = List.map flattenTermSequence symbol.Children }
+
+        | VariableApply(v, args) ->
+            VariableApply(v, List.map flattenTermSequence args)
 
         | Variable _ -> term
         | Literal _ -> term
@@ -113,15 +116,19 @@ module public Helper =
                 else
                     Set.empty
 
+            | VariableApply(v, args) ->
+                let t = args |> List.map loop |> Set.unionMany
+                if not (Set.contains v boundVars) && not (Set.contains v internalVars) then
+                    Set.union t (Set.singleton v)
+                else
+                    t
+
             | CoreLet { Pattern = patt; Value = value } ->
                 internalVars <- Set.union internalVars (loop patt)
                 loop value
 
             | Symbol symbol ->
-                if symbol.IsVariable then
-                    loop (Variable symbol.Symbol)
-                else
-                    symbol.Children |> List.map loop |> Set.unionMany
+                symbol.Children |> List.map loop |> Set.unionMany
 
             | TermSequence terms -> terms |> List.map loop |> Set.unionMany
 

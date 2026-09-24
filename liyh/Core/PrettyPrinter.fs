@@ -12,31 +12,20 @@ module PrettyPrinter =
 
         match expr with
         | Symbol { Symbol = s
-                   Children = []
-                   IsVariable = false } -> s
-
-        | Symbol { Symbol = s
-                   Children = []
-                   IsVariable = true } -> sprintf "'%s" s
+                   Children = [] } -> s
 
         | Builtin.Ptr p ->
             sprintf "ptr[0x%016x]" (int64 p)
 
         | Symbol { Symbol = s
-                   Children = xs
-                   IsVariable = false } ->
+                   Children = xs } ->
             if List.isEmpty xs then
                 s
             else
                 sprintf "%s[%s]" s (String.concat ", " (List.map (fun e -> prettyPrintExprInternal e depth) xs))
 
-        | Symbol { Symbol = s
-                   Children = xs
-                   IsVariable = true } ->
-            if List.isEmpty xs then
-                sprintf "'%s" s
-            else
-                sprintf "'%s[%s]" s (String.concat ", " (List.map (fun e -> prettyPrintExprInternal e depth) xs))
+        | VariableApply(v, args) ->
+            sprintf "'%s[%s]" v (String.concat ", " (List.map (fun e -> prettyPrintExprInternal e depth) args))
 
         | Variable v -> sprintf "'%s" v
         | Wildcard -> "_"

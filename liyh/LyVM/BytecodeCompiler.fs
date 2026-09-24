@@ -97,7 +97,11 @@ module public BytecodeCompiler =
             match patt with
             | Variable v -> Set.singleton v
 
-            | Symbol { Children = children } -> 
+            | VariableApply(v, args) ->
+                let argsBound = args |> List.map getPatternBindingVariables |> Set.unionMany
+                Set.add v argsBound
+
+            | Symbol { Children = children } ->
                 children
                 |> List.map getPatternBindingVariables
                 |> Set.unionMany
@@ -134,6 +138,15 @@ module public BytecodeCompiler =
             match term with
             | Variable v ->
                 if bound.Contains v then Set.empty else Set.singleton v
+
+            | VariableApply(v, args) ->
+                let vFree = if bound.Contains v then Set.empty else Set.singleton v
+                let argsFree =
+                    args
+                    |> List.map (getBindingVariables bound)
+                    |> Set.unionMany
+
+                Set.union vFree argsFree
 
             | Literal _ | Wildcard -> 
                 Set.empty
@@ -172,6 +185,11 @@ module public BytecodeCompiler =
 
                             | AsClause(p1, p2) ->
                                 Set.union (getPatternFreeVars p1 bound) (getPatternFreeVars p2 bound)
+
+                            | VariableApply(_, args) ->
+                                args
+                                |> List.map (fun c -> getPatternFreeVars c bound)
+                                |> Set.unionMany
 
                             | Symbol s ->
                                 s.Children
@@ -1102,7 +1120,27 @@ module public BytecodeCompiler =
 
                 | None ->
                     Map.add v reg env
-            
+
+            | VariableApply(v, args) ->
+                let env' =
+                    match Map.tryFind v env with
+                    | Some existingReg ->
+                        let forcedCandidate = forceWithTracking reg None ctx
+                        let forcedExisting = forceWithTracking existingReg None ctx
+                        let eq = builder.Eq(forcedCandidate, forcedExisting)
+                        builder.JumpFalse(eq, failNext)
+                        env
+
+                    | None ->
+                        Map.add v reg env
+
+                let mutable currentEnv = env'
+                for ci, childPatt in List.indexed args do
+                    let childReg = builder.Deconstruct(reg, ci)
+                    currentEnv <- emitMatchAndBind childPatt childReg currentEnv ctx failNext
+
+                currentEnv
+
             | Symbol { Symbol = tag; Children = children } ->
                 builder.TestTag(reg, tag, failNext)
 
@@ -1423,7 +1461,7 @@ module public BytecodeCompiler =
 
         and compileLet (let': CoreLet) (context: CompilationContext) (target: Reg option) =
             let evaluatedReg =
-                if let'.IsVariable then
+                if let'.IsMutable then
                     let varReg = builder.Alloc()
                     compileTerm context false (Some varReg) let'.Value |> ignore
                     varReg
@@ -1463,7 +1501,7 @@ module public BytecodeCompiler =
                 | [ x ] -> compileTerm seqContext isTail currentTarget x
                 | x :: xs ->
                     match x with
-                    | CoreLet { Pattern = Variable name; Value = value; IsVariable = isVar } ->
+                    | CoreLet { Pattern = Variable name; Value = value; IsMutable = isVar } ->
 
                         let finalReg =
                             if isVar then
@@ -1475,7 +1513,7 @@ module public BytecodeCompiler =
 
                         compileSeq (Map.add name finalReg currentEnv) currentTarget xs
 
-                    | CoreLet { Pattern = pattern; Value = value; IsVariable = isVar } ->
+                    | CoreLet { Pattern = pattern; Value = value; IsMutable = isVar } ->
 
                         let evaluatedReg =
                             if isVar then

@@ -52,7 +52,7 @@ module CoreCompiler =
             CoreLet
                 { Pattern = runningVariable
                   Value = initVal
-                  IsVariable = true }
+                  IsMutable = true }
 
         // Evaluate the end value once before the loop.
         let limitName = FreshName.get "limit"
@@ -62,7 +62,7 @@ module CoreCompiler =
             CoreLet
                 { Pattern = limitVariable
                   Value = endVal
-                  IsVariable = false }
+                  IsMutable = false }
 
         // Evaluate the step value once before the loop
         let stepName = FreshName.get "step"
@@ -72,7 +72,7 @@ module CoreCompiler =
             CoreLet 
                 { Pattern = stepVariable
                   Value = stepValue |> Option.defaultValue (CoreTerm.Literal(CoreLiteral.Integer 1I))
-                  IsVariable = false }
+                  IsMutable = false }
 
         let incrementExpr = 
             symbol incrementation [ runningVariable; stepVariable ]
@@ -139,7 +139,7 @@ module CoreCompiler =
     and private compileUFCS (cstate: State) (ufcs: UFCS) =
         let inline apply converted child =
             match converted with
-            | Symbol symb -> copySymbolWithNewChildren symb (child :: symb.Children)
+            | Symbol symb -> Symbol { symb with Children = child :: symb.Children }
             | Variable _ -> FunctionalApplication { Base = converted; Arguments = [ child ] }
             | Closure _ -> FunctionalApplication { Base = converted; Arguments = [ child ] }
             | _ -> failwith "Application on non-applicable term"
@@ -182,9 +182,9 @@ module CoreCompiler =
             let resultVar = Variable resultVarName
             let nilVar = Variable nilVarName
 
-            let bindCursor = CoreLet { Pattern = cursorVar; Value = compiledList; IsVariable = true }
-            let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsVariable = true }
-            let bindNil = CoreLet { Pattern = nilVar; Value = Builtin.symbolNil; IsVariable = false }
+            let bindCursor = CoreLet { Pattern = cursorVar; Value = compiledList; IsMutable = true }
+            let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsMutable = true }
+            let bindNil = CoreLet { Pattern = nilVar; Value = Builtin.symbolNil; IsMutable = false }
 
             let appendExpr = Builtin.symbolCons compiledItem resultVar
 
@@ -198,7 +198,7 @@ module CoreCompiler =
                     CoreLet { 
                         Pattern = Builtin.symbolCons compiledPattern tailVar
                         Value = cursorVar
-                        IsVariable = false 
+                        IsMutable = false 
                     }
                     updateResult
                     UpdateVariable(cursorVarName, tailVar)
@@ -223,7 +223,7 @@ module CoreCompiler =
         let bind name value isVar =
             let varName = FreshName.get name
             let varTerm = Variable varName
-            let binding = CoreLet { Pattern = varTerm; Value = value; IsVariable = isVar }
+            let binding = CoreLet { Pattern = varTerm; Value = value; IsMutable = isVar }
             (varName, varTerm, binding)
 
         let startExpr = compileExpression cstate range.RangeStart
@@ -250,7 +250,7 @@ module CoreCompiler =
                 | None -> UpdateVariable(resultName, appendExpr)
 
             TermSequence [
-                CoreLet { Pattern = compiledPattern; Value = loopCounterVar; IsVariable = false }
+                CoreLet { Pattern = compiledPattern; Value = loopCounterVar; IsMutable = false }
                 updateLogic 
             ]
 
@@ -354,7 +354,7 @@ module CoreCompiler =
         CoreLet
             { Pattern = patt
               Value = value
-              IsVariable = isVar }
+              IsMutable = isVar }
 
     and private compileWhile (cstate: State) { Predicate = pred; Body = body } =
         let pred = compileExpression cstate pred
@@ -403,13 +403,13 @@ module CoreCompiler =
                 CoreLet {
                     Pattern = cursorVar
                     Value = compiledList
-                    IsVariable = true }
+                    IsMutable = true }
 
             let bindNil =
                 CoreLet {
                     Pattern = nilVar
                     Value = Builtin.symbolNil
-                    IsVariable = false }
+                    IsMutable = false }
 
             let consPattern = Builtin.symbolCons compiledPattern tailVar
 
@@ -418,7 +418,7 @@ module CoreCompiler =
                     CoreLet { 
                         Pattern = consPattern
                         Value = cursorVar
-                        IsVariable = false }
+                        IsMutable = false }
                     compiledBody
                     UpdateVariable(cursorName, tailVar) ]
 
@@ -446,7 +446,7 @@ module CoreCompiler =
         let bind name baseExpr =
             let varName = FreshName.get name
             let varTerm = Variable varName
-            let binding = CoreLet { Pattern = varTerm; Value = baseExpr; IsVariable = false }
+            let binding = CoreLet { Pattern = varTerm; Value = baseExpr; IsMutable = false }
             (varTerm, binding)
 
         let startVar, bindStart = bind "range_start" startExpr
@@ -494,7 +494,7 @@ module CoreCompiler =
                         CoreLet
                             { Pattern = other
                               Value = Variable freshArgName
-                              IsVariable = false }
+                              IsMutable = false }
                     freshArgName, Some binding)
             |> List.unzip
 
@@ -627,12 +627,19 @@ module CoreCompiler =
         let lhs = compilePattern cstate lhs
         let args = List.map (compilePattern cstate) args
 
+        let raiseException () =
+            failwithf "Application on non-applicable symbol: %s" (PrettyPrinter.prettyPrintExpr lhs)
+
         match lhs with
         | Symbol symb ->
-            if symb.Children.IsEmpty then copySymbolWithNewChildren symb args
-            else failwithf "Application on non-applicable symbol: %s" (PrettyPrinter.prettyPrintExpr lhs)
-        | Variable v -> variableSymbol v args
-        | _ -> failwithf "Application on non-applicable symbol: %s" (PrettyPrinter.prettyPrintExpr lhs)
+            if symb.Children.IsEmpty then Symbol { symb with Children = args }
+            else raiseException ()
+
+        | Variable v ->
+            VariableApply(v, args)
+
+        | _ ->
+            raiseException ()
 
     and private compileAsPattern (cstate: State) (basePatt: PatternWithPos) (asPatt: PatternWithPos) =
         let basePatt = compilePattern cstate basePatt

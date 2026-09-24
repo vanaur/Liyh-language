@@ -8,45 +8,9 @@ namespace rec Liyh.Core
 // a "pattern", the same structure is used for both.
 //
 
-[<CustomEquality; CustomComparison>]
 type public CoreSymbol =
-    internal
-        { Symbol: string
-          Children: CoreTerm list
-          IsVariable: bool
-          Hash: int }
-
-    override this.GetHashCode() = this.Hash
-
-    override this.Equals(other: obj) =
-        match other with
-        | :? CoreSymbol as otherSym ->
-            if System.Object.ReferenceEquals(this, otherSym) then
-                true
-            else
-                this.Hash = otherSym.Hash &&
-                this.IsVariable = otherSym.IsVariable &&
-                this.Symbol = otherSym.Symbol &&
-                this.Children = otherSym.Children
-        | _ -> false
-
-    interface System.IEquatable<CoreSymbol> with
-        member this.Equals(other) = this.Equals(other)
-
-    interface System.IComparable with
-        member this.CompareTo(other) =
-            match other with
-            | :? CoreSymbol as otherSym ->
-                let c = compare this.Hash otherSym.Hash
-                if c <> 0 then c
-                else
-                    let c = compare this.IsVariable otherSym.IsVariable
-                    if c <> 0 then c
-                    else
-                        let c = compare this.Symbol otherSym.Symbol
-                        if c <> 0 then c
-                        else compare this.Children otherSym.Children
-            | _ -> 1
+    { Symbol: string
+      Children: CoreTerm list }
 
 type public CoreTerm =
 
@@ -54,6 +18,7 @@ type public CoreTerm =
 
     | Symbol of CoreSymbol
     | Variable of string
+    | VariableApply of string * CoreTerm list
     | Literal of CoreLiteral
     | RecordExtend of CoreRecordExtend
     | Match of CoreTermMatch
@@ -113,7 +78,7 @@ and public FunctionalApplication =
 and public CoreLet =
     { Pattern: CoreTerm
       Value: CoreTerm
-      IsVariable: bool }
+      IsMutable: bool }
 
 and public CoreWhile =
     { Predicate: CoreTerm
@@ -166,35 +131,11 @@ type public CoreProgram = CoreDefinition list
 [<AutoOpen>]
 module public SymbolHelper =
 
-    let private computeSymbolHash (symbol: string) (isVariable: bool) (children: CoreTerm list) =
-        let mutable hash = symbol.GetHashCode()
-        hash <- System.HashCode.Combine(hash, (if isVariable then 1 else 0))
-
-        for child in children do
-            hash <- System.HashCode.Combine(hash, child.GetHashCode())
-
-        if hash = 0 then 1 else hash
-
     let public symbol (name: string) (args: CoreTerm list) =
-        Symbol
-            { Symbol = name
-              Children = args
-              IsVariable = false
-              Hash = computeSymbolHash name false args }
-
-    let public variableSymbol (name: string) (args: CoreTerm list) =
-        Symbol
-            { Symbol = name
-              Children = args
-              IsVariable = true
-              Hash = computeSymbolHash name true args }
-
-    let public copySymbolWithNewChildren (symb: CoreSymbol) (children: CoreTerm list) =
-        Symbol 
-            { symb with 
-                Children = children
-                Hash = computeSymbolHash symb.Symbol symb.IsVariable children }
+        Symbol { Symbol = name; Children = args }
+    
+    let public copySymbolWithNewChildren' (symb: CoreSymbol) (children: CoreTerm list) =
+        Symbol { symb with Children = children }
 
     let public simpleSymbol (name: string) =
         symbol name []
-

@@ -33,6 +33,7 @@ module DecisionTreeCompiler =
         | Child(parent, idx) ->
             match safeAccess parent term with
             | Symbol { Children = children } when idx >= 0 && idx < children.Length -> children.[idx]
+            | VariableApply(_, args) when idx >= 0 && idx < args.Length -> args.[idx]
             | Variable _ | Wildcard -> Wildcard
             | _ -> Wildcard
 
@@ -48,6 +49,7 @@ module DecisionTreeCompiler =
         | Tag parent ->
             match safeAccess parent term with
             | Symbol { Symbol = name } -> symbol name []
+            | VariableApply(v, _) -> Variable v
             | Variable _ | Wildcard -> Wildcard
             | _ -> Wildcard
 
@@ -78,13 +80,26 @@ module DecisionTreeCompiler =
              let (innerP, innerG) = extractGuards p
              (AsClause(innerP, v), innerG)
 
+        | VariableApply(v, args) ->
+            let results = args |> List.map extractGuards
+            let newArgs = results |> List.map fst
+            let guards = results |> List.choose snd
+
+            let combinedGuard =
+                match guards with
+                | [] -> None
+                | [ g ] -> Some g
+                | g :: rest -> Some (List.fold (fun acc g -> symbol "and" [ acc; g ]) g rest)
+
+            (VariableApply(v, newArgs), combinedGuard)
+
         | Symbol s ->
             let results = s.Children |> List.map extractGuards
             let newChildren = results |> List.map fst
             let guards = results |> List.choose snd
 
-            let newSymbol = copySymbolWithNewChildren s newChildren
-            
+            let newSymbol = Symbol { s with Children = newChildren }
+
             let combinedGuard =
                 match guards with
                 | [] -> None
@@ -103,6 +118,13 @@ module DecisionTreeCompiler =
             let (cleanInner, innerBindings) = extractAsBindings path inner
             (cleanInner, (v, path) :: innerBindings)
 
+        | VariableApply(v, args) ->
+            let results = args |> List.mapi (fun i child -> extractAsBindings (path.Extend i) child)
+            let newArgs = results |> List.map fst
+            let childBindings = results |> List.collect snd
+
+            (VariableApply(v, newArgs), childBindings)
+
         | Symbol s ->
             let results = 
                 s.Children 
@@ -110,8 +132,8 @@ module DecisionTreeCompiler =
             
             let newChildren = results |> List.map fst
             let childBindings = results |> List.collect snd
-            
-            let newSymbol = copySymbolWithNewChildren s newChildren
+
+            let newSymbol = Symbol { s with Children = newChildren }
             (newSymbol, childBindings)
 
         // If we encounter a WhenClause here (should be handled by extractGuards first, but for safety).
@@ -148,7 +170,7 @@ module DecisionTreeCompiler =
 
         for occ in occurrences do
             match safeAccess path occ.Pattern with
-            | Symbol { Symbol = sym; IsVariable = false; Children = children } ->
+            | Symbol { Symbol = sym; Children = children } ->
                 let arity = children.Length
                 let key = (sym, arity)
                 let existing = Map.tryFind key byConstructor |> Option.defaultValue []
@@ -159,8 +181,7 @@ module DecisionTreeCompiler =
                 byLiteral <- Map.add lit (occ :: existing) byLiteral
 
             | RecordExtend _ -> byRecord <- occ :: byRecord
-            | Wildcard -> defaults <- occ :: defaults
-            | Variable _ -> defaults <- occ :: defaults
+            | (Wildcard | Variable _ | VariableApply _) -> defaults <- occ :: defaults
             | _ -> others <- occ :: others
 
         let byConstructor = byConstructor |> Map.map (fun _ l -> List.rev l)
@@ -175,6 +196,18 @@ module DecisionTreeCompiler =
         match safeAccess path occ.Pattern with
         | Symbol { Symbol = sym } when sym = symbolName -> Some [occ]
         | Wildcard -> Some [occ]
+
+        | VariableApply(v, _) ->
+            // Bind `v` to the symbol's tag and propagate the occurrence to check its arguments
+            match Map.tryFind v occ.Bindings with
+            | None -> Some [ { occ with Bindings = Map.add v (Tag path) occ.Bindings } ]
+            | Some _ ->
+                let tempVarName = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
+                let equalityCheck = mkEqualityGuard v tempVarName
+                let newGuard = mergeGuards occ.WhenClause equalityCheck
+                
+                Some [{ occ with Bindings = Map.add tempVarName (Tag path) occ.Bindings; WhenClause = Some newGuard }]
+
         | Variable v ->
             match Map.tryFind v occ.Bindings with
             | None -> Some [{ occ with Bindings = Map.add v path occ.Bindings }]
@@ -210,27 +243,25 @@ module DecisionTreeCompiler =
 
         let nextOccurenceVariableAndVariableSymbol (occ: PatternOccurrence) (isVarSymbol: bool) (v: string) =
             match Map.tryFind v occ.Bindings with
-            | None -> { occ with Bindings = Map.add v (if isVarSymbol then Tag path else path) occ.Bindings }
+            | None ->
+                let boundPath = if isVarSymbol then Tag path else path
+                { occ with Bindings = Map.add v boundPath occ.Bindings }
+
             | Some _ ->
                 let tempVar = sprintf "$nonlinear_%s_%d" v (path.GetHashCode() |> abs)
                 let newGuard = mergeGuards occ.WhenClause (mkEqualityGuard v tempVar)
-
                 { occ with Bindings = Map.add tempVar path occ.Bindings; WhenClause = Some newGuard }
 
         let nextOccurrences =
             occurrences
             |> List.map (fun occ ->
                 match safeAccess path occ.Pattern with
-
-                | Symbol { IsVariable = true; Symbol = v; Children = children } ->
+                | VariableApply (v, children) ->
                     let childPaths = List.init children.Length (fun i -> path.Extend i)
                     additionalPaths <- additionalPaths @ childPaths
-
-                    // Variable symbol helper
                     nextOccurenceVariableAndVariableSymbol occ true v
 
                 | Variable v ->
-                    // Binding variable helper
                     nextOccurenceVariableAndVariableSymbol occ false v
 
                 | _ -> occ
@@ -382,7 +413,7 @@ module DecisionTreeCompiler =
         let compatibleDefaults =
             defaults |> List.filter (fun occ ->
                 match safeAccess path occ.Pattern with
-                | Variable _ | Wildcard ->
+                | Variable _ | VariableApply _ | Wildcard ->
                     if not isPathExhausted then
                         // Continue to explore the structure.
                         // This keeps the defaults to propagate the constraints.

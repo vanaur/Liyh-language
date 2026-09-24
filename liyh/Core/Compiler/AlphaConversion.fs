@@ -8,6 +8,10 @@ module AlphaConversion =
         | Variable v ->
             Set.singleton v
 
+        | VariableApply(v, args) ->
+            let argsBound = args |> List.map boundVariables |> Set.unionMany
+            Set.add v argsBound
+
         | Symbol symb ->
             symb.Children
             |> List.map boundVariables
@@ -54,7 +58,12 @@ module AlphaConversion =
 
         | Symbol symb ->
             let children = List.map (ac renaming) symb.Children
-            copySymbolWithNewChildren symb children
+            Symbol { symb with Children = children }
+
+        | VariableApply(v, args) ->
+            let newV = Map.tryFind v renaming |> Option.defaultValue v
+            let newArgs = List.map (ac renaming) args
+            VariableApply(newV, newArgs)
 
         | Literal _ -> term
 
@@ -131,7 +140,7 @@ module AlphaConversion =
                             CoreLet
                                 { Pattern = newPattern
                                   Value = newValue
-                                  IsVariable = let'.IsVariable }
+                                  IsMutable = let'.IsMutable }
 
                         processSeq extended (newLet :: accTerms) rest
 
@@ -185,7 +194,7 @@ module AlphaConversion =
             CoreLet
                 { Pattern = ac extendedRenaming l.Pattern
                   Value = ac renaming l.Value
-                  IsVariable = l.IsVariable }
+                  IsMutable = l.IsMutable }
 
         | Substitution sub ->
             Substitution
