@@ -1,7 +1,6 @@
 namespace Liyh.Core
 
 module AlphaConversion =
-    open Liyh.Core.Helper
 
     let rec private boundVariables (term: CoreTerm) : Set<string> =
         match term with
@@ -30,18 +29,16 @@ module AlphaConversion =
 
             Set.union baseVars extVars
 
-        | FunctionalApplication fa ->
-            let args =
-                fa.Arguments
-                |> List.map boundVariables
-                |> Set.unionMany
-
-            Set.union (boundVariables fa.Base) args
-
         | WhenClause(p, _) -> boundVariables p
         | AsClause(p, asP) -> Set.union (boundVariables p) (boundVariables asP)
         | (Literal _ | Wildcard) -> Set.empty
         | _ -> failwithf "Unexpected bound variable: %A" term //Set.empty
+
+    let private extendRenaming (getUniqueVariable: string -> string) (renaming: Map<string, string>) (vars: Set<string>) =
+        let fresh = vars |> Seq.map (fun v -> v, getUniqueVariable v) |> Map.ofSeq
+        let extended = Map.fold (fun acc k v -> Map.add k v acc) renaming fresh
+
+        (fresh, extended)
 
     let rec private alphaConversion
         (getUniqueVariable: string -> string)
@@ -65,8 +62,6 @@ module AlphaConversion =
             let newArgs = List.map (ac renaming) args
             VariableApply(newV, newArgs)
 
-        | Literal _ -> term
-
         | RecordExtend re ->
             RecordExtend
                 { BaseRecord = Option.map (ac renaming) re.BaseRecord
@@ -78,40 +73,21 @@ module AlphaConversion =
             let cases =
                 m.Cases
                 |> List.map (fun (patt, body) ->
-                    let bound = boundVariables patt
-                    let fresh = bound |> Seq.map (fun v -> v, getUniqueVariable v) |> Map.ofSeq
-                    let extendedRenaming = Map.fold (fun acc k v -> Map.add k v acc) renaming fresh
-                    let newPatt = ac extendedRenaming patt
-                    let newBody = ac extendedRenaming body
-                    newPatt, newBody)
+                    let _, extended = boundVariables patt |> extendRenaming getUniqueVariable renaming
+                    ac extended patt, ac extended body)
 
             Match { ToMatch = toMatch; Cases = cases }
 
         | Closure c ->
-            let fresh =
-                c.Parameters
-                |> List.map (fun p -> p, getUniqueVariable p)
-                |> Map.ofList
-
-            let extendedRenaming = Map.fold (fun acc k v -> Map.add k v acc) renaming fresh
-
-            let newEnv =
-                c.Env
-                |> Map.toList
-                |> List.map (fun (k, v) ->
-                    let newK = Option.defaultValue k (Map.tryFind k renaming)
-                    let newV = ac renaming v
-                    (newK, newV))
-                |> Map.ofList
-
+            let fresh, extended = Set.ofList c.Parameters |> extendRenaming getUniqueVariable renaming
+            let newEnv = c.Env |> Map.map (fun _ v -> ac renaming v)
             let newParams = List.map (fun p -> Map.find p fresh) c.Parameters
-            let newValue = ac extendedRenaming c.Value
 
             Closure
                 { Env = newEnv
                   IsEvaluated = c.IsEvaluated
                   Parameters = newParams
-                  Value = newValue }
+                  Value = ac extended c.Value }
 
         | FunctionalApplication fa ->
             FunctionalApplication
@@ -119,46 +95,20 @@ module AlphaConversion =
                   Arguments = List.map (ac renaming) fa.Arguments }
 
         | TermSequence ts ->
-            let rec processSeq accRenaming accTerms ts =
-                match ts with
+            let rec processSeq accRenaming accTerms = function
                 | [] -> TermSequence(List.rev accTerms)
+                | (CoreLet let') :: rest ->
+                    let newValue = ac accRenaming let'.Value
+                    let _, extended = boundVariables let'.Pattern |> extendRenaming getUniqueVariable accRenaming
+                    let newLet =
+                        CoreLet
+                            { Pattern = ac extended let'.Pattern
+                              Value = newValue
+                              IsMutable = let'.IsMutable }
+                    processSeq extended (newLet :: accTerms) rest
                 | t :: rest ->
-                    match t with
-                    | CoreLet let' ->
-                        let newValue = ac accRenaming let'.Value
-                        let bound = boundVariables let'.Pattern
-
-                        let fresh =
-                            bound
-                            |> Seq.map (fun v -> v, getUniqueVariable v)
-                            |> Map.ofSeq
-
-                        let extended = Map.fold (fun acc k v -> Map.add k v acc) accRenaming fresh
-                        let newPattern = ac extended let'.Pattern
-
-                        let newLet =
-                            CoreLet
-                                { Pattern = newPattern
-                                  Value = newValue
-                                  IsMutable = let'.IsMutable }
-
-                        processSeq extended (newLet :: accTerms) rest
-
-                    | WhileLoop w ->
-                        let newPred = ac accRenaming w.Predicate
-                        let newBody = ac accRenaming w.Body
-                        let newWhile = WhileLoop { Predicate = newPred; Body = newBody }
-                        processSeq accRenaming (newWhile :: accTerms) rest
-
-                    | UpdateVariable(v, expr) ->
-                        let newV = Map.tryFind v accRenaming |> Option.defaultValue v
-                        let newExpr = ac accRenaming expr
-                        let newUpdate = UpdateVariable(newV, newExpr)
-                        processSeq accRenaming (newUpdate :: accTerms) rest
-
-                    | _ ->
-                        let newT = ac accRenaming t
-                        processSeq accRenaming (newT :: accTerms) rest
+                    let newT = ac accRenaming t
+                    processSeq accRenaming (newT :: accTerms) rest
 
             processSeq renaming [] ts
 
@@ -187,12 +137,9 @@ module AlphaConversion =
                   ToHandle = ac renaming h.ToHandle }
 
         | CoreLet l ->
-            let bound = boundVariables l.Pattern
-            let fresh = bound |> Seq.map (fun v -> v, getUniqueVariable v) |> Map.ofSeq
-            let extendedRenaming = Map.fold (fun acc k v -> Map.add k v acc) renaming fresh
-
+            let _, extended = boundVariables l.Pattern |> extendRenaming getUniqueVariable renaming
             CoreLet
-                { Pattern = ac extendedRenaming l.Pattern
+                { Pattern = ac extended l.Pattern
                   Value = ac renaming l.Value
                   IsMutable = l.IsMutable }
 
@@ -204,47 +151,29 @@ module AlphaConversion =
         | UsingContext ctx ->
             UsingContext { ctx with Expr = ac renaming ctx.Expr }
 
-        | Wildcard -> term
+        | (Literal _ | Wildcard) -> term
 
     let rec public alphaConversionDefinition (getUniqueVariable: string -> string) (def: CoreDefinition) =
         let ac = alphaConversion getUniqueVariable
 
         match def with
         | Rule r ->
-            let bound = boundVariables r.LHS
-
-            let fresh =
-                bound |> Set.toSeq |> Seq.map (fun v -> v, getUniqueVariable v) |> Map.ofSeq
-
-            let newLHS = ac fresh r.LHS
-            let newRHS = ac fresh r.RHS
-            let newWhen = Option.map (ac fresh) r.WhenClause
-
+            let fresh, _ = boundVariables r.LHS |> extendRenaming getUniqueVariable Map.empty
             Rule
                 { r with
-                    LHS = newLHS
-                    RHS = newRHS
-                    WhenClause = newWhen }
+                    LHS = ac fresh r.LHS
+                    RHS = ac fresh r.RHS
+                    WhenClause = Option.map (ac fresh) r.WhenClause }
 
         | Handler h ->
-            let boundL = boundVariables h.LHS
-            let boundS = boundVariables h.State
-            let bound = Set.union boundL boundS
-
-            let fresh =
-                bound |> Set.toSeq |> Seq.map (fun v -> v, getUniqueVariable v) |> Map.ofSeq
-
-            let newLHS = ac fresh h.LHS
-            let newState = ac fresh h.State
-            let newRHS = ac fresh h.RHS
-            let newWhen = Option.map (ac fresh) h.WhenClause
-
+            let bound = Set.union (boundVariables h.LHS) (boundVariables h.State)
+            let fresh, _ = bound |> extendRenaming getUniqueVariable Map.empty
             Handler
                 { h with
-                    LHS = newLHS
-                    State = newState
-                    RHS = newRHS
-                    WhenClause = newWhen }
+                    LHS = ac fresh h.LHS
+                    State = ac fresh h.State
+                    RHS = ac fresh h.RHS
+                    WhenClause = Option.map (ac fresh) h.WhenClause }
 
         | Context ctx ->
             let content = ctx.Content |> List.map (alphaConversionDefinition getUniqueVariable) 
