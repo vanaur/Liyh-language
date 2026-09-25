@@ -1,10 +1,11 @@
 #nowarn "25"
 namespace Liyh.Syntax
 
-module private ParsingErorr =
+module private ParsingError =
     open FParsec
+    open Liyh.Utils
     open Liyh.Utils.ErrorReporter
-    open SyntaxTree
+    open Liyh.Syntax.SyntaxTree
 
 
     // --- Building pleasant messages and reports --- //
@@ -176,25 +177,44 @@ module private ParsingErorr =
             |> String.concat " "
             //|> String.concat " Another possible error: "
 
-    let public createErrorReport str originalPosition relevantPosition errorMessage isWarn =
+    let public createErrorReport
+        (sourceManager: SourceManager)
+        (originalPosition: Position option)
+        (relevantPosition: Position option)
+        (errorMessage: string)
+        (isWarning: bool)
+        =
         let informations =
             if originalPosition <> relevantPosition
             then [ "The parser backtracked several times, so the position indicated in the\nsnippet may not be at the actual source of the error." ]
             else []
 
-        /// This hint is generic for parsing, so it is difficult to make it contextual.
         let hint =
             "Syntax errors may be due to syntactic ambiguity, try using parentheses if you think this is the case."
 
-        { ErrorType = if isWarn then Warning Syntax else Syntax
+        let streamName =
+            match relevantPosition, originalPosition with
+            | (Some p, _ | _, Some p) when not (isNull p.StreamName) -> p.StreamName
+            | _ -> ""
+
+        let lines =
+            sourceManager.TryGetLines(streamName)
+            |> Option.defaultValue Array.empty
+
+        { ErrorType = if isWarning then Warning Syntax else Syntax
           ErrorCode = null // not for now, this is difficult to do
           EnclosingPosition = (relevantPosition, None)
           Description = errorMessage
-          AllLines = NodeInfo.getLines str
+          AllLines = lines
           Informations = informations
           Hint = hint }
 
-    let public buildErrorReport (sourceCode: string) (startPos: Position) (endPos: Position) (errors: ErrorMessageList) =
+    let public buildErrorReport
+        (sourceManager: SourceManager)
+        (startPos: Position)
+        (endPos: Position)
+        (errors: ErrorMessageList)
+        =
         let formattedErrors = groupAndFormatErrors errors
         let description = formatErrorMessage formattedErrors
         let relevantPos = findRelevantPosition errors startPos (Some endPos)
@@ -208,15 +228,21 @@ module private ParsingErorr =
             ErrorMessageList.ToSortedArray errors
             |> Array.exists (fun e -> e.Type = ErrorMessageType.Message)
 
-        let hint = 
+        let hint =
             if hasExplicitMessage then null 
             else "Syntax errors may be due to syntactic ambiguity, try using parentheses if you think this is the case."
+
+        let safeStreamName = if isNull startPos.StreamName then "" else startPos.StreamName
+
+        let lines =
+            sourceManager.TryGetLines(safeStreamName)
+            |> Option.defaultValue Array.empty
 
         { ErrorType = Liyh.Utils.ErrorReporter.Syntax
           ErrorCode = null
           EnclosingPosition = (Some relevantPos, Some endPos)
           Description = description
-          AllLines = NodeInfo.getLines sourceCode |> Seq.toList
+          AllLines = lines
           Informations = informations
           Hint = hint }
 
@@ -372,6 +398,7 @@ module private Recoverable =
 module Parser =
     open FParsec
     open Liyh.Utils.ErrorReporter
+    open Liyh.Utils
     open Indentation
     open SyntaxTree
     open MixFixExpression
@@ -402,9 +429,14 @@ module Parser =
             return action a b c d e f g
         }
 
-    // Default notation state with basic operators
+    let private createNotationState (sourceManager: SourceManager) (operators: MixfixOperator list) =
+        { SourceManager = sourceManager
+          MixfixOperators = operators
+          MixfixExpressionEngine = new MixfixExpressionParser()
+          MixfixPatternEngine = new MixfixPatternParser() }
+
     let private defaultNotationState =
-        { SourceCode = null
+        { SourceManager = SourceManager()
           MixfixOperators = []
           MixfixExpressionEngine = new MixfixExpressionParser()
           MixfixPatternEngine = new MixfixPatternParser() }
@@ -1444,9 +1476,9 @@ module Parser =
                     let! head = expressionWithPipes .>>? spacesOrComment
 
                     let exprErrorHandler (p: Position) (endP: Position) (msgs: ErrorMessageList) =
-                         let sourceCode = stream.UserState.UserState.SourceCode
-                         let report = ParsingErorr.buildErrorReport sourceCode p endP msgs
-                         { Node = Expression.ParseError report; StartPos = p; EndPos = endP }
+                        let sourceManager = stream.UserState.UserState.SourceManager
+                        let report = ParsingError.buildErrorReport sourceManager p endP msgs
+                        { Node = Expression.ParseError report; StartPos = p; EndPos = endP }
 
                     let safeExprParser = 
                         Recoverable.recover 
@@ -1988,10 +2020,10 @@ module Parser =
 
     and private parseTopLevelBlock =
         fun (stream: CharStream<NotationState IndentState>) ->
-            let sourceCode = stream.UserState.UserState.SourceCode
+            let sourceManager = stream.UserState.UserState.SourceManager
 
             let topLevelErrorHandler (pos: Position) (endPos: Position) (msgs: ErrorMessageList) =
-                let report = ParsingErorr.buildErrorReport sourceCode pos endPos msgs
+                let report = ParsingError.buildErrorReport sourceManager pos endPos msgs
                 Some
                     { Node = TopLevel.ParseError report
                       StartPos = pos
@@ -2000,7 +2032,7 @@ module Parser =
             let parser =
                 spaces >>. blockOfTopLevel parseTopLevel topLevelErrorHandler
                 |>> List.choose id
-            
+
             parser stream
 
     and private parseModule =
@@ -2021,74 +2053,70 @@ module Parser =
     //                              //
 
 
+    type public LiyhParsingResult =
+        { Module: Module
+          MixfixOperators: MixfixOperator list }
+
     let private withStreamName (streamName: string) (p: Parser<_, _>) =
         fun (stream: CharStream<_>) ->
             stream.Name <- streamName
             p stream
 
-    let private warningMessageEmptyFile =
-        "The file does not contain any declarations."
-
-    let private finalParser (streamName: string) (p: Parser<_, _>) =
-        // withStreamName streamName (opt (spacesOrComment >>? p .>> spaces .>> (eof <?> "")))
-
-        let checkNotEmpty : Parser<unit, _> =
-            fun stream ->
-                if stream.IsEndOfStream
-                then Reply(Error, messageError warningMessageEmptyFile)
-                else Reply(())
-
+    /// Parses the content and returns `None` if the source only contains spaces or comments.
+    let private finalParser (streamName: string) (p: Parser<'a, _>) : Parser<'a option, _> =
         withStreamName streamName (
             spacesOrComment >>.
-                checkNotEmpty >>.
-                (p .>> spaces .>> (eof <?> "") |>> Some)
+            choice [
+                eof >>% None
+                p .>> spaces .>> (eof <?> "") |>> Some
+            ]
         )
 
-    let private handleParseFailure (str: string) (err: ParserError) (position: Position) =
-        let relevantPosition = ParsingErorr.findRelevantPosition err.Messages position None
-        let formattedErrors = ParsingErorr.groupAndFormatErrors err.Messages
-        let errorMessage = ParsingErorr.formatErrorMessage formattedErrors
+    let private handleParseFailure (sourceManager: SourceManager) (err: ParserError) (position: Position) =
+        let relevantPosition = ParsingError.findRelevantPosition err.Messages position None
+        let formattedErrors = ParsingError.groupAndFormatErrors err.Messages
+        let errorMessage = ParsingError.formatErrorMessage formattedErrors
 
-        // An empty file should not be considered as an error.
-        let isWarn =
-            errorMessage = warningMessageEmptyFile
-
-        ParsingErorr.createErrorReport str (Some position) (Some relevantPosition) errorMessage isWarn
+        ParsingError.createErrorReport sourceManager (Some position) (Some relevantPosition) errorMessage false
 
     /// Parses only 'use' statements from the text, ignoring everything else.
-    let public parseUses (text: string) (streamName: string) (errorQueue: ErrorQueue) =
+    let public parseUses
+        (sourceManager: SourceManager)
+        (text: string)
+        (streamName: string)
+        (errorQueue: ErrorQueue)
+        =
+        let safeStreamName = if isNull streamName then "" else streamName
+        sourceManager.RegisterSource(safeStreamName, text)
+
+        let parseUseStatement = parseUse |>> Some
+        let parseNoise = 
+            choice [
+                skipString "--" >>. skipRestOfLine true >>% None
+                newline >>% None
+                spaces1 >>% None
+                skipMany1 (noneOf [ '\n' ]) >>% None ]
 
         let parseUsesOnly =
-            let parseUseStatement = parseUse |>> Some
-            let parseAnythingElse = 
-                choice [
-                    skipString "--" >>. skipRestOfLine true >>% None
-                    newline >>% None
-                    spaces1 >>% None
-                    skipMany1 (noneOf [ '\n' ]) >>% None ]
-
-            let parseItem = 
-                choice [
-                    attempt parseUseStatement
-                    parseAnythingElse ]
-
-            many parseItem .>> eof
+            many (attempt parseUseStatement <|> parseNoise) .>> eof
             |>> List.choose id
             |>> List.map (function TopLevel.Use use' -> use')
 
-        match runParser (finalParser streamName parseUsesOnly) defaultNotationState text with
-        | Success(r, _, _) -> r
-        | Failure(debugMsg, err, _) ->
-            //printfn "FParsec debug message:\n%A" debugMsg
-            let report = handleParseFailure text err err.Position
+        let notationState = createNotationState sourceManager []
+
+        match runParser (finalParser safeStreamName parseUsesOnly) notationState text with
+        | Success(Some r, _, _) -> Some r
+        | Success(None, _, _) -> Some []
+        | Failure(_, err, _) ->
+            let report = handleParseFailure sourceManager err err.Position
             errorQueue.AddError report
             None
 
-    type public LiyhParsingResult =
-        { Module: Module
-          MixfixOperators: MixfixOperator list }
-
-    let private createNotationShadowingReport (shortOp: MixfixOperator, longOp: MixfixOperator) (lines: string seq) =
+    let private createNotationShadowingReport
+        (sourceManager: SourceManager)
+        (streamName: string)
+        (shortOp: MixfixOperator, longOp: MixfixOperator)
+        =
         let posShort = shortOp.Name.StartPos
         let posLong = longOp.Name.StartPos
 
@@ -2100,104 +2128,130 @@ module Parser =
             $"To resolve this, Liyh applies the 'Longest Match' rule: it will attempt to parse '{longOp.Name}' first.\n" +
             $"If parsing '{longOp.Name}' fails mid-way, it will backtrack to '{shortOp.Name}'."
 
+        let targetStream =
+            if not (System.String.IsNullOrEmpty posShort.StreamName) then posShort.StreamName
+            else streamName
+
+        let lines =
+            match sourceManager.TryGetLines targetStream with
+            | Some l -> l
+            | None -> Array.empty
+
         { ErrorType = Warning Syntax
           ErrorCode = null
           EnclosingPosition = (Some posShort, None)
           Description = msg
-          AllLines = lines |> Seq.toList
+          AllLines = lines
           Informations = [ infoMsg ]
           Hint = "This is allowed, but ensure that any syntax error in the longer notation doesn't accidentally trigger the shorter one." }
 
-    let private handleNotationShadowingWarning (notations: MixfixOperator list) (text: string) (errorQueue: ErrorQueue) =
-        let ambiguities = findAmbiguities notations
-        let lines = NodeInfo.getLines text
-
-        ambiguities
+    let private handleNotationShadowingWarning (sourceManager: SourceManager) (streamName: string) (notations: MixfixOperator list) (errorQueue: ErrorQueue) =
+        findAmbiguities notations
         |> List.iter (fun ambiguity ->
-            let report = createNotationShadowingReport ambiguity lines
+            let report = createNotationShadowingReport sourceManager streamName ambiguity
             errorQueue.AddError report)
 
-    let private getNotationWarnings (notations: MixfixOperator list) (text: string) =
-        let ambiguities = findAmbiguities notations
-        let lines = NodeInfo.getLines text
-        
-        ambiguities
-        |> List.map (fun ambiguity -> createNotationShadowingReport ambiguity lines)
+    let private getNotationWarnings (sourceManager: SourceManager) (streamName: string) (notations: MixfixOperator list) =
+        findAmbiguities notations
+        |> List.map (createNotationShadowingReport sourceManager streamName)
 
-    /// Syntactically analyses the given text (which is supposed to be Liyh code) from the given stream name
-    /// and reports parsing errors (which are always fatal) in `errorQueue`, returns the AST otherwise.
-    let public parse (text: string) (streamName: string) (notations: MixfixOperator list) (errorQueue: ErrorQueue) =
+    /// Syntactically analyses the given text from the stream name, reports parsing errors
+    /// in `errorQueue`, and returns the AST otherwise.
+    let public parse (sourceManager: SourceManager) (text: string) (streamName: string) (notations: MixfixOperator list) (errorQueue: ErrorQueue) =
+        let safeStreamName = if isNull streamName then "" else streamName
+        sourceManager.RegisterSource(safeStreamName, text)
 
         let notationState =
-            { defaultNotationState with
-                SourceCode = text
-                MixfixOperators = defaultNotationState.MixfixOperators @ notations }
+            createNotationState sourceManager (defaultNotationState.MixfixOperators @ notations)
 
-        match runParser (finalParser streamName parseModule) notationState text with
+        match runParser (finalParser safeStreamName parseModule) notationState text with
         | Success(Some result, userState, _) ->
-            handleNotationShadowingWarning userState.UserState.MixfixOperators text errorQueue
+            handleNotationShadowingWarning sourceManager safeStreamName userState.UserState.MixfixOperators errorQueue
 
-            match ParsingErorr.collectParsingErrors result.ModuleContent with
+            match ParsingError.collectParsingErrors result.ModuleContent with
             | [] ->
                 Some { Module = result
                        MixfixOperators = userState.UserState.MixfixOperators }
-
             | reports ->
                 errorQueue.AddErrors reports
-                None // we should return the AST for further analysis (typechecking etc.)
-                     // so that we are not locked only to parsing errors
+                None
 
-        // This should not happens! But we handle in case.
-        | Failure(debugMsg, err, userState) ->
-            handleNotationShadowingWarning userState.UserState.MixfixOperators text errorQueue
-            //printfn "FParsec debug message:\n%A" debugMsg
-            let report = handleParseFailure text err err.Position
+        | Success(None, userState, _) ->
+            handleNotationShadowingWarning sourceManager safeStreamName userState.UserState.MixfixOperators errorQueue
+            let lines =
+                sourceManager.TryGetLines safeStreamName
+                |> Option.defaultValue Array.empty
+
+            let report =
+                { ErrorType = Warning Syntax
+                  ErrorCode = null
+                  EnclosingPosition = (None, None)
+                  Description = "The file does not contain any declarations."
+                  AllLines = lines
+                  Informations = []
+                  Hint = null }
+
+            errorQueue.AddError report
+            None
+
+        | Failure(_, err, userState) ->
+            handleNotationShadowingWarning sourceManager safeStreamName userState.UserState.MixfixOperators errorQueue
+            let report = handleParseFailure sourceManager err err.Position
             errorQueue.AddError report
             None
 
     /// Checks if the AST contains parsing errors.
     let public containsParsingErrors (lpr: LiyhParsingResult) =
-        ParsingErorr.collectParsingErrors lpr.Module.ModuleContent
+        ParsingError.collectParsingErrors lpr.Module.ModuleContent
         |> List.isEmpty
         |> not
 
-    let public parseForTooling (text: string) (notations: MixfixOperator list) =
-        let notationState =
-            { defaultNotationState with
-                SourceCode = text
-                MixfixOperators = defaultNotationState.MixfixOperators @ notations }
+    /// Specialized entry point for IDE tooling and LSP.
+    let public parseForTooling (sourceManager: SourceManager) (text: string) (streamName: string) (notations: MixfixOperator list) =
+        let safeStreamName = if isNull streamName then "" else streamName
+        sourceManager.RegisterSource(safeStreamName, text)
 
-        let result = runParser (finalParser null parseTopLevelBlock) notationState text
+        let notationState =
+            createNotationState sourceManager (defaultNotationState.MixfixOperators @ notations)
+
+        let result = runParser (finalParser safeStreamName parseTopLevelBlock) notationState text
 
         let finalOperators = 
             match result with
             | Success(_, state, _) -> state.UserState.MixfixOperators
             | Failure(_, _, state) -> state.UserState.MixfixOperators
 
-        let warnings = getNotationWarnings finalOperators text
+        let warnings = getNotationWarnings sourceManager safeStreamName finalOperators
 
         match result with
-        | Success(ast, _, _) -> Some (ast, warnings)
-        | Failure(_, err, _) -> None // This should not happens!
+        | Success(Some ast, _, _) -> Some (ast, warnings)
+        | Success(None, _, _) -> Some ([], warnings)
+        | Failure(_, _, _) -> None
 
-    let public testParse (text: string) =
-        let tempErrorQueue = new ErrorQueue()
+    /// Debug and inspection tools for interactive shells or tests.
+    module public DebugParsing =
 
-        match parse text null defaultNotationState.MixfixOperators tempErrorQueue with
-        | Some result -> printfn "%A" result
-        | None -> tempErrorQueue.ReportAll System.Console.Error true
+        let public testParse (text: string) =
+            let tempErrorQueue = new ErrorQueue()
+            let sourceManager = SourceManager()
 
-    let public testTopLevelParse (text: string) =
-        let notationState = { defaultNotationState with SourceCode = text }
+            match parse sourceManager text "<test>" defaultNotationState.MixfixOperators tempErrorQueue with
+            | Some result -> printfn "%A" result
+            | None -> tempErrorQueue.ReportAll System.Console.Error true
 
-        match runParser (finalParser null parseModule) notationState text with
-        | Success(result, _, _) -> printfn "%A" result
-        | Failure(debugMsg, _, _) -> printfn "%s" debugMsg
+        let public testTopLevelParse (text: string) =
+            let sourceManager = SourceManager()
+            let notationState = createNotationState sourceManager []
 
-    let public test (text: string) =
-        let notationState = { defaultNotationState with SourceCode = text }
+            match runParser (finalParser "" parseModule) notationState text with
+            | Success(result, _, _) -> printfn "%A" result
+            | Failure(debugMsg, _, _) -> printfn "%s" debugMsg
 
-        match runParser (finalParser null parseExpressionRef) notationState text with
-        | Success(result, _, _) -> printfn "%A" result
-        | Failure(debugMsg, _, _) -> printfn "%s" debugMsg
+        let public test (text: string) =
+            let sourceManager = SourceManager()
+            let notationState = createNotationState sourceManager []
+
+            match runParser (finalParser "" parseExpressionRef) notationState text with
+            | Success(result, _, _) -> printfn "%A" result
+            | Failure(debugMsg, _, _) -> printfn "%s" debugMsg
 

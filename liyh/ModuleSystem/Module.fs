@@ -25,9 +25,6 @@ type public ModuleInfo =
         /// the user-state to be used for the parsing
         MixfixOperators: MixfixOperator list
 
-        /// the whole file text as a string
-        Text: string
-
         /// the list of all external functions (FFI)
         FFIBinings: Liyh.FFI.GeneralFFI.FFIBinding list
 
@@ -54,6 +51,5 @@ type public ModuleInfo =
           ModuleDescription = None
           ModuleContent = []
           MixfixOperators = []
-          Text = null
           FFIBinings = []
           Done = false }

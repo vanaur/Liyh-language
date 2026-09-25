@@ -25,7 +25,7 @@ module CheckNotations =
         let mutable validPrecedences = []
 
         for (modInfo, notation) in allNotations do
-            let allLines = NodeInfo.getLines modInfo.Text
+            let allLines = [] // TODO
 
             // Check variable correspondance
 

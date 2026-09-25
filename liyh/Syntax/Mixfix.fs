@@ -305,7 +305,7 @@ module private MixfixEngine =
 
 // Notation state type that manages mixfix operators.
 type public NotationState =
-    { SourceCode: string
+    { SourceManager: Liyh.Utils.SourceManager
       MixfixOperators: SyntaxTree.MixfixOperator list
       MixfixExpressionEngine: MixFixExpression.MixfixExpressionParser
       MixfixPatternEngine: MixFixPattern.MixfixPatternParser }

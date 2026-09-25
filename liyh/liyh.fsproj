@@ -10,6 +10,7 @@
     <Compile Include="Utils/Utils.fs" />
     <Compile Include="Utils/DamerauLevenshtein.fs" />
     <Compile Include="Utils/ColorTerm.fs" />
+    <Compile Include="Utils/SourceManager.fs" />
     <Compile Include="Utils/ErrorReport.fs" />
     <Compile Include="Utils/ProgressBar.fs" />
     <Compile Include="Utils/LiyhCloc.fs" />

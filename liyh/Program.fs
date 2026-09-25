@@ -21,6 +21,7 @@ module public LiyhVersion =
 module Program =
     open System
     open Liyh.Core
+    open Liyh.Utils
     open Liyh.Utils.ErrorReporter
     open Liyh.Module.LiyhPackage
 
@@ -160,15 +161,16 @@ module Program =
 
             let sw = Diagnostics.Stopwatch.StartNew()
 
+            let sourceManager = SourceManager()
             let errorQueue = new ErrorQueue()
 
-            match buildProjectGraph rootFile errorQueue with
+            match buildProjectGraph sourceManager rootFile errorQueue with
             | None ->
                 errorQueue.ReportAll Console.Error true
                 exit 1
 
             | Some(pgraph, rootModule) ->
-                let pgraph, rootModule = fillProjectGraph rootModule pgraph errorQueue
+                let pgraph, rootModule = fillProjectGraph sourceManager rootModule pgraph errorQueue
                 errorQueue.ReportIfNeeded Console.Error
 
                 let compiledLayers =

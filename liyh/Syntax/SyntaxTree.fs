@@ -292,26 +292,6 @@ module SyntaxTree =
         { ModuleDescription: string option
           ModuleContent: TopLevelWithPos list }
 
-    module public NodeInfo =
-        open System.Collections.Concurrent
-        open System.IO
-
-        let private cache = ConcurrentDictionary<string, string seq>()
-
-        /// Gets the lines of the given string.
-        let public getLines (source: string) : string seq =
-            cache.GetOrAdd(source, fun s ->
-                use reader = new StringReader(s)
-                let lines = ResizeArray()
-                let mutable line = reader.ReadLine()
-
-                while not (isNull line) do
-                    lines.Add line
-                    line <- reader.ReadLine()
-
-                lines |> seq
-            )
-
     /// Wraps the given parser result in the `WithPos` type.
     let inline public parseWithPos (p: Parser<'a, 'u>) : Parser<WithPos<'a>, 'u> =
         pipe3 getPosition p getPosition (fun startPos node endPos ->

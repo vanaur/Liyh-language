@@ -6,6 +6,7 @@ module LiyhPackage =
     open System.IO
     open Liyh.Syntax.SyntaxTree
     open Liyh.Syntax.Parser
+    open Liyh.Utils
     open Liyh.Utils.ErrorReporter
     open Liyh.Module
     open Liyh.FFI.GeneralFFI
@@ -172,9 +173,8 @@ module LiyhPackage =
             loop pgraph []
 
     /// Builds the initial module graph for the project: retrieves all files/modules used, checks that they exist,
-    /// checks for circular dependencies, and returns the initial graph if no errors are found. The ‘initial graph’
-    /// means that no concrete, usable information is available (this is done immediately after this first phase).
-    let public buildProjectGraph (rootFilePath: string) (errorQueue: ErrorQueue) =
+    /// checks for circular dependencies, and returns the initial graph if no errors are found.
+    let public buildProjectGraph (sourceManager: SourceManager) (rootFilePath: string) (errorQueue: ErrorQueue) =
         let useToIdentifier { Lib = lib; Qualifier = qualifier } = lib, qualifier
 
         let projectRoot =
@@ -211,8 +211,8 @@ module LiyhPackage =
                 let text = File.ReadAllText(filePath)
                 let moduleId = pathToIdentifier projectRoot filePath
 
-                match parseUses text filePath errorQueue with
-                | None -> ProjectGraph.addModule { ModuleInfo.empty moduleId with Text = text } Set.empty pgraph
+                match parseUses sourceManager text filePath errorQueue with
+                | None -> ProjectGraph.addModule (ModuleInfo.empty moduleId) Set.empty pgraph
                 | Some uses ->
                     let mutable deps = Set.empty
                     let mutable pgraph' = pgraph
@@ -221,27 +221,16 @@ module LiyhPackage =
                         let { Node = depId } = fst (useToIdentifier use')
                         let depPath = resolveHybridPath projectRoot projectName filePath depId
 
-                        // handle the standard library as a separate case
-
                         if isLiyhRoot depId then
-                            // let depModId = pathToIdentifier projectRoot depPath
-                            // let depModule =
-                            //     Option.defaultWith
-                            //         (fun _ -> { ModuleInfo.empty depModId with Done = true })
-                            //         (ProjectGraph.tryGetModule depId pgraph')
-                            //
-                            // deps <- Set.add depModule deps
-                            
                             // Waiting a standard library and all of that
                             ()
-
                         elif File.Exists depPath then
                             pgraph' <- build depPath visited' pgraph'
 
                             let depModId = pathToIdentifier projectRoot depPath
                             let depModule =
                                 Option.defaultWith
-                                    (fun _ -> { ModuleInfo.empty depModId with Text = File.ReadAllText depPath })
+                                    (fun _ -> ModuleInfo.empty depModId)
                                     (ProjectGraph.tryGetModule depId pgraph')
 
                             deps <- Set.add depModule deps
@@ -252,12 +241,16 @@ module LiyhPackage =
                                 if Seq.isEmpty candidates then []
                                 else [ Liyh.Utils.DamerauLevenshtein.formatSuggestions "the module" candidates ]
 
+                            let lines =
+                                sourceManager.TryGetLines filePath
+                                |> Option.defaultValue Array.empty
+
                             let report =
                                 { ErrorType = Package
                                   ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.UnfoundModuleError
                                   EnclosingPosition = Some use'.Lib.StartPos, Some use'.Lib.EndPos
                                   Description = sprintf "Module '%s' not found." (string use')
-                                  AllLines = NodeInfo.getLines text
+                                  AllLines = lines
                                   Informations = informations
                                   Hint = "Imports are case-sensitive and only files with extension `.liyh` are considered." }
                             errorQueue.AddError report
@@ -267,7 +260,7 @@ module LiyhPackage =
                         |> List.map (fun node -> removePos node.Lib, Option.map removePos node.Qualifier)
                         |> Map.ofList
 
-                    ProjectGraph.addModule { ModuleInfo.empty moduleId with Uses = useMap; Text = text } deps pgraph'
+                    ProjectGraph.addModule { ModuleInfo.empty moduleId with Uses = useMap } deps pgraph'
 
         if not (File.Exists rootFilePath) then
             let informations =
@@ -280,12 +273,11 @@ module LiyhPackage =
                   ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.UnfoundRootPathError
                   EnclosingPosition = None, None
                   Description = sprintf "Root path '%s' not found." rootFilePath
-                  AllLines = []
+                  AllLines = Array.empty
                   Informations = informations
                   Hint = "Imports are case-sensitive and only files with extension `.liyh` are considered." }
 
             errorQueue.AddError report
-
             None
         else
             let pgraph = build rootFilePath Set.empty ProjectGraph.Empty
@@ -328,21 +320,21 @@ module LiyhPackage =
                       ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.CircularDependenciesError
                       EnclosingPosition = None, None
                       Description = sprintf "Circular dependencies detected in the project: %s ! This is not allowed with Liyh." showCycle
-                      AllLines = []
+                      AllLines = Array.empty
                       Informations = []
                       Hint = "Extract a common module or review the architecture of the modules." }
 
                 errorQueue.AddError report
                 None
 
-    /// Retrieves sytactically exported elements (whether they actually exist or not).
+    /// Retrieves syntactically exported elements (whether they actually exist or not).
     let private exported (moduleContent: TopLevelWithPos list) =
         moduleContent
         |> List.filter (_.Node >> _.IsModuleExport)
         |> List.collect (function { Node = ModuleExport exports } -> exports)
         |> List.map removePos
 
-    let private checkExports (moduleInfo: ModuleInfo) (errorQueue: ErrorQueue) =
+    let private checkExports (sourceManager: SourceManager) (currentPath: string) (moduleInfo: ModuleInfo) (errorQueue: ErrorQueue) =
         match List.filter (not << Definitions.containsDefinitionName moduleInfo) moduleInfo.Exports with
         | [] -> true
         | undefinedExportedSymbols ->
@@ -371,12 +363,16 @@ module LiyhPackage =
             let hint =
                 "Only defined symbols can be exported. The language allows referencing undefined symbols symbolically, but exporting them requires a definition. This ensures consistency across packages."
 
+            let lines =
+                sourceManager.TryGetLines currentPath
+                |> Option.defaultValue Array.empty
+
             let report =
                 { ErrorType = Package
                   ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.ExportedUndefinedSymbolError
                   EnclosingPosition = None, None
                   Description = msg
-                  AllLines = NodeInfo.getLines moduleInfo.Text
+                  AllLines = lines
                   Informations = suggestions
                   Hint = hint }
 
@@ -384,7 +380,7 @@ module LiyhPackage =
             false
 
     /// Fill in the dependency graph from the source file/module.
-    let public fillProjectGraph (rootModule: ModuleInfo) (pgraph: ProjectGraph) (errorQueue: ErrorQueue) =
+    let public fillProjectGraph (sourceManager: SourceManager) (rootModule: ModuleInfo) (pgraph: ProjectGraph) (errorQueue: ErrorQueue) =
         let rec processModule (pgraph: ProjectGraph) (module': ModuleInfo) =
             if module'.Done then pgraph, module'.MixfixOperators
             else
@@ -406,9 +402,18 @@ module LiyhPackage =
                         |> Option.map (fun m -> m.MixfixOperators)
                         |> Option.defaultValue [])
 
-                //Liyh.Utils.Utils.Benchmark.bench (fun _ -> parse module'.Text currentPath directNotations errorQueue) 10
+                let text =
+                    match sourceManager.TryGetFullSource currentPath with
+                    | Some content -> content
+                    | None ->
+                        if File.Exists currentPath then
+                            let content = File.ReadAllText currentPath
+                            sourceManager.RegisterSource(currentPath, content)
+                            content
+                        else
+                            ""
 
-                match parse module'.Text currentPath directNotations errorQueue with
+                match parse sourceManager text currentPath directNotations errorQueue with
                 | None ->
                     let updated = { module' with Done = true; MixfixOperators = [] }
                     ProjectGraph.updateModule module' updated pgraph', []
@@ -427,13 +432,16 @@ module LiyhPackage =
                             MixfixOperators = newNotations }
 
                     let rawBindings = Definitions.tryGetByType Definitions.Extern updatedModuleInfo
-                    let allLines = NodeInfo.getLines updatedModuleInfo.Text
+                    let allLines =
+                        sourceManager.TryGetLines currentPath
+                        |> Option.defaultValue Array.empty
+
                     let ffiBindings = getFFIBindingsFromAST rawBindings errorQueue allLines false
 
                     let updatedModuleInfo =
                         { updatedModuleInfo with FFIBinings = ffiBindings }
 
-                    if checkExports updatedModuleInfo errorQueue = true then
+                    if checkExports sourceManager currentPath updatedModuleInfo errorQueue = true then
                         let finalGraph = ProjectGraph.updateModule module' updatedModuleInfo pgraph'
                         finalGraph, newNotations
                     else
