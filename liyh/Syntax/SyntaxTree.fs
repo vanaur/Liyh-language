@@ -5,29 +5,34 @@ module SyntaxTree =
     open FParsec
 
     type public Associativity = FParsec.Associativity
-    type public MixfixPatternPart = Fixed of string | Hole
+
+    type public MixfixPatternPart =
+        | Fixed of string
+        | Hole
+
     type public MixfixPattern = MixfixPatternPart list
 
+    /// Wraps a given type (expected: an AST) with its starting and ending positions.
     type public WithPos<'t> =
         { Node: 't
-          Pos: Position     // starting position
-          Pos': Position }  // ending position
+          StartPos: Position
+          EndPos: Position }
 
-        member public this.Line = this.Pos.Line
-        member public this.Col = this.Pos.Column
-        member public this.File = this.Pos.StreamName
-        member public this.PosTuple = (this.Pos, this.Pos')
+        member public this.Line = this.StartPos.Line
+        member public this.Col = this.StartPos.Column
+        member public this.File = this.StartPos.StreamName
+        member public this.PosTuple = (this.StartPos, this.EndPos)
 
     and public MixfixOperator =
-        { Name: string
+        { Name: NameWithPos
           Pattern: MixfixPattern
           BindingPatterns: NotationPattern list
           Precedence: uint
           Associativity: Associativity
           IsCommutative: bool // default: false
-          RewritesTo: ExpressionWithPos
-          Position: Position * Position }
+          RewritesTo: ExpressionWithPos }
 
+    and public NameWithPos = string WithPos
     and public IdentifierWithPos = Identifier WithPos
     and public ExpressionWithPos = Expression WithPos
     and public PatternWithPos = Pattern WithPos
@@ -36,8 +41,8 @@ module SyntaxTree =
     and public TopLevelWithPos = TopLevel WithPos
 
     and public Identifier =
-        { Qualifier: string WithPos list
-          Name: string WithPos }
+        { Qualifier: NameWithPos list
+          Name: NameWithPos }
 
         override this.ToString() =
             let qualifiers = this.Qualifier |> List.map _.Node
@@ -56,23 +61,23 @@ module SyntaxTree =
         | MixfixOperator of ApplyOperator
         | Tuple of ExpressionWithPos list
         | List of ExpressionWithPos list
-        | Record of (string * ExpressionWithPos) list
-        | RecordUsing of (ExpressionWithPos * (string * ExpressionWithPos) list)
+        | Record of (NameWithPos * ExpressionWithPos) list
+        | RecordUsing of (ExpressionWithPos * (NameWithPos * ExpressionWithPos) list)
         | ListComprehension of ListComprehension
         | Range of Range
         | While of While
         | ForIn of ForIn
         | ForTo of ForTo
         | ForDownTo of ForTo
-        | ReAssign of string * ExpressionWithPos
+        | ReAssign of NameWithPos * ExpressionWithPos
         | Let of PatternWithPos * ExpressionWithPos
         | Var of PatternWithPos * ExpressionWithPos
         | Match of Match
         | IfThenElse of IfThenElse
         | Lambda of Lambda
         | HandleEffect of Handle
-        | ResumeWith of ResumeWith WithPos
-        | Substitution of (string * ExpressionWithPos) list * ExpressionWithPos
+        | ResumeWith of ResumeWith
+        | Substitution of (NameWithPos * ExpressionWithPos) list * ExpressionWithPos
         | UsingContext of UsingContext
 
     and public UsingContext =
@@ -92,7 +97,7 @@ module SyntaxTree =
           Arguments: ExpressionWithPos list }
 
     and public ApplyOperator =
-        { Name: string
+        { Name: NameWithPos
           Arguments: ExpressionWithPos list }
 
     and public ListComprehension =
@@ -147,8 +152,8 @@ module SyntaxTree =
         | LiteralPattern of LiteralWithPos                          // e.g. 8
         | TuplePattern of PatternWithPos list                       // e.g. (1, 2, 3)
         | ListPattern of PatternWithPos list                        // e.g. { 1, 2, 3 }
-        | RecordPattern of (string * PatternWithPos) list           // e.g. { result = some['result], opt = 'x }
-        | MixfixOperatorPattern of string * PatternWithPos list     // e.g. 'x :: 'xs, 'x + 10
+        | RecordPattern of (NameWithPos * PatternWithPos) list      // e.g. { result = some['result], opt = 'x }
+        | MixfixOperatorPattern of string WithPos * PatternWithPos list     // e.g. 'x :: 'xs, 'x + 10
         | AsPattern of PatternWithPos * PatternWithPos              // e.g. succ['n] as num
         | WhenPattern of PatternWithPos * ExpressionWithPos         // e.g. 'x when 'x > 0
         | TypedPattern of PatternWithPos * TypeWithPos              // e.g. 'n : Int
@@ -160,7 +165,7 @@ module SyntaxTree =
         | VariableType of string                                     // e.g. 't
         | RuleType of TypeWithPos list * TypeWithPos                 // e.g. [Int, Int] -> Int
         | TupleType of TypeWithPos list                              // e.g. (Int, String, Bool)
-        | RowRecordType of (string * TypeWithPos) list               // e.g. { a: Int, b: Int, ... }
+        | RowRecordType of (NameWithPos * TypeWithPos) list          // e.g. { a: Int, b: Int, ... }
         | ParametrizedType of IdentifierWithPos * TypeWithPos list   // e.g. List['t]
         | ModuloEffectType of TypeWithPos * IdentifierWithPos list   // e.g. Int % { State, Counter }
         | WildcardType
@@ -174,19 +179,19 @@ module SyntaxTree =
         | Char of char                                  // e.g. 'c'
 
     and public InterpolatedPart =
-        | Str of string
+        | Str of string WithPos
         | Interpolation of ExpressionWithPos
 
     and public TopLevel =
         | ParseError of Liyh.Utils.ErrorReporter.ErrorReport   // To be able to accumulate parsing errors and continue
                                                                // parsing, so as not to stop at the first error encountered
-        | Use of Use WithPos
+        | Use of Use
         | Rule of Rule
         | LetRule of Rule       // a rule with no pattern is sugared into a `let`-like expression
         | Handler of Handler
-        | Effect of string * vartypes: string list * (Signature WithPos) list
+        | Effect of NameWithPos * vartypes: NameWithPos list * (Signature WithPos) list
         | Type of SumType
-        | TypeAlias of name: string * vartypes: string list * TypeWithPos
+        | TypeAlias of name: NameWithPos * vartypes: NameWithPos list * TypeWithPos
         | Notation of Notation
         | Context of Context
         | Extern of Extern
@@ -194,47 +199,46 @@ module SyntaxTree =
         | Unit
         | UnitSystem
         | UnitConversion
-        | ModuleExport of string list
+        | ModuleExport of NameWithPos list
 
     and public Context =
-        { Name: string WithPos
-          Using: Identifier WithPos list
+        { Name: NameWithPos
+          Using: IdentifierWithPos list
           Content: TopLevelWithPos list } // NOTE: not all top levels are valids, but we can detect this after parsing
 
     and public Extern =
         { Language: ExternLanguageTarget
           Library: string WithPos
-          AsName: Identifier WithPos
-          Content: Signature list }
+          AsName: IdentifierWithPos
+          Content: (Signature WithPos) list }
 
     and public ExternLanguageTarget =
-        | C
+        | C     // there is just C for now and maybe forever
 
     and public SumType =
-        { Name: string
-          VarTypes: string list
+        { Name: NameWithPos
+          VarTypes: NameWithPos list
           Constructors: (Signature WithPos) list }
 
     and public Handler =
-        { Name: string
+        { Name: NameWithPos
           State: PatternWithPos
           Pattern: PatternWithPos
           WhenClause: ExpressionWithPos option
           Type: TypeWithPos option
-          Strategy: RewritingStrategy option
-          Body: ExpressionWithPos
-        }
+          Strategy: RewritingStrategy WithPos option
+          Body: ExpressionWithPos }
 
     and public Rule =
-        { Name: string WithPos
+        { Name: NameWithPos
           Patterns: PatternWithPos list
           WhenClause: ExpressionWithPos option
           Type: TypeWithPos option
-          Strategy: RewritingStrategy option
+          Strategy: RewritingStrategy WithPos option
           Body: ExpressionWithPos }
 
     and public Notation =
-        { NotationName: string WithPos
+        { NotationName: NameWithPos
           NotationPattern: NotationPattern list WithPos
           NotationPrecedence: uint WithPos
           NotationAssociativity: Associativity WithPos
@@ -242,12 +246,12 @@ module SyntaxTree =
           NotationIs: ExpressionWithPos }
 
     and public NotationPattern =
-        | FixedPart of string
-        | HolePart of string
+        | FixedPart of string WithPos
+        | HolePart of string WithPos
 
         member public this.toMixFixPattern =
             match this with
-            | FixedPart s -> Fixed s
+            | FixedPart { Node = s } -> Fixed s
             | HolePart _ -> Hole
 
     and public ResumeWith =
@@ -255,13 +259,13 @@ module SyntaxTree =
           HandlerState: ExpressionWithPos }
 
     and public Signature =
-        { Name: string WithPos
+        { Name: NameWithPos
           ArgumentsType: TypeWithPos list
           ReturnType: TypeWithPos option }
 
     and public Use =
         { Lib: IdentifierWithPos
-          Qualifier: string option }
+          Qualifier: NameWithPos option }
 
         override this.ToString() =
             string this.Lib.Node
@@ -282,7 +286,7 @@ module SyntaxTree =
         | Invalid
 
         /// Cache results for future uses.
-        | Memoize
+        //| Memoize
 
     and public Module =
         { ModuleDescription: string option
@@ -294,153 +298,40 @@ module SyntaxTree =
 
         let private cache = ConcurrentDictionary<string, string seq>()
 
+        /// Gets the lines of the given string.
         let public getLines (source: string) : string seq =
             cache.GetOrAdd(source, fun s ->
                 use reader = new StringReader(s)
                 let lines = ResizeArray()
                 let mutable line = reader.ReadLine()
+
                 while not (isNull line) do
                     lines.Add line
                     line <- reader.ReadLine()
-                lines |> seq)
 
-    /// Wrap the given parser result in the `WithPos` type.
-    let inline public parseWithPos (p: Parser<_, _>) =
-        //pipe2 getPosition p (fun pos node -> { Pos = pos; Node = node })
-        pipe3 getPosition p getPosition (fun pos node pos' -> { Pos = pos; Node = node; Pos' = pos' })
+                lines |> seq
+            )
 
-    let inline public withoutPos (p: Parser<_ WithPos, _>) =
-        p |>> _.Node
+    /// Wraps the given parser result in the `WithPos` type.
+    let inline public parseWithPos (p: Parser<'a, 'u>) : Parser<WithPos<'a>, 'u> =
+        pipe3 getPosition p getPosition (fun startPos node endPos ->
+            { StartPos = startPos; Node = node; EndPos = endPos })
 
-    let inline public withPosOf (b: WithPos<'a>) (a: 'b) =
-        { Node = a; Pos = b.Pos; Pos' = b.Pos' }
+    /// Wraps a node with the position of another position-wrapped node.
+    let inline public withPosOf (b: WithPos<'a>) (a: 'b) : WithPos<'b> =
+        { Node = a; StartPos = b.StartPos; EndPos = b.EndPos }
 
-    let inline public removePos { Node = node } = node
+    /// Gets the node without the position.
+    let inline public removePos { Node = node } =
+        node
 
-    let inline public removePosList (xs: List<_ WithPos>) = List.map removePos xs
-
-    let inline public withPosOverride (b: WithPos<'t>) (a: WithPos<'t>) =
-        withPosOf b (removePos a)
-
+    /// Converts the parser's defined notation into the mixfix representaztion.
     let public notationPatternToMixfixOperator (notation: Notation) =
-        { Name = removePos notation.NotationName
+        { Name = notation.NotationName
           Pattern = removePos notation.NotationPattern |> List.map _.toMixFixPattern
           BindingPatterns = removePos notation.NotationPattern
           Precedence = removePos notation.NotationPrecedence
           Associativity = removePos notation.NotationAssociativity
           IsCommutative = removePos notation.NotationCommutative
-          RewritesTo = notation.NotationIs
-          Position = notation.NotationPattern.PosTuple }
-
-module Replace =
-    open SyntaxTree
-
-    let rec public replaceVariable (map: Map<string, ExpressionWithPos>) (expwp: ExpressionWithPos) : ExpressionWithPos =
-        let replaceExpr = replaceVariable map
-        let replacePattern pat = replacePatternVariable map pat
-        
-        match expwp.Node with
-        | Expression.ParseError _ -> expwp
-        | BindingVariable name ->
-            match Map.tryFind name map with
-            | Some replacement -> replacement
-            | None -> expwp
-        | UFCS ufcs ->
-            { expwp with Node = UFCS { LHS = replaceExpr ufcs.LHS; RHS = replaceExpr ufcs.RHS } }
-        | Identifier _ -> expwp
-        | CollectionAccess ca ->
-            { expwp with Node = CollectionAccess { LHS = replaceExpr ca.LHS; Indices = List.map replaceExpr ca.Indices } }
-        | Literal _ -> expwp
-        | ExpressionSequence exprs ->
-            { expwp with Node = ExpressionSequence (List.map replaceExpr exprs) }
-        | Apply apply ->
-            { expwp with Node = Apply { LHS = replaceExpr apply.LHS; Arguments = List.map replaceExpr apply.Arguments } }
-        | MixfixOperator op ->
-            { expwp with Node = MixfixOperator { Name = op.Name; Arguments = List.map replaceExpr op.Arguments } }
-        | Tuple exprs ->
-            { expwp with Node = Tuple (List.map replaceExpr exprs) }
-        | List exprs ->
-            { expwp with Node = List (List.map replaceExpr exprs) }
-        | Record fields ->
-            { expwp with Node = Record (List.map (fun (name, expr) -> (name, replaceExpr expr)) fields) }
-        | RecordUsing (baseExpr, fields) ->
-            { expwp with Node = RecordUsing (replaceExpr baseExpr, List.map (fun (name, expr) -> (name, replaceExpr expr)) fields) }
-        | ListComprehension lc ->
-            { expwp with Node = ListComprehension { ItemValue = replaceExpr lc.ItemValue; Pattern = lc.Pattern; ListExpr = replaceExpr lc.ListExpr; IfPred = Option.map replaceExpr lc.IfPred } }
-        | Range range ->
-            { expwp with Node = Range { RangeStart = replaceExpr range.RangeStart; RangeStep = Option.map replaceExpr range.RangeStep; RangeStop = replaceExpr range.RangeStop } }
-        | While w ->
-            { expwp with Node = While { Predicate = replaceExpr w.Predicate; Body = replaceExpr w.Body } }
-        | ForIn forIn ->
-            { expwp with Node = ForIn { Pattern = replacePattern forIn.Pattern; ListExpr = replaceExpr forIn.ListExpr; Body = replaceExpr forIn.Body } }
-        | ForTo forTo ->
-            { expwp with Node = ForTo { Pattern = replacePattern forTo.Pattern; InitialValue = replaceExpr forTo.InitialValue; EndValue = replaceExpr forTo.EndValue; Body = replaceExpr forTo.Body } }
-        | ForDownTo forTo ->
-            { expwp with Node = ForDownTo { Pattern = replacePattern forTo.Pattern; InitialValue = replaceExpr forTo.InitialValue; EndValue = replaceExpr forTo.EndValue; Body = replaceExpr forTo.Body } }
-        | ReAssign (name, expr) ->
-            { expwp with Node = ReAssign (name, replaceExpr expr) }
-        | Let (pattern, expr) ->
-            { expwp with Node = Let (replacePattern pattern, replaceExpr expr) }
-        | Var (pattern, expr) ->
-            { expwp with Node = Var (replacePattern pattern, replaceExpr expr) }
-        | Match m ->
-            { expwp with Node = Match { ToMatch = replaceExpr m.ToMatch; Cases = List.map (fun (pat, expr) -> (replacePattern pat, replaceExpr expr)) m.Cases } }
-        | IfThenElse ifte ->
-            { expwp with Node = IfThenElse { Condition = replaceExpr ifte.Condition; ThenBranch = replaceExpr ifte.ThenBranch; ElifBranches = List.map (fun (a, b) -> replaceExpr a, replaceExpr b) ifte.ElifBranches; ElseBranch = Option.map replaceExpr ifte.ElseBranch } }
-        | Lambda lambda ->
-            { expwp with Node = Lambda { Patterns = List.map replacePattern lambda.Patterns; Body = replaceExpr lambda.Body } }
-        | HandleEffect handle ->
-            { expwp with Node = HandleEffect { Handler = handle.Handler; InitialState = replaceExpr handle.InitialState; Body = replaceExpr handle.Body } }
-        | ResumeWith rw ->
-            { expwp with Node = ResumeWith { rw with Node = { rw.Node with Value = replaceExpr rw.Node.Value; HandlerState = replaceExpr rw.Node.HandlerState } } }
-        | Substitution(env, inExpr) ->
-            { expwp with Node = Substitution(List.map (fun (a, b) -> a, replaceExpr b) env, replaceExpr inExpr) }
-        | UsingContext u ->
-            { expwp with Node = UsingContext { u with ContentExpr = replaceExpr u.ContentExpr } }
-
-    and public replacePatternVariable (map: Map<string, ExpressionWithPos>) (patwp: PatternWithPos) : PatternWithPos =
-        let replaceExpr = replaceVariable map
-        let replacePattern = replacePatternVariable map
-        let replaceType typ = replaceTypeVariable map typ
-        
-        match patwp.Node with
-        | VariablePattern _ -> patwp
-        | SymbolPattern _ -> patwp
-        | ApplyPattern (pat, pats) ->
-            { patwp with Node = ApplyPattern (replacePattern pat, List.map replacePattern pats) }
-        | LiteralPattern _ -> patwp
-        | TuplePattern pats ->
-            { patwp with Node = TuplePattern (List.map replacePattern pats) }
-        | ListPattern pats ->
-            { patwp with Node = ListPattern (List.map replacePattern pats) }
-        | RecordPattern fields ->
-            { patwp with Node = RecordPattern (List.map (fun (name, pat) -> (name, replacePattern pat)) fields) }
-        | MixfixOperatorPattern (name, pats) ->
-            { patwp with Node = MixfixOperatorPattern (name, List.map replacePattern pats) }
-        | AsPattern (pat1, pat2) ->
-            { patwp with Node = AsPattern (replacePattern pat1, replacePattern pat2) }
-        | WhenPattern (pat, expr) ->
-            { patwp with Node = WhenPattern (replacePattern pat, replaceExpr expr) }
-        | TypedPattern (pat, typ) ->
-            { patwp with Node = TypedPattern (replacePattern pat, replaceType typ) }
-        | AlternativePattern _ -> patwp
-        | Wildcard -> patwp
-
-    and public replaceTypeVariable (map: Map<string, ExpressionWithPos>) (typwp: TypeWithPos) : TypeWithPos =
-        let replaceType = replaceTypeVariable map
-        
-        match typwp.Node with
-        | NamedType _ -> typwp
-        | VariableType _ -> typwp
-        | RuleType (argTypes, retType) ->
-            { typwp with Node = RuleType (List.map replaceType argTypes, replaceType retType) }
-        | TupleType types ->
-            { typwp with Node = TupleType (List.map replaceType types) }
-        | RowRecordType fields ->
-            { typwp with Node = RowRecordType (List.map (fun (name, typ) -> (name, replaceType typ)) fields) }
-        | ParametrizedType (ident, types) ->
-            { typwp with Node = ParametrizedType (ident, List.map replaceType types) }
-        | ModuloEffectType (typ, effects) ->
-            { typwp with Node = ModuloEffectType (replaceType typ, effects) }
-        | WildcardType -> typwp
+          RewritesTo = notation.NotationIs }
 

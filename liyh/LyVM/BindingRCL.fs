@@ -204,7 +204,6 @@ type public Strategy =
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Lazy -> Lazy
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Outermost -> Outermost
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Invalid -> Invalid
-        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Memoize -> Memoize
 
 [<Struct>]
 type public RuleInfo =

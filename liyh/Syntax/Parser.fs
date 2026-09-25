@@ -296,7 +296,7 @@ module private ParsingErorr =
         | HandleEffect handle ->
             collectParsingErrorsFromExpression handle.InitialState @ collectParsingErrorsFromExpression handle.Body
         | ResumeWith rw ->
-            collectParsingErrorsFromExpression rw.Node.Value @ collectParsingErrorsFromExpression rw.Node.HandlerState
+            collectParsingErrorsFromExpression rw.Value @ collectParsingErrorsFromExpression rw.HandlerState
         | Substitution(env, inExpr) ->
             List.collect (snd >> collectParsingErrorsFromExpression) env @ collectParsingErrorsFromExpression inExpr
         | UsingContext { ContentExpr = expr } ->
@@ -536,7 +536,7 @@ module Parser =
                                 return! fail
                                     (sprintf "'%s' is reserved by the user/lib-defined notation '%s' and cannot be used as a name"
                                         name
-                                        userReservedIn)
+                                        userReservedIn.Node)
                     }
 
         /// Parses a valid name according to the Liyh specification and returns it as a character string.
@@ -660,8 +660,8 @@ module Parser =
                         (parseExpr |>> InterpolatedPart.Interpolation)
 
                 let textFragment =
-                    many1 (attempt escapedChar <|> normalChar)
-                    |>> fun strs -> InterpolatedPart.Str (String.concat "" strs)
+                    parseWithPos (many1 (attempt escapedChar <|> normalChar))
+                    |>> fun strs -> InterpolatedPart.Str (withPosOf strs (String.concat "" (removePos strs)))
 
                 let fragment =
                     choice [ attempt interpolationFragment; textFragment ]
@@ -674,7 +674,7 @@ module Parser =
                         let strContent =
                             content |> List.fold (fun acc frag ->
                                 match frag with
-                                | InterpolatedPart.Str s -> acc + s
+                                | InterpolatedPart.Str s -> acc + s.Node
                                 | _ -> acc) ""
                         return Literal.String strContent
                 }
@@ -701,28 +701,39 @@ module Parser =
                                     if isCloser then
                                         let cleanAcc =
                                             match acc with
-                                            | InterpolatedPart.Str "\n" :: tail -> tail
+                                            | InterpolatedPart.Str { Node = "\n" } :: tail -> tail
                                             | _ -> acc
                                         return List.rev cleanAcc
                                     else
                                         return! readLineContent acc
                                 else
                                     let extraSpaces = String.replicate (currentIndent - indentCol) " "
-                                    return! readLineContent (InterpolatedPart.Str extraSpaces :: acc)
+                                    let extraSpacesWithPos =
+                                        { Node = extraSpaces
+                                          StartPos = afterIndentPos
+                                          EndPos = afterIndentPos }
+                                    return! readLineContent (InterpolatedPart.Str extraSpacesWithPos :: acc)
                             else
                                 let! isLineEmpty = (skipNewline >>% true) <|> (eof >>% true) <|> preturn false
-                                if isLineEmpty then return! readBlock (InterpolatedPart.Str "\n" :: acc)
+                                if isLineEmpty then
+                                    let newline =
+                                        { Node = "\n"
+                                          StartPos = afterIndentPos
+                                          EndPos = afterIndentPos }
+                                    return! readBlock (InterpolatedPart.Str newline :: acc)
                                 else return! fail "Invalid indentation for multiline string."
                         }
 
                     and readLineContent acc =
                         choice [
-                            skipNewline >>. readBlock (InterpolatedPart.Str "\n" :: acc)
+                            parseWithPos (skipNewline >>% "\n") >>= fun newline ->
+                                readBlock (InterpolatedPart.Str newline :: acc)
 
                             (pchar '{' >>. parseExpr .>> pchar '}') >>= fun expr ->
                                 readLineContent (InterpolatedPart.Interpolation expr :: acc)
 
-                            many1Satisfy (fun c -> c <> '\n' && c <> '\r' && c <> '{') >>= fun text ->
+                            parseWithPos (many1Satisfy (fun c -> c <> '\n' && c <> '\r' && c <> '{') >>= fun text ->
+                                preturn text) >>= fun text ->
                                 readLineContent (InterpolatedPart.Str text :: acc)
                         ]
 
@@ -733,7 +744,7 @@ module Parser =
                         let strContent =
                             content
                             |> List.choose (function
-                                | InterpolatedPart.Str s -> Some s
+                                | InterpolatedPart.Str s -> Some s.Node
                                 | _ -> None)
                             |> String.concat ""
 
@@ -837,7 +848,7 @@ module Parser =
 
         // { a: Int, b: String }
         let private parseRowRecordType =
-            let fieldName = NameParser.parseIdentifierName
+            let fieldName = parseWithPos NameParser.parseIdentifierName
             let colon = spacesOrComment >>. (skipChar ':' >>. spacesOrComment <?> "':' after field name")
             let comma = skipChar ',' <?> "comma ',' between fields or closing '}'"
             let closingBrace = skipChar '}' <?> "closing '}' to end record type"
@@ -906,8 +917,8 @@ module Parser =
             parsers .>>. opt (parseWithPos parseModuloEffectType)
             |>> function
                 | t1, None -> t1
-                | t1, Some { Node = effects; Pos = pos; Pos' = pos' } ->
-                    { Node = Type.ModuloEffectType(t1, effects); Pos = pos; Pos' = pos' }
+                | t1, Some { Node = effects; StartPos = pos; EndPos = pos' } ->
+                    { Node = Type.ModuloEffectType(t1, effects); StartPos = pos; EndPos = pos' }
 
         do parseTypeRef.Value <-
             spacesOrComment >>. parseTypeWithContext .>> spacesOrComment
@@ -930,8 +941,8 @@ module Parser =
             |>> fun (basePattern, postfixesList) ->
                 List.fold (fun pattern args ->
                     { Node = Pattern.ApplyPattern(pattern, args)
-                      Pos = pattern.Pos
-                      Pos' = pattern.Pos' }) basePattern postfixesList
+                      StartPos = pattern.StartPos
+                      EndPos = pattern.EndPos }) basePattern postfixesList
 
         // 'x, 'myVar
         let private parseVariablePattern =
@@ -976,7 +987,7 @@ module Parser =
         let private parseRecordPattern =
             let parseRecordField =
                 pipe3
-                    (spacesOrComment >>. NameParser.parseIdentifierName)
+                    (spacesOrComment >>. parseWithPos NameParser.parseIdentifierName)
                     (spacesOrComment >>. skipChar '=')
                     (spacesOrComment >>. parsePatternRef)
                     (fun name _ pattern -> (name, pattern))
@@ -1026,22 +1037,22 @@ module Parser =
                 spacesOrComment >>. keyword "as" >>. spacesOrComment >>. parsePatternRef
                 |>> fun asPattern ->
                     { Node = Pattern.AsPattern(basePattern, asPattern)
-                      Pos = basePattern.Pos
-                      Pos' = basePattern.Pos' }
+                      StartPos = basePattern.StartPos
+                      EndPos = basePattern.EndPos }
 
             let parseWhen (basePattern: WithPos<_>) =
                 spacesOrComment >>. keyword "when" >>. spacesOrComment >>. parseExpressionRef
                 |>> fun condition ->
                     { Node = Pattern.WhenPattern(basePattern, condition)
-                      Pos = basePattern.Pos
-                      Pos' = basePattern.Pos' }
+                      StartPos = basePattern.StartPos
+                      EndPos = basePattern.EndPos }
 
             let parseTyped (basePattern: WithPos<_>) =
                 spacesOrComment >>. skipChar ':' >>. spacesOrComment >>. TypeParser.parseType
                 |>> fun typeAnnotation ->
                     { Node = Pattern.TypedPattern(basePattern, typeAnnotation)
-                      Pos = basePattern.Pos
-                      Pos' = basePattern.Pos' }
+                      StartPos = basePattern.StartPos
+                      EndPos = basePattern.EndPos }
 
             parsePatternWithMixfixInternal ()
             >>= fun basePattern ->
@@ -1108,7 +1119,7 @@ module Parser =
         pipe2
             //(spacesOrComment >>. NameParser.parseIdentifierName)
             //(spacesOrComment >>. skipChar ''' >>. NameParser.parseIdentifierName)
-            (spacesOrComment >>. choice [ NameParser.parseIdentifierName; skipChar ''' >>. NameParser.parseIdentifierName ])
+            (spacesOrComment >>. parseWithPos (choice [ NameParser.parseIdentifierName; skipChar ''' >>. NameParser.parseIdentifierName ]))
             (spacesOrComment >>. skipString "<-" >>. spacesOrComment >>. parseExpressionRef)
             (fun var value -> Expression.ReAssign(var, value))
 
@@ -1120,9 +1131,9 @@ module Parser =
             (sepBy (spacesOrComment >>. parseExpressionRef) (spacesOrComment >>. skipChar ',' <?> "other elements in the tuple"))
         |> parseWithPos
         |>> function
-            | { Node = []; Pos = pos; Pos' = pos' } -> { Node = Expression.Literal { Node = Literal.Unit; Pos = pos; Pos' = pos' }; Pos = pos; Pos' = pos' }
+            | { Node = []; StartPos = pos; EndPos = pos' } -> { Node = Expression.Literal { Node = Literal.Unit; StartPos = pos; EndPos = pos' }; StartPos = pos; EndPos = pos' }
             | { Node = [ x ] } -> x
-            | { Node = content; Pos = pos; Pos' = pos' } -> { Node = Expression.Tuple content; Pos = pos; Pos' = pos' }
+            | { Node = content; StartPos = pos; EndPos = pos' } -> { Node = Expression.Tuple content; StartPos = pos; EndPos = pos' }
 
     // { a = 3, b = "hello" }, { 0 .. 10 }, { 0 .. 0.1 .. 10 }, { 1, 2, 3, 4, 5 }
     // { k for k in { 0 .. 10_000 } if k % 2 = 0 }, { myRecord with a = 0 }
@@ -1131,7 +1142,7 @@ module Parser =
 
         let parseRecordField =
             pipe3
-                NameParser.parseIdentifierName
+                (parseWithPos NameParser.parseIdentifierName)
                 (spacesOrComment >>. skipChar '=' >>. spacesOrComment)
                 parseExpressionRef
                 (fun name _ expr -> (name, expr))
@@ -1212,7 +1223,7 @@ module Parser =
                 match in' with
                 | None -> head
                 | Some tail ->
-                    Expression.ExpressionSequence [ { Node = head; Pos = p.Pos; Pos' = p.Pos' }; tail ])
+                    Expression.ExpressionSequence [ { Node = head; StartPos = p.StartPos; EndPos = p.EndPos }; tail ])
 
     // [a₁, a₂, ..., aₙ] -> ...
     let private parseLambdaRule =
@@ -1306,7 +1317,7 @@ module Parser =
     let private parseSubstitution =
         let sub =
             pipe3
-                (spacesOrComment >>. NameParser.parseName false)
+                (spacesOrComment >>. parseWithPos (NameParser.parseName false))
                 (spacesOrComment >>. skipString "->")
                 (spacesOrComment >>. parseExpressionRef)
                 (fun symbol _ replace -> (symbol, replace))
@@ -1369,9 +1380,9 @@ module Parser =
                     parseApplyArguments
             )
             |>> fun args expr ->
-                { Pos = expr.Pos
+                { StartPos = expr.StartPos
                   Node = Expression.Apply { LHS = expr; Arguments = args.Node } //(expr, args)
-                  Pos' = args.Pos' }
+                  EndPos = args.EndPos }
 
         let collectionAccess =
             spacesOrComment >>? skipChar '.' >>? notFollowedBy (skipChar '.') <?> "" >>. spacesOrComment >>. between
@@ -1380,17 +1391,16 @@ module Parser =
                 (spacesOrComment >>. sepBy1 parseExpressionRef (spacesOrComment >>. skipChar ',') .>> spacesOrComment)
             |> parseWithPos
             |>> fun indices expr ->
-                { Pos = expr.Pos
+                { StartPos = expr.StartPos
                   Node = Expression.CollectionAccess { LHS = expr; Indices = indices.Node }
-                  Pos' = indices.Pos' }
+                  EndPos = indices.EndPos }
 
         let resume =
             spacesOrComment >>? keyword "with" <?> "" >>? notFollowedBy parseMatchingCases >>. parseExpressionRef
             |>> fun state resume ->
-                let node = { Value = resume; HandlerState = state }
-                { Pos = resume.Pos
-                  Node = Expression.ResumeWith { Pos = resume.Pos; Node = node; Pos' = resume.Pos' }
-                  Pos' = resume.Pos' }
+                { StartPos = resume.StartPos
+                  Node = Expression.ResumeWith { Value = resume; HandlerState = state }
+                  EndPos = resume.EndPos }
 
         choice [
             // function call
@@ -1418,8 +1428,8 @@ module Parser =
                 spacesOrComment >>? skipString "|>" >>. spacesOrComment 
                 >>% (fun lhs rhs ->
                         { Node = Expression.UFCS { LHS = lhs; RHS = rhs }
-                          Pos = lhs.Pos
-                          Pos' = rhs.Pos' })
+                          StartPos = lhs.StartPos
+                          EndPos = rhs.EndPos })
 
             let expressionWithPipes = chainl1 mixfixParser pipeOp
 
@@ -1433,7 +1443,7 @@ module Parser =
                     let exprErrorHandler (p: Position) (endP: Position) (msgs: ErrorMessageList) =
                          let sourceCode = stream.UserState.UserState.SourceCode
                          let report = ParsingErorr.buildErrorReport sourceCode p endP msgs
-                         { Node = Expression.ParseError report; Pos = p; Pos' = endP }
+                         { Node = Expression.ParseError report; StartPos = p; EndPos = endP }
 
                     let safeExprParser = 
                         Recoverable.recover 
@@ -1475,9 +1485,9 @@ module Parser =
                     return
                         match head :: tail with
                         | [ x ] -> x
-                        | xs -> { Pos = xs.Head.Pos
+                        | xs -> { StartPos = xs.Head.StartPos
                                   Node = ExpressionSequence xs
-                                  Pos' = (List.last xs).Pos' }
+                                  EndPos = (List.last xs).EndPos }
                 }
                 return! blockParser
             }
@@ -1498,16 +1508,14 @@ module Parser =
             (keyword "innermost" <|> keyword "strict") >>% Strict
             (keyword "lazy") >>% Lazy
             (keyword "outermost") >>% Outermost
-            (keyword "memoize") >>% Memoize
             (keyword "invalid") >>% Invalid ] <?> "rewriting strategy (innermost, outermost or invalid)"
 
     let private parseUse =
         pipe3
             (spaces >>. keyword "use")
             (spacesOrComment >>. parseWithPos NameParser.parseIdentifier)
-            (opt (attempt (spacesOrComment >>. keyword "as" >>. notFollowedBy letter >>. spacesOrComment >>. NameParser.parseName false)))
+            (opt (attempt (spacesOrComment >>. keyword "as" >>. notFollowedBy letter >>. spacesOrComment >>. parseWithPos (NameParser.parseName false))))
             (fun _ lib as' -> { Lib = lib; Qualifier = as' })
-        |> parseWithPos
         |>> TopLevel.Use
 
     let private parseRule' =
@@ -1523,7 +1531,7 @@ module Parser =
                 ])
             (spacesOrComment >>. opt (keyword "when" <?> "when-clause" >>? spacesOrComment >>. parseExpressionRef))
             (spacesOrComment >>. opt (skipChar ':' <?> "rule's type" >>? spacesOrComment >>. TypeParser.parseType))
-            (spacesOrComment >>. opt parseStrategy)
+            (spacesOrComment >>. opt (parseWithPos parseStrategy))
             (spacesOrComment >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
             (fun name pattern whenClause type' strategy rewriting ->
                 TopLevel.Rule
@@ -1564,7 +1572,7 @@ module Parser =
                     (spacesOrComment >>. between (skipChar '(') (skipChar ')') mixfixPatternParser)
                     (spacesOrComment >>. opt (keyword "when" <?> "when-clause" >>? spacesOrComment >>. parseExpressionRef))
                     (spacesOrComment >>. opt (skipChar ':' <?> "rule's type" >>? spacesOrComment >>. TypeParser.parseType))
-                    (spacesOrComment >>. opt parseStrategy)
+                    (spacesOrComment >>. opt (parseWithPos parseStrategy))
                     (spacesOrComment >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
                     (fun lhsPattern whenClause type' strategy rewriting ->
                         // Extract the head symbol and collect patterns
@@ -1603,12 +1611,12 @@ module Parser =
                             match headSymbolOpt with
                             | Some id -> 
                                 { Node = id.Name.Node
-                                  Pos = id.Name.Pos
-                                  Pos' = id.Name.Pos' }
+                                  StartPos = id.Name.StartPos
+                                  EndPos = id.Name.EndPos }
                             | None -> 
                                 { Node = "_mixfix_rule"
-                                  Pos = lhsPattern.Pos
-                                  Pos' = lhsPattern.Pos' }
+                                  StartPos = lhsPattern.StartPos
+                                  EndPos = lhsPattern.EndPos }
 
                         TopLevel.Rule
                             { Name = name
@@ -1625,7 +1633,7 @@ module Parser =
     let private parseExport =
         pipe2
             (spaces >>. keyword "export")
-            (spacesOrComment >>. sepBy1 (spacesOrComment >>. NameParser.parseName true) (spacesOrComment >>? skipChar ',' <?> "other symbols to export (separated by a comma)"))
+            (spacesOrComment >>. sepBy1 (spacesOrComment >>. parseWithPos (NameParser.parseName true)) (spacesOrComment >>? skipChar ',' <?> "other symbols to export (separated by a comma)"))
             (fun _ lst -> TopLevel.ModuleExport lst)
 
     let private parseSignature (mustIndicateRetType: bool) =
@@ -1651,13 +1659,13 @@ module Parser =
                 (spaces >>. skipChar ']')
                 (spaces >>.
                     sepBy1
-                        (spaces >>. skipChar ''' >>. NameParser.parseName false)
+                        (spaces >>. skipChar ''' >>. parseWithPos (NameParser.parseName false))
                         (spaces >>. skipChar ','))
             preturn []]
 
     let private parseEffect =
         pipe3
-            (spaces >>. keyword "effect" >>. spaces >>. NameParser.parseName false)
+            (spaces >>. keyword "effect" >>. spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>. optional (skipChar '=') >>. spaces >>. parseVariableTypes)
             (spaces >>. blockOf (parseWithPos (parseSignature true)))
             (fun name varTypes operations -> TopLevel.Effect(name, varTypes, operations))
@@ -1678,7 +1686,7 @@ module Parser =
 
     let private parseType =
         pipe3
-            (spaces >>. keyword "type" >>. spaces >>. NameParser.parseName false)
+            (spaces >>. keyword "type" >>. spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>. parseVariableTypes)
             parseTypeBody
             (fun name varTypes constructors ->
@@ -1686,14 +1694,14 @@ module Parser =
 
     let private parseTypeAlias =
         pipe3
-            (spaces >>. keyword "type-alias" >>. spaces >>. NameParser.parseName false)
+            (spaces >>. keyword "type-alias" >>. spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>. parseVariableTypes)
             (spaces >>. optional (skipChar '=') >>. spaces >>. TypeParser.parseType)
             (fun name varTypes alias -> TopLevel.TypeAlias(name, varTypes, alias))
 
     let private parseHandler =
         pipe7
-            (spaces >>. NameParser.parseName false)
+            (spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>.
                 between
                     (spaces >>. skipChar '(')
@@ -1706,7 +1714,7 @@ module Parser =
                     (spaces >>. PatternParser.parsePattern))
             (spaces >>. opt (keyword "when" >>? spaces >>. parseExpressionRef))
             (spaces >>. opt (skipChar ':' <?> "rule's type" >>? spaces >>. TypeParser.parseType))
-            (spaces >>. opt parseStrategy)
+            (spaces >>. opt (parseWithPos parseStrategy))
             (spaces >>. skipString "->" >>. parseExpressionRef)
             (fun name state pattern whenClause type' strategy rewriting ->
                 TopLevel.Handler
@@ -1724,7 +1732,7 @@ module Parser =
             (spaces >>. opt (choice [ skipStringCI "C" >>% C ]) <?> "language target")
             (spaces >>. parseWithPos (between (pchar '"') (pchar '"') (many1Chars (noneOf "\""))))
             (spaces >>. keyword "as" >>. spaces >>. parseWithPos NameParser.parseIdentifier)
-            (spaces >>. blockOf (parseSignature true))
+            (spaces >>. blockOf (parseWithPos (parseSignature true)))
             (fun _ lang lib asName content ->
                 Extern
                     { Language = Option.defaultValue C lang
@@ -1746,12 +1754,12 @@ module Parser =
         let parseMixfixPattern =
             let validatedPatternPart =
                 let parseHole =
-                    skipChar '\'' >>. NameParser.parseName false |>> HolePart <?> "hole"
+                    skipChar '\'' >>. parseWithPos (NameParser.parseName false) |>> HolePart <?> "hole"
 
                 let parseFixedPart =
-                    parseAnyNonSpace >>= fun fixedPart ->
-                        if List.contains fixedPart reserved
-                        then fail (sprintf "The symbol '%s' was used as a fixed part of a notation, but it is reserved by the language" fixedPart)
+                    parseWithPos parseAnyNonSpace >>= fun fixedPart ->
+                        if List.contains fixedPart.Node reserved
+                        then fail (sprintf "The symbol '%s' was used as a fixed part of a notation, but it is reserved by the language" fixedPart.Node)
                         else preturn (FixedPart fixedPart)
 
                 choiceL [
@@ -1845,22 +1853,22 @@ module Parser =
 
             let! name, assoc, prec, commOpt = greater startPos parseFields
 
-            let { Node = Name nameNode; Pos = pos1; Pos' = pos1' } = name
-            let { Node = Assoc assocNode; Pos = pos2; Pos' = pos2' } = assoc
-            let { Node = Prec precNode; Pos = pos3; Pos' = pos3' } = prec
+            let { Node = Name nameNode; StartPos = pos1; EndPos = pos1' } = name
+            let { Node = Assoc assocNode; StartPos = pos2; EndPos = pos2' } = assoc
+            let { Node = Prec precNode; StartPos = pos3; EndPos = pos3' } = prec
 
             let! endFieldsPos = getPosition
 
             let commNode =
                 match commOpt with
-                | Some { Node = Comm comm; Pos = p; Pos' = p' } -> { Node = comm; Pos = p; Pos' = p' }
-                | _ -> { Node = false; Pos = endFieldsPos; Pos' = endFieldsPos }
+                | Some { Node = Comm comm; StartPos = p; EndPos = p' } -> { Node = comm; StartPos = p; EndPos = p' }
+                | _ -> { Node = false; StartPos = endFieldsPos; EndPos = endFieldsPos }
 
             let notation =
-                { NotationName = { Node = nameNode; Pos = pos1; Pos' = pos1' }
-                  NotationPattern = { Node = pattern; Pos = patternStart; Pos' = patternEnd }
-                  NotationPrecedence = { Node = precNode; Pos = pos3; Pos' = pos3' }
-                  NotationAssociativity = { Node = assocNode; Pos = pos2; Pos' = pos2' }
+                { NotationName = { Node = nameNode; StartPos = pos1; EndPos = pos1' }
+                  NotationPattern = { Node = pattern; StartPos = patternStart; EndPos = patternEnd }
+                  NotationPrecedence = { Node = precNode; StartPos = pos3; EndPos = pos3' }
+                  NotationAssociativity = { Node = assocNode; StartPos = pos2; EndPos = pos2' }
                   NotationCommutative = commNode
                   NotationIs = is }
 
@@ -1983,8 +1991,8 @@ module Parser =
                 let report = ParsingErorr.buildErrorReport sourceCode pos endPos msgs
                 Some
                     { Node = TopLevel.ParseError report
-                      Pos = pos
-                      Pos' = endPos }
+                      StartPos = pos
+                      EndPos = endPos }
 
             let parser =
                 spaces >>. blockOfTopLevel parseTopLevel topLevelErrorHandler
@@ -2078,8 +2086,8 @@ module Parser =
           MixfixOperators: MixfixOperator list }
 
     let private createNotationShadowingReport (shortOp: MixfixOperator, longOp: MixfixOperator) (lines: string seq) =
-        let posShort = fst shortOp.Position 
-        let posLong = fst longOp.Position
+        let posShort = shortOp.Name.StartPos
+        let posLong = longOp.Name.StartPos
 
         let msg = 
             $"The user-defined notation '{shortOp.Name}' (defined at line {posShort.Line}) is a prefix of the notation '{longOp.Name}' (defined at line {posLong.Line})."

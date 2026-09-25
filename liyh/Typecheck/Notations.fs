@@ -12,7 +12,7 @@ module CheckNotations =
     let private getCanonicalSignature patternNodes =
         patternNodes |> List.map (function
             | HolePart _ -> CHole
-            | FixedPart f -> CFixed f
+            | FixedPart f -> CFixed f.Node
         )
 
     /// Performs a semantic analysis over the notations. Returns a map with the rewriting of the notation as keys
@@ -43,7 +43,7 @@ module CheckNotations =
                 let report =
                     { ErrorType = Warning Semantic
                       ErrorCode = null
-                      EnclosingPosition = (Some notation.NotationPattern.Pos, Some notation.NotationPattern.Pos')
+                      EnclosingPosition = (Some notation.NotationPattern.StartPos, Some notation.NotationPattern.EndPos)
                       Description = "A notation should contain one or more operands rather than zero."
                       AllLines = allLines
                       Informations = [ "Notations are not used to define constants." ]
@@ -59,7 +59,7 @@ module CheckNotations =
                     let report =
                         { ErrorType = Semantic
                           ErrorCode = null
-                          EnclosingPosition = (Some notation.NotationPattern.Pos, Some notation.NotationPattern.Pos')
+                          EnclosingPosition = (Some notation.NotationPattern.StartPos, Some notation.NotationPattern.EndPos)
                           Description = "Non-linear patterns are not allowed in the definition of notations."
                           AllLines = allLines
                           Informations = [ "At this stage, equality is generally undecidable." ]
@@ -79,7 +79,7 @@ module CheckNotations =
                 let report =
                     { ErrorType = Semantic
                       ErrorCode = null
-                      EnclosingPosition = (Some notation.NotationAssociativity.Pos, Some notation.NotationAssociativity.Pos')
+                      EnclosingPosition = (Some notation.NotationAssociativity.StartPos, Some notation.NotationAssociativity.EndPos)
                       Description = "Only infix operators can be associative."
                       AllLines = allLines
                       Informations = [ ]
@@ -93,7 +93,7 @@ module CheckNotations =
                 let report =
                     { ErrorType = Semantic
                       ErrorCode = null
-                      EnclosingPosition = (Some notation.NotationCommutative.Pos, Some notation.NotationCommutative.Pos')
+                      EnclosingPosition = (Some notation.NotationCommutative.StartPos, Some notation.NotationCommutative.EndPos)
                       Description = "Only infix operators can be commutative."
                       AllLines = allLines
                       Informations = [ ]
@@ -113,7 +113,7 @@ module CheckNotations =
                 let report =
                     { ErrorType = Semantic
                       ErrorCode = null
-                      EnclosingPosition = (Some notation.NotationPattern.Pos, Some notation.NotationPattern.Pos')
+                      EnclosingPosition = (Some notation.NotationPattern.StartPos, Some notation.NotationPattern.EndPos)
                       Description = sprintf "This notation pattern is structurally identical to an already defined notation at ln %d of file %s." ln file
                       AllLines = allLines
                       Informations = [ ]

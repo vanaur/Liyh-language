@@ -127,9 +127,9 @@ module CoreCompiler =
         | IfThenElse ifte -> compileIfThenElse cstate ifte
         | Record fields -> compileRecord cstate fields
         | RecordUsing(baseRecord, fields) -> compileRecordExtend cstate baseRecord fields
-        | ReAssign(v, e) -> UpdateVariable(v, compileExpression cstate e)
+        | ReAssign(v, e) -> UpdateVariable(v.Node, compileExpression cstate e)
         | HandleEffect handle -> compileHandleEffect cstate handle
-        | ResumeWith resume -> compileResume cstate (removePos resume)
+        | ResumeWith resume -> compileResume cstate resume
         | Substitution(env, inExpr) -> compileSubstitution cstate env inExpr
         | UsingContext ctx -> compileUsingContext cstate ctx
         | other -> failwithf "Todo: %A" other
@@ -312,7 +312,7 @@ module CoreCompiler =
             function
             | [] -> result
             | Str s :: rest ->
-                let part = CoreTerm.Literal (CoreLiteral.String s)
+                let part = CoreTerm.Literal (CoreLiteral.String s.Node)
                 compileInterpolationPart cstate (part :: result) rest
 
             | Interpolation e :: rest ->
@@ -332,8 +332,8 @@ module CoreCompiler =
         | Literal.Unit -> Builtin.symbolUnit
 
     and private compileMixFix (cstate: State) (mixfix: ApplyOperator) =
-        match cstate.Notations |> List.tryFind (fun x -> removePos x.NotationName = mixfix.Name) with
-        | None -> failwithf "Unknown notation: %s" mixfix.Name
+        match cstate.Notations |> List.tryFind (fun x -> removePos x.NotationName = mixfix.Name.Node) with
+        | None -> failwithf "Unknown notation: %s" mixfix.Name.Node
         | Some notation ->
             let args = List.map (compileExpression cstate) mixfix.Arguments
             notationBinding cstate args notation
@@ -565,13 +565,13 @@ module CoreCompiler =
             { ToMatch = toMatch
               Cases = cases }
 
-    and private compileRecord (cstate: State) (fields: List<string * ExpressionWithPos>) =
-        let fields = List.map (fun (name, value) -> name, compileExpression cstate value) fields
+    and private compileRecord (cstate: State) (fields: List<NameWithPos * ExpressionWithPos>) =
+        let fields = List.map (fun (name, value) -> removePos name, compileExpression cstate value) fields
         RecordExtend { BaseRecord = None; Extension = fields }
 
-    and private compileRecordExtend (cstate: State) (baseRecord: ExpressionWithPos) (fields: List<string * ExpressionWithPos>) =
+    and private compileRecordExtend (cstate: State) (baseRecord: ExpressionWithPos) (fields: List<NameWithPos * ExpressionWithPos>) =
         let baseRecord = compileExpression cstate baseRecord
-        let fields = List.map (fun (name, value) -> name, compileExpression cstate value) fields
+        let fields = List.map (fun (name, value) -> removePos name, compileExpression cstate value) fields
 
         RecordExtend { BaseRecord = Some baseRecord; Extension = fields }
 
@@ -591,8 +591,8 @@ module CoreCompiler =
             State = state
             FromHandler = cstate.CurrentHandler.Value }
 
-    and private compileSubstitution (cstate: State) (env: list<string * ExpressionWithPos>) (inExpr: ExpressionWithPos) =
-        let env = List.map (fun (a, b) -> let (Symbol sym) = simpleSymbol a in sym, compileExpression cstate b) env
+    and private compileSubstitution (cstate: State) (env: list<NameWithPos * ExpressionWithPos>) (inExpr: ExpressionWithPos) =
+        let env = List.map (fun (a, b) -> let (Symbol sym) = simpleSymbol (removePos a) in sym, compileExpression cstate b) env
         let inExpr = compileExpression cstate inExpr
 
         CoreTerm.Substitution
@@ -617,7 +617,7 @@ module CoreCompiler =
         | AsPattern(basePatt, asPatt) -> compileAsPattern cstate basePatt asPatt
         | WhenPattern(basePatt, pred) -> compileWhenPattern cstate basePatt pred
         | Wildcard -> CoreTerm.Wildcard
-        | MixfixOperatorPattern(name, args) -> compileMixFixPattern cstate name args
+        | MixfixOperatorPattern(name, args) -> compileMixFixPattern cstate name.Node args
         | RecordPattern fields -> compileRecordPattern cstate fields
         | AlternativePattern xs -> compileAlternativePattern xs
         | TypedPattern(patt, ty) -> compileTypedPattern cstate patt ty
@@ -667,8 +667,8 @@ module CoreCompiler =
 
         WhenClause(uv, Builtin.symbolContains alternatives uv)
 
-    and private compileRecordPattern (cstate: State) (fields: (string * PatternWithPos) list) =
-        let fields = List.map (fun (name, value) -> name, compilePattern cstate value) fields
+    and private compileRecordPattern (cstate: State) (fields: (NameWithPos * PatternWithPos) list) =
+        let fields = List.map (fun (name, value) -> removePos name, compilePattern cstate value) fields
         RecordExtend { BaseRecord = None; Extension = fields }
 
     and private compileTypedPattern (cstate: State) (patt: PatternWithPos) (ty: TypeWithPos) =
@@ -682,7 +682,7 @@ module CoreCompiler =
         let holes =
             pattern
             |> List.choose (function
-                | HolePart h -> Some (Variable h)
+                | HolePart h -> Some (Variable h.Node)
                 | _ -> None)
 
         let subst = Map.ofList (List.zip holes args)
@@ -713,7 +713,7 @@ module CoreCompiler =
         let name = removePos rule.Name
         let patterns = List.map (compilePattern cstate) rule.Patterns
         let whenClause = Option.map (compileExpression cstate) rule.WhenClause
-        let strategy = Option.defaultValue Strict rule.Strategy
+        let strategy = Option.defaultValue Strict (Option.map removePos rule.Strategy)
 
         let lhs = symbol name patterns
 
@@ -724,19 +724,19 @@ module CoreCompiler =
               Strategy = strategy }
 
     and private compileHandler (cstate: State) (handler: Handler) =
-        let cstate = { cstate with CurrentHandler = Some handler.Name }
+        let cstate = { cstate with CurrentHandler = Some handler.Name.Node }
 
         let body = compileExpression cstate handler.Body
         let name = handler.Name
         let hstate = compilePattern cstate handler.State
         let pattern = compilePattern cstate handler.Pattern
         let whenClause = Option.map (compileExpression cstate) handler.WhenClause
-        let strategy = Option.defaultValue Strict handler.Strategy
+        let strategy = Option.defaultValue Strict (Option.map removePos handler.Strategy)
 
         let lhs = pattern
 
         CoreDefinition.Handler
-            { HandlerName = name
+            { HandlerName = name.Node
               LHS = lhs
               RHS = body
               State = hstate

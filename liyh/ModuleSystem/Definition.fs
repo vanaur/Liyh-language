@@ -75,10 +75,10 @@ module Definitions =
         match tlwp.Node with
         | TopLevel.Rule { Name = name } -> name.Node
         | TopLevel.LetRule { Name = name } -> name.Node
-        | TopLevel.Handler { Name = name } -> name
-        | TopLevel.Effect (name', _, _) -> name'
-        | TopLevel.Type { Name = name } -> name
-        | TopLevel.TypeAlias (name', _, _) -> name'
+        | TopLevel.Handler { Name = name } -> name.Node
+        | TopLevel.Effect (name', _, _) -> name'.Node
+        | TopLevel.Type { Name = name } -> name.Node
+        | TopLevel.TypeAlias (name', _, _) -> name'.Node
         | TopLevel.Notation notation -> notation.NotationName.Node
         | TopLevel.Context ctx -> ctx.Name.Node
         | _ -> failwith "??"
@@ -112,16 +112,16 @@ module Definitions =
             filteredTypes
             |> Map.toList
             |> List.collect (fun (typ, lst) ->
-                lst |> List.map (fun tlwp -> (getName tlwp, typ, tlwp.Pos))
+                lst |> List.map (fun tlwp -> (getName tlwp, typ, tlwp.StartPos))
             )
 
         let rules =
             defsByType |> Map.tryFind Rule |> Option.defaultValue []
-            |> List.map (fun tlwp -> (getName tlwp, Rule, tlwp.Pos))
+            |> List.map (fun tlwp -> (getName tlwp, Rule, tlwp.StartPos))
 
         let handlers =
             defsByType |> Map.tryFind Handler |> Option.defaultValue []
-            |> List.map (fun tlwp -> (getName tlwp, Handler, tlwp.Pos))
+            |> List.map (fun tlwp -> (getName tlwp, Handler, tlwp.StartPos))
 
         let allDefs = nameTypePosList @ rules @ handlers
 
@@ -167,7 +167,7 @@ module Definitions =
             | Expression.ReAssign(_, a) -> loop result a
             | Expression.Record xs -> listOfExpr1 xs
             | Expression.RecordUsing(_, a) -> listOfExpr1 a
-            | Expression.ResumeWith { Node = r } -> loop result r.HandlerState @ loop result r.Value
+            | Expression.ResumeWith rw -> loop result rw.HandlerState @ loop result rw.Value
             | Expression.Tuple xs -> listOfExpr2 xs
             | Expression.UFCS { LHS = a; RHS = b } -> loop result a @ loop result b
             | Expression.While { Predicate = a; Body = b } -> loop result a @ loop result b

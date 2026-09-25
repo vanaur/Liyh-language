@@ -100,7 +100,7 @@ module public GeneralFFI =
         None
 
     let private unknownCTypeReport (astTy: TypeWithPos) (allLines: string seq) =
-        { makeReport ErrorType.Type (Some astTy.Pos, Some astTy.Pos') "Unknown or unsupported C type." allLines
+        { makeReport ErrorType.Type (Some astTy.StartPos, Some astTy.EndPos) "Unknown or unsupported C type." allLines
           with
             Hint = sprintf "Available C types are: %s." (System.String.Join(", ", aviableCTypes)) }
 
@@ -165,7 +165,7 @@ module public GeneralFFI =
         | None ->
             makeReport
                 (ErrorType.Warning ErrorType.Type)
-                (Some ext.Library.Pos, Some ext.Library.Pos')
+                (Some ext.Library.StartPos, Some ext.Library.EndPos)
                 (sprintf "The library '%s' was not found." libPath)
                 allLines
             |> errorQueue.AddError
@@ -174,12 +174,12 @@ module public GeneralFFI =
         | Some handle ->
             let isValid =
                 ext.Content
-                |> List.fold (fun ok { Name = fn } ->
+                |> List.fold (fun ok { Node = { Name = fn } } ->
                     if canGetExport handle (removePos fn) then ok
                     else
                         makeReport
                             (ErrorType.Warning ErrorType.Type)
-                            (Some fn.Pos, Some fn.Pos')
+                            (Some fn.StartPos, Some fn.EndPos)
                             (sprintf "The function '%s' was not found in the dynamic library '%s'." (removePos fn) libPath)
                             allLines
                         |> errorQueue.AddError
@@ -195,7 +195,7 @@ module public GeneralFFI =
         | Extern ext ->
             let libPath = removePos ext.Library             // path of the library
             let extQual = string (removePos ext.AsName)     // name given for the interface ('as MyLib')
-            let bindings = List.map (getSignatureInfo errorQueue allLines extQual libPath) ext.Content
+            let bindings = List.map (removePos >> getSignatureInfo errorQueue allLines extQual libPath) ext.Content
 
             if validateLibrary errorQueue allLines ext checkFFI && List.forall Option.isSome bindings
             then Some (List.map Option.get bindings)

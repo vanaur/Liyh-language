@@ -108,7 +108,7 @@ module private MixfixEngine =
     let public buildParser
         (operators: MixfixOperator list)
         (baseAtomParser: Parser<'Node, _>)
-        (nodeFactory: string -> 'Node list -> Position -> Position -> 'Node)
+        (nodeFactory: NameWithPos -> 'Node list -> Position -> Position -> 'Node)
         (getPos: 'Node -> Position)
 
         =
@@ -231,7 +231,7 @@ module private MixfixEngine =
                                         startPos
                                         (List.tail op.Pattern)
                                         []
-                                        op.Name
+                                        op.Name.Node
                                         stopTokens
 
                                 return nodeFactory op.Name args startPos startPos
@@ -288,7 +288,7 @@ module private MixfixEngine =
                                             startPos
                                             (List.tail op.Pattern)
                                             [currentLhs]
-                                            op.Name
+                                            op.Name.Node
                                             stopTokens
 
                                     return nodeFactory op.Name args (getPos currentLhs) startPos
@@ -341,9 +341,9 @@ module public MixFixExpression =
                         baseAtomParser 
                         (fun name args startPos endPos -> 
                             { Node = MixfixOperator { Name = name; Arguments = args }
-                              Pos = startPos
-                              Pos' = endPos })
-                        (fun e -> e.Pos)
+                              StartPos = startPos
+                              EndPos = endPos })
+                        (fun e -> e.StartPos)
 
                 cachedOperators <- operators
                 cachedAtomParser <- Some baseAtomParser
@@ -376,9 +376,9 @@ module public MixFixPattern =
                         baseAtomParser
                         (fun name args startPos endPos -> 
                             { Node = MixfixOperatorPattern (name, args)
-                              Pos = startPos
-                              Pos' = endPos })
-                        (fun p -> p.Pos)
+                              StartPos = startPos
+                              EndPos = endPos })
+                        (fun p -> p.StartPos)
 
                 cachedOperators <- operators
                 cachedAtomParser <- Some baseAtomParser

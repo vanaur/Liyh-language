@@ -52,7 +52,7 @@ module LiyhPackage =
         let parts = withoutExtension.Split(Path.DirectorySeparatorChar) |> Array.toList
 
         match List.rev parts with
-        | name :: qualifier -> { Qualifier = List.rev (List.map (fun q -> { Node = q; Pos = null; Pos' = null }) qualifier); Name = { Node = name; Pos = null; Pos' = null } }
+        | name :: qualifier -> { Qualifier = List.rev (List.map (fun q -> { Node = q; StartPos = null; EndPos = null }) qualifier); Name = { Node = name; StartPos = null; EndPos = null } }
         | [] -> failwithf "invalid path: %s" fullPath
 
     /// Convert a Liyh identifier to a file path.
@@ -175,7 +175,7 @@ module LiyhPackage =
     /// checks for circular dependencies, and returns the initial graph if no errors are found. The ‘initial graph’
     /// means that no concrete, usable information is available (this is done immediately after this first phase).
     let public buildProjectGraph (rootFilePath: string) (errorQueue: ErrorQueue) =
-        let useWPToIdentifier { Node = { Lib = lib; Qualifier = qualifier } } = removePos lib, qualifier
+        let useToIdentifier { Lib = lib; Qualifier = qualifier } = lib, qualifier
 
         let projectRoot =
             if Path.IsPathRooted rootFilePath
@@ -218,7 +218,7 @@ module LiyhPackage =
                     let mutable pgraph' = pgraph
 
                     for use' in uses do
-                        let depId = fst (useWPToIdentifier use')
+                        let { Node = depId } = fst (useToIdentifier use')
                         let depPath = resolveHybridPath projectRoot projectName filePath depId
 
                         // handle the standard library as a separate case
@@ -248,25 +248,26 @@ module LiyhPackage =
 
                         else
                             let informations =
-                                let candidates = candidateFiles (use'.Node.Lib.Node.Qualifier |> List.map _.Node) depPath
+                                let candidates = candidateFiles (use'.Lib.Node.Qualifier |> List.map _.Node) depPath
                                 if Seq.isEmpty candidates then []
                                 else [ Liyh.Utils.DamerauLevenshtein.formatSuggestions "the module" candidates ]
 
                             let report =
                                 { ErrorType = Package
                                   ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.UnfoundModuleError
-                                  EnclosingPosition = Some use'.Node.Lib.Pos, Some use'.Node.Lib.Pos'
-                                  Description = sprintf "Module '%s' not found." (string use'.Node)
+                                  EnclosingPosition = Some use'.Lib.StartPos, Some use'.Lib.EndPos
+                                  Description = sprintf "Module '%s' not found." (string use')
                                   AllLines = NodeInfo.getLines text
                                   Informations = informations
                                   Hint = "Imports are case-sensitive and only files with extension `.liyh` are considered." }
                             errorQueue.AddError report
 
-                    let uses = uses
-                               |> List.map (fun { Node = node } -> removePos node.Lib, node.Qualifier)
-                               |> Map.ofList
+                    let useMap =
+                        uses
+                        |> List.map (fun node -> removePos node.Lib, Option.map removePos node.Qualifier)
+                        |> Map.ofList
 
-                    ProjectGraph.addModule { ModuleInfo.empty moduleId with Uses = uses; Text = text } deps pgraph'
+                    ProjectGraph.addModule { ModuleInfo.empty moduleId with Uses = useMap; Text = text } deps pgraph'
 
         if not (File.Exists rootFilePath) then
             let informations =
@@ -339,6 +340,7 @@ module LiyhPackage =
         moduleContent
         |> List.filter (_.Node >> _.IsModuleExport)
         |> List.collect (function { Node = ModuleExport exports } -> exports)
+        |> List.map removePos
 
     let private checkExports (moduleInfo: ModuleInfo) (errorQueue: ErrorQueue) =
         match List.filter (not << Definitions.containsDefinitionName moduleInfo) moduleInfo.Exports with

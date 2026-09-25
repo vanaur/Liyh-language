@@ -29,7 +29,7 @@ module PrettyPrint =
             | MixfixOperator op ->
                 sprintf
                     "`%s`[%s]"
-                    op.Name
+                    op.Name.Node
                     (op.Arguments
                      |> List.map (fun a -> prettyPrintExpression a)
                      |> String.concat ", ")
@@ -45,7 +45,7 @@ module PrettyPrint =
                 |> sprintf "{ %s }"
             | Record fields ->
                 fields
-                |> List.map (fun (n, v) -> sprintf "%s = %s" n (prettyPrintExpression v))
+                |> List.map (fun (n, v) -> sprintf "%s = %s" n.Node (prettyPrintExpression v))
                 |> String.concat ", "
                 |> sprintf "{ %s }"
             | RecordUsing(baseExpr, fields) ->
@@ -53,7 +53,7 @@ module PrettyPrint =
 
                 let fieldsStr =
                     fields
-                    |> List.map (fun (n, v) -> sprintf "%s = %s" n (prettyPrintExpression v))
+                    |> List.map (fun (n, v) -> sprintf "%s = %s" n.Node (prettyPrintExpression v))
                     |> String.concat ", "
 
                 sprintf "{ %s using %s }" baseStr fieldsStr
@@ -97,7 +97,7 @@ module PrettyPrint =
                     (prettyPrintExpression ft.InitialValue)
                     (prettyPrintExpression ft.EndValue)
                     (prettyPrintExpression ft.Body)
-            | ReAssign(name, value) -> sprintf "%s := %s" name (prettyPrintExpression value)
+            | ReAssign(name, value) -> sprintf "%s := %s" name.Node (prettyPrintExpression value)
             | Let(pat, value) -> sprintf "let %s = %s" (prettyPrintPattern pat) (prettyPrintExpression value)
             | Var(pat, value) -> sprintf "var %s = %s" (prettyPrintPattern pat) (prettyPrintExpression value)
             | Match m ->
@@ -126,9 +126,9 @@ module PrettyPrint =
                     (prettyPrintExpression h.InitialState)
                     (prettyPrintExpression h.Body)
             | ResumeWith rw ->
-                sprintf "%s with %s" (prettyPrintExpression rw.Node.Value) (prettyPrintExpression rw.Node.Value)
+                sprintf "%s with %s" (prettyPrintExpression rw.Value) (prettyPrintExpression rw.Value)
             | Substitution(env, inExpr) ->
-                let envStr = List.map (fun (a, b) -> sprintf "%s -> %s" a (prettyPrintExpression b)) env
+                let envStr = List.map (fun (a, b) -> sprintf "%s -> %s" (removePos a) (prettyPrintExpression b)) env
                 let inExprStr = prettyPrintExpression inExpr
                 sprintf "[%s] in %s" (System.String.Join(", ", envStr)) inExprStr
             | UsingContext { ContextName = name; ContentExpr = expr } ->
@@ -147,7 +147,7 @@ module PrettyPrint =
             | InterpolatedString parts ->
                 parts
                 |> List.map (function
-                    | Str s -> s
+                    | Str s -> s.Node
                     | Interpolation e -> sprintf "{%s}" (prettyPrintExpression e))
                 |> String.concat ""
                 |> sprintf "\"%s\""
@@ -176,11 +176,11 @@ module PrettyPrint =
                 |> sprintf "{%s}"
             | RecordPattern fields ->
                 fields
-                |> List.map (fun (n, v) -> sprintf "%s = %s" n (prettyPrintPattern v))
+                |> List.map (fun (n, v) -> sprintf "%s = %s" n.Node (prettyPrintPattern v))
                 |> String.concat "; "
                 |> sprintf "{%s}"
             | MixfixOperatorPattern(name, args) ->
-                sprintf "%s(%s)" name (args |> List.map (fun p -> prettyPrintPattern p) |> String.concat ", ")
+                sprintf "%s(%s)" name.Node (args |> List.map (fun p -> prettyPrintPattern p) |> String.concat ", ")
             | AsPattern(p1, p2) -> sprintf "%s as %s" (prettyPrintPattern p1) (prettyPrintPattern p2)
             | WhenPattern(p, e) -> sprintf "%s when %s" (prettyPrintPattern p) (prettyPrintExpression e)
             | TypedPattern(p, t) -> sprintf "%s : %s" (prettyPrintPattern p) (t.ToString())
