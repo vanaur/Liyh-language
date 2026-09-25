@@ -1261,11 +1261,14 @@ module Parser =
             (fun handler initState expr ->
                 Expression.HandleEffect { Handler = handler; InitialState = initState; Body = expr })
 
+    let private parseSingleCase =
+        tuple2
+            (spacesOrComment >>. PatternParser.parsePattern)
+            (spacesOrComment >>. skipString "->" >>. spacesOrComment >>. parseExpressionRef)
+
     let private parseMatchingCases =
-        blockOf
-            (tuple2
-                (spacesOrComment >>. optional (skipChar '|') >>. spacesOrComment >>. PatternParser.parsePattern)
-                (spacesOrComment >>. skipString "->" >>. spacesOrComment >>. parseExpressionRef))
+        spacesOrComment >>. optional (skipChar '|') >>. spacesOrComment >>.
+        sepBy1 parseSingleCase (spacesOrComment >>. skipChar '|' .>> spacesOrComment)
 
     // match cases
     let private parseMatch =
