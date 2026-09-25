@@ -419,7 +419,7 @@ module public BytecodeCompiler =
 
                 let strategyWeight = function
                     | Outermost -> 2
-                    | (Lazy | Strict | Memoize) -> 1
+                    | (Lazy | Strict) -> 1
                     | Invalid -> 0
 
                 let unifiedStrategy =
@@ -1683,7 +1683,7 @@ module public BytecodeCompiler =
                 // with the different rules using the symbol as LHS.
                 let inline argsRegs (strategy: Strategy) =
                     match strategy with
-                    | (Strict | Memoize) ->
+                    | Strict ->
                         // Strict: everything is evaluated before the call (default behavior).
                         List.map (compileTermStrict context false None) children
 
@@ -1964,7 +1964,7 @@ module public BytecodeCompiler =
                         builder.Halt(1) // error
                         builder.Unit(?target = matchTarget)
 
-                    | Strategy.Strict | Strategy.Memoize ->
+                    | Strategy.Strict ->
                         compileTermStrict leafContext (isTail && symbolName <> "main") matchTarget rule.RHS
 
                     | _ ->

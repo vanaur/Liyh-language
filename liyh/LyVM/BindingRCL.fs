@@ -196,7 +196,6 @@ type public Strategy =
     | Lazy
     | Outermost
     | Invalid
-    | Memoize
 
     static member FromAST (astStrat: Liyh.Syntax.SyntaxTree.RewritingStrategy) =
         match astStrat with
