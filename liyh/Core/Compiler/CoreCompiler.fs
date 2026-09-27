@@ -104,11 +104,11 @@ module CoreCompiler =
     let rec private compileExpression (cstate: State) (expr: ExpressionWithPos) =
         match removePos expr with
         | UFCS ufcs -> compileUFCS cstate ufcs
-        | Identifier id -> simpleSymbol (string (removePos id))
+        | Identifier id -> simpleSymbol (string id)
         | BindingVariable var -> Variable var
         | CollectionAccess ca -> compileCollectionAccess cstate ca
         | Apply apply -> compileApply cstate apply
-        | Literal { Node = InterpolatedString lstr } -> compileInterpolatedString cstate lstr
+        | Literal (InterpolatedString lstr) -> compileInterpolatedString cstate lstr
         | Literal l -> compileLiteral l
         | MixfixOperator mixfix -> compileMixFix cstate mixfix
         | Tuple xs -> Builtin.symbolTuple (List.map (compileExpression cstate) xs)
@@ -289,7 +289,7 @@ module CoreCompiler =
         let args = List.map (compileExpression cstate) apply.Arguments
 
         match removePos apply.LHS with
-        | Identifier id -> symbol (string (removePos id)) args
+        | Identifier id -> symbol (string id) args
         | _ ->
             let lhsTerm = compileExpression cstate apply.LHS
             FunctionalApplication { Base = lhsTerm; Arguments = args }
@@ -323,8 +323,8 @@ module CoreCompiler =
         let parts = compileInterpolationPart cstate [] (List.rev lstr)
         List.reduce (fun acc a -> symbol Internals.Strcat [ acc; a ]) parts
 
-    and private compileLiteral (lit: LiteralWithPos) =
-        match removePos lit with
+    and private compileLiteral (lit: Literal) =
+        match lit with
         | Literal.Char c -> CoreTerm.Literal (CoreLiteral.Char c)
         | Literal.Float f -> CoreTerm.Literal (CoreLiteral.Float f)
         | Literal.Integer i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
@@ -662,7 +662,7 @@ module CoreCompiler =
 
     and private compileAlternativePattern (alternatives: LiteralWithPos list) =
         // (A | B | C) -> 'x when 'x ∈ { A, B, C }
-        let alternatives = Builtin.symbolList (List.map compileLiteral alternatives)
+        let alternatives = Builtin.symbolList (List.map (removePos >> compileLiteral) alternatives)
         let uv = Variable (FreshName.get "altp")
 
         WhenClause(uv, Builtin.symbolContains alternatives uv)

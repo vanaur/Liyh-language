@@ -56,21 +56,21 @@ module public GeneralFFI =
     /// Converts from an AST type to a C type.
     let rec private astTypeToCType (twp: TypeWithPos) =
         match removePos twp with
-        | NamedType { Node = IdentifierParts [ "C"; "UInt8" ] } -> Some CType.UInt8
-        | NamedType { Node = IdentifierParts [ "C"; "Int8" ] } -> Some CType.Int8
-        | NamedType { Node = IdentifierParts [ "C"; "UInt16" ] } -> Some CType.UInt16
-        | NamedType { Node = IdentifierParts [ "C"; "Int16" ] } -> Some CType.Int16
-        | NamedType { Node = IdentifierParts [ "C"; "UInt32" ] } -> Some CType.UInt32
-        | NamedType { Node = IdentifierParts [ "C"; "Int32" ] } -> Some CType.Int32
-        | NamedType { Node = IdentifierParts [ "C"; "UInt64" ] } -> Some CType.UInt64
-        | NamedType { Node = IdentifierParts [ "C"; "Int64" ] } -> Some CType.Int64
-        | NamedType { Node = IdentifierParts [ "C"; "Float32" ] } -> Some CType.Float32
-        | NamedType { Node = IdentifierParts [ "C"; "Float64" ] } -> Some CType.Float64
-        | NamedType { Node = IdentifierParts [ "C"; "LongDouble" ] } -> Some CType.LongDouble
-        | NamedType { Node = IdentifierParts [ "C"; "Char" ] } -> Some CType.Char
-        | NamedType { Node = IdentifierParts [ "C"; "String" ] } -> Some CType.String
-        | NamedType { Node = IdentifierParts [ "C"; "Ptr" ] } -> Some (CType.Pointer CType.Void)
-        | NamedType { Node = IdentifierParts [ "C"; "Void" ] } -> Some CType.Void
+        | NamedType (IdentifierParts [ "C"; "UInt8" ]) -> Some CType.UInt8
+        | NamedType (IdentifierParts [ "C"; "Int8" ]) -> Some CType.Int8
+        | NamedType (IdentifierParts [ "C"; "UInt16" ]) -> Some CType.UInt16
+        | NamedType (IdentifierParts [ "C"; "Int16" ]) -> Some CType.Int16
+        | NamedType (IdentifierParts [ "C"; "UInt32" ]) -> Some CType.UInt32
+        | NamedType (IdentifierParts [ "C"; "Int32" ]) -> Some CType.Int32
+        | NamedType (IdentifierParts [ "C"; "UInt64" ]) -> Some CType.UInt64
+        | NamedType (IdentifierParts [ "C"; "Int64" ]) -> Some CType.Int64
+        | NamedType (IdentifierParts [ "C"; "Float32" ]) -> Some CType.Float32
+        | NamedType (IdentifierParts [ "C"; "Float64" ]) -> Some CType.Float64
+        | NamedType (IdentifierParts [ "C"; "LongDouble" ]) -> Some CType.LongDouble
+        | NamedType (IdentifierParts [ "C"; "Char" ]) -> Some CType.Char
+        | NamedType (IdentifierParts [ "C"; "String" ]) -> Some CType.String
+        | NamedType (IdentifierParts [ "C"; "Ptr" ]) -> Some (CType.Pointer CType.Void)
+        | NamedType (IdentifierParts [ "C"; "Void" ]) -> Some CType.Void
 
         | ParametrizedType ({ Node = IdentifierParts [ "C"; "Ptr" ] }, [ ty ]) ->
             Option.map CType.Pointer (astTypeToCType ty)

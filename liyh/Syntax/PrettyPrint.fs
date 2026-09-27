@@ -10,7 +10,7 @@ module PrettyPrint =
         >> function
             | Expression.ParseError error -> sprintf "Error: %A" error
             | UFCS ufcs -> sprintf "%s |> %s" (prettyPrintExpression ufcs.LHS) (prettyPrintExpression ufcs.RHS)
-            | Identifier id -> (removePos id).ToString()
+            | Identifier id -> id.ToString()
             | BindingVariable name -> sprintf "'%s" name
             | CollectionAccess ca ->
                 sprintf
@@ -138,8 +138,7 @@ module PrettyPrint =
                     (prettyPrintExpression expr)
 
     and public prettyPrintLiteral =
-        removePos
-        >> function
+        function
             | Literal.Unit -> "()"
             | Integer i -> string i
             | Float f -> string f
@@ -184,6 +183,6 @@ module PrettyPrint =
             | AsPattern(p1, p2) -> sprintf "%s as %s" (prettyPrintPattern p1) (prettyPrintPattern p2)
             | WhenPattern(p, e) -> sprintf "%s when %s" (prettyPrintPattern p) (prettyPrintExpression e)
             | TypedPattern(p, t) -> sprintf "%s : %s" (prettyPrintPattern p) (t.ToString())
-            | AlternativePattern lits -> lits |> List.map (fun l -> prettyPrintLiteral l) |> String.concat " | "
+            | AlternativePattern lits -> lits |> List.map (fun l -> prettyPrintLiteral l.Node) |> String.concat " | "
             | Wildcard -> "_"
 

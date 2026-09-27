@@ -52,10 +52,10 @@ module SyntaxTree =
         | ParseError of Liyh.Utils.ErrorReporter.ErrorReport   // To be able to accumulate parsing errors and continue
                                                                // parsing, so as not to stop at the first error encountered.
         | UFCS of UFCS
-        | Identifier of IdentifierWithPos
+        | Identifier of Identifier
         | BindingVariable of string
         | CollectionAccess of CollectionAccess
-        | Literal of LiteralWithPos
+        | Literal of Literal
         | ExpressionSequence of ExpressionWithPos list
         | Apply of Apply
         | MixfixOperator of ApplyOperator
@@ -149,11 +149,11 @@ module SyntaxTree =
         | VariablePattern of string                                 // e.g. 'z
         | SymbolPattern of Identifier                               // e.g. none
         | ApplyPattern of PatternWithPos * PatternWithPos list      // e.g. succ[zero]
-        | LiteralPattern of LiteralWithPos                          // e.g. 8
+        | LiteralPattern of Literal                                 // e.g. 8
         | TuplePattern of PatternWithPos list                       // e.g. (1, 2, 3)
         | ListPattern of PatternWithPos list                        // e.g. { 1, 2, 3 }
         | RecordPattern of (NameWithPos * PatternWithPos) list      // e.g. { result = some['result], opt = 'x }
-        | MixfixOperatorPattern of string WithPos * PatternWithPos list     // e.g. 'x :: 'xs, 'x + 10
+        | MixfixOperatorPattern of NameWithPos * PatternWithPos list// e.g. 'x :: 'xs, 'x + 10
         | AsPattern of PatternWithPos * PatternWithPos              // e.g. succ['n] as num
         | WhenPattern of PatternWithPos * ExpressionWithPos         // e.g. 'x when 'x > 0
         | TypedPattern of PatternWithPos * TypeWithPos              // e.g. 'n : Int
@@ -161,7 +161,7 @@ module SyntaxTree =
         | Wildcard                                                  // _
 
     and public Type =
-        | NamedType of IdentifierWithPos                             // e.g. Int, Bool, String
+        | NamedType of Identifier                                    // e.g. Int, Bool, String
         | VariableType of string                                     // e.g. 't
         | RuleType of TypeWithPos list * TypeWithPos                 // e.g. [Int, Int] -> Int
         | TupleType of TypeWithPos list                              // e.g. (Int, String, Bool)

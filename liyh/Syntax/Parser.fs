@@ -857,7 +857,7 @@ module Parser =
                 |>> fun (id, argsOpt) ->
                     match argsOpt with
                     | Some args -> Type.ParametrizedType(id, args)
-                    | None -> Type.NamedType(id)
+                    | None -> Type.NamedType(removePos id)
             )
 
         // (Int, String, Bool)
@@ -989,7 +989,7 @@ module Parser =
         // 8, "hello", true
         let private parseLiteralPattern =
             LiteralParser.parseLiteral (Some parseExpressionRef)
-            |>> Pattern.LiteralPattern
+            |>> (removePos >> Pattern.LiteralPattern)
 
         // _
         let private parseWildcard =
@@ -1100,7 +1100,7 @@ module Parser =
                 sepBy1 (LiteralParser.parseLiteral (Some parseExpressionRef)) (spacesOrComment >>. skipChar '|' >>. spacesOrComment)
                 |>> fun literals ->
                     match literals with
-                    | [single] -> Pattern.LiteralPattern single
+                    | [single] -> Pattern.LiteralPattern (removePos single)
                     | multiple -> Pattern.AlternativePattern multiple
             )
             <|>
@@ -1135,7 +1135,7 @@ module Parser =
     // 17, -0.2, 10_000, "hello", "hello, {4 + 2}!"
     let private parseLiteral =
         LiteralParser.parseLiteral (Some parseExpressionRef)
-        |>> Expression.Literal
+        |>> (removePos >> Expression.Literal)
 
     // ( ... )
     let private parseBetweenParens =
@@ -1143,7 +1143,7 @@ module Parser =
 
     // Unicode identifier starting with a letter or '_'
     let private parseIdentifier =
-        parseWithPos NameParser.parseIdentifier
+        NameParser.parseIdentifier
         |>> Expression.Identifier
 
     // x <- y
@@ -1163,7 +1163,7 @@ module Parser =
             (sepBy (spacesOrComment >>. parseExpressionRef) (spacesOrComment >>. skipChar ',' <?> "other elements in the tuple"))
         |> parseWithPos
         |>> function
-            | { Node = []; StartPos = pos; EndPos = pos' } -> { Node = Expression.Literal { Node = Literal.Unit; StartPos = pos; EndPos = pos' }; StartPos = pos; EndPos = pos' }
+            | { Node = []; StartPos = pos; EndPos = pos' } -> { Node = Expression.Literal Literal.Unit; StartPos = pos; EndPos = pos' }
             | { Node = [ x ] } -> x
             | { Node = content; StartPos = pos; EndPos = pos' } -> { Node = Expression.Tuple content; StartPos = pos; EndPos = pos' }
 
@@ -1629,7 +1629,7 @@ module Parser =
 
                                 let headId =
                                     match extractIdFromExpr op.RewritesTo with
-                                    | Some id -> id.Node
+                                    | Some id -> id
                                     | None -> failwith "??"
 
                                 (Some headId, b)
