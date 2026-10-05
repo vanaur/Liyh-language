@@ -430,13 +430,13 @@ module ErrorReporter =
                         | n -> sprintf "%d warnings" n
                 ]
 
-                let message = String.concat " and " parts
-                writer.WriteLine(sprintf "Compilation failed with %s. Please fix %s to proceed.\n" 
-                    message 
-                    (if nError > 1 then "them" else "it"))
-
                 for error in errors do
                     writer.WriteLine(sym.Corner + formatError error)
+
+                let message = String.concat " and " parts
+                writer.WriteLine(sprintf "\nCompilation failed with %s. Please fix %s to proceed." 
+                    message 
+                    (if nError > 1 then "them" else "it"))
 
             if cleanAfter then
                 queue.Clear()
