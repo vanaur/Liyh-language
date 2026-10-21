@@ -468,7 +468,7 @@ module Parser =
         [ "for"; "in"; "let"; "var"; "while"; "do"; "match"; "as"; "_"; "->"; "["; "|>";
           "if"; "then"; "else"; "("; "{"; "}"; ")"; "]"; "<-"; "with"; "handle"; "export"; "effect"; "=";
           "notation"; "using"; "use"; "innermost"; "outermost"; "invalid"; "--"; "to"; "downto"; "type";
-          "type-alias"; "."; "extern"; "context"; "elif" ]
+          "type-alias"; "alias"; "."; "extern"; "context"; "elif" ]
 
     let private reservedSet = System.Collections.Generic.HashSet<string>(reserved)
 
@@ -1728,8 +1728,10 @@ module Parser =
                 TopLevel.Type { Name = name; VarTypes = varTypes; Constructors = constructors })
 
     let private parseTypeAlias =
+        let parseAliasKeyword = (keyword "type-alias") <|> (keyword "type" >>. keyword "alias")
+
         pipe3
-            (spaces >>. keyword "type-alias" >>. spaces >>. parseWithPos (NameParser.parseName false))
+            (spaces >>. parseAliasKeyword >>. spaces >>. parseWithPos (NameParser.parseName false))
             (spaces >>. parseVariableTypes)
             (spaces >>. optional (skipChar '=') >>. spaces >>. TypeParser.parseType)
             (fun name varTypes alias -> TopLevel.TypeAlias(name, varTypes, alias))
@@ -1944,7 +1946,7 @@ module Parser =
             [ parseWithPos parseUse
               parseWithPos parseExport
               parseWithPos parseEffect
-              parseWithPos parseTypeAlias
+              attempt (parseWithPos parseTypeAlias)
               parseWithPos parseType
               parseWithPos parseNotation
               parseWithPos (parseContext ())
