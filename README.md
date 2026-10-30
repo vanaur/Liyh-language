@@ -9,7 +9,7 @@
 </div>
 
 <div align="center">
-    <h4><a href="TODO">Website</a> | <a href = "TODO">Try it out</a></h4>
+    <h4><a href="https://vanaur.github.io/Liyh-website/">Website</a> | <a href = "https://vanaur.github.io/Liyh-website/">Try it out</a></h4>
 </div>
 
 <div align="right">
@@ -17,33 +17,12 @@
 </div>
 
 ## Description
-Liyh is a programming language project exploring the paradigm based on symbolic rewriting rules. It is not new, but it is not popular either, and is often too specific, too academic, or not really explored in the context of general programming. The aim is to make it fun, practical and original to use.
-
-It is worth noting that Liyh was not designed "top-down" but "bottom-up": starting solely from a "symbolic term rewriting system" to arrive at a feature-rich programming language, without breaking the foundations. This, we hope, makes Liyh consistent and "harmonious".
-
-### Key features
-The language has several features, but the most interesting ones are probably...
-
- - **Rule-based:** your programme defines a system of rewriting rules (with priorities, strategies and fancy syntax);
- - **Powerful pattern matching:** beyond the usual pattern matching, you can use non-linear patterns, conditional patterns, operator patterns, disjoint patterns, symbol patterns, etc.
- - **Functional:** the declarative style lends itself well to functional programming, notably there are no references, everything is immutable by default, recursion is idiomatic, and there are closures and first-class functions. There is no support for currying.
- - **Imperative:** it would be foolish to do without loops and local, not shared mutable variables in order to be a "purist"; loops and mutable variables are useful, so they have been added.
- - **One-shot algebraic effects:** control flow is extended with one-shot algebraic effects, in a relatively original and practical form. Side effects are encapsulated under algebraic effects.
- - **Statically typed:** your programme will be statically checked for type consistency; rules are also typed and offer ad-hoc and parametric polymorphism.
- - **Measure's unit system:** you can write a programme that manipulates values with units of measurement; Liyh guarantees their consistency at compile-time and their conversion at runtime. You can define your own systems.
- - **Symbolic-wise:** it is not possible to combine "static typing" and "abstract/undefined symbols", but it is possible to frame pure symbolic behaviour to achieve a programme that is ultimately statically typed and flexible. We invented what we call "symbolic effects" to address this problem.
- - **Mixfix operators:** the language supports the definition of mixfix operators. You can define fancy notations!
- - **Simple Foreign Function Interface:** Liyh provides a simple-to-use (unidirectional) FFI for C, supporting the basic literal types, pointers, structures, and arrays.
-
-One thing that was very important to us during the design process was consistency: we want a consistent language, not just a collection of cool features. We hope that this desire is reflected in the final product.
-
-### Hello, world!
-Visit the website for a more interesting overview of the language, but in the meantime, here is an example of program:
+Liyh is a programming language project exploring the paradigm based on symbolic [rewriting rules](https://en.wikipedia.org/wiki/Category:Term-rewriting_programming_languages). It is not new, but it is not popular either, and is often too specific, too academic, or not really explored in the context of general programming. The aim is to make it fun, practical and original to use.
 
 ```
 use Liyh
 
-greeting[name] ->
+greeting[name: String] ->
     "Oh, hello {name}! And welcome to Liyh!"
 
 main[] ->
@@ -52,7 +31,51 @@ main[] ->
         println["Message: {greet}"]
 ```
 
-This example illustrates the use of algebraic effects to display information on the screen, as well as the syntax of the language and the definition of two rules, `greeting` and `main`.
+More examples are available on the [website](https://vanaur.github.io/Liyh-website/).
+
+### Rule-based?
+Yes. In theory, rather than applying functions to arguments, evaluation involves rewriting terms: one searches the expression for a sub-term that matches a pattern, and replaces it with the corresponding term. This process continues until no further rules apply (when termination occurs) or continues ad infinitum.
+
+This implies...
+ - a declarative and equational programming style
+ - a pattern matching oriented programming style
+ - different rewriting strategies
+ - purity, no need for global mutable states or references
+
+In practice, the language is more concrete and pragmatic. At the end of the day, the aim is to enjoy using it!
+
+### Symbolic?
+Also, yes. According to our definition, this conveys the general idea that any symbol can exist without needing to be defined or represent a value in memory. You can think about [Mathematica](https://en.wikipedia.org/wiki/Wolfram_Mathematica), for example!
+
+In practice, it is complicated with a global static type system, but preserved on a more local and defined scale.
+
+</br>
+
+> [!NOTE]
+> Liyh was designed bottom-up: starting solely from a _symbolic term rewriting system_ to arrive at a feature-rich programming language, without breaking the foundations. This, we hope, makes Liyh consistent and harmonious.
+
+### Language Features
+
+ The language has [several features](https://vanaur.github.io/Liyh-website/), such as: 
+
+- **Rule-based system** (priorities, strategies, and rewriting rules)
+- **Advanced pattern matching** (non-linear, conditional, disjoint, and operator patterns)
+- **Hybrid paradigm:** functional style by default, with local mutable state and loops
+- **One-shot algebraic effects**
+- **Static typing** with a compile-time unit of measure system
+- **Symbolic terms** and substitution
+- **Custom mixfix operators**
+- **C Foreign Function Interface (FFI)**
+
+> [!IMPORTANT]
+> Not everything has been implemented yet!
+> 
+> The features designed for the language have been conceived to integrate seamlessly into it, but it is possible that we may have been mistaken about certain aspects of feasibility.
+> 
+> The project is still in its early stages and subject to changes and redesigns.
+
+### Runtime
+Liyh compiles to a specialised bytecode VM written in C. If you want to learn more about the current runtime, you can check out this [description](/LyVM/README.md).
 
 ## Every contribution is worthwhile 💪
 The project is in the development and reflexion phase, so many things are
