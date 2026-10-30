@@ -386,6 +386,27 @@ module ErrorReporter =
     type public ErrorQueue() =
         let queue = ConcurrentQueue<ErrorReport>()
 
+        let reportDiagnostics (writer: TextWriter) (nError: int) (nWarning: int) =
+
+            let parts = [
+                if nError > 0 then
+                    match nError with
+                    | 1 -> "an error"
+                    | n -> sprintf "%d errors" n
+                if nWarning > 0 then
+                    match nWarning with
+                    | 1 -> "a warning"
+                    | n -> sprintf "%d warnings" n
+            ]
+
+            let message = String.concat " and " parts
+            let pronoun = if nError + nWarning > 1 then "them" else "it"
+
+            match nError, nWarning with
+            | 0, 0 -> writer.WriteLine "\nCompilation succeeded with no errors or warnings."
+            | 0, _ -> writer.WriteLine(sprintf "\nCompilation succeeded with %s. Consider fixing %s." message pronoun)
+            | _ ->    writer.WriteLine(sprintf "\nCompilation failed with %s. Please fix %s to proceed." message pronoun)
+
         member public __.AddError(error: ErrorReport) =
             queue.Enqueue error
 
@@ -406,7 +427,7 @@ module ErrorReporter =
         member public this.HasWarnings() =
             snd (this.Count()) <> 0
 
-        member public this.ReportAll(writer: TextWriter) (cleanAfter: bool) =
+        member public __.ReportAll(writer: TextWriter) (cleanAfter: bool) =
             let errors = ResizeArray<ErrorReport>()
             let enumerator = queue.GetEnumerator()
 
@@ -433,10 +454,7 @@ module ErrorReporter =
                 for error in errors do
                     writer.WriteLine(sym.Corner + formatError error)
 
-                let message = String.concat " and " parts
-                writer.WriteLine(sprintf "\nCompilation failed with %s. Please fix %s to proceed." 
-                    message 
-                    (if nError > 1 then "them" else "it"))
+            reportDiagnostics writer nError nWarning
 
             if cleanAfter then
                 queue.Clear()
