@@ -1813,9 +1813,18 @@ module Parser =
                 (fun part parts -> part :: parts)
 
         let parseNotationName =
+            let isChar c = c <> '"'
+            let isNotDigit c = isChar c && not (System.Char.IsDigit c)
+
+            let parseNameString =
+                pipe2
+                    (satisfy isNotDigit)
+                    (manySatisfy isChar)
+                    (fun first rest -> string first + rest)
+
             pipe2
                 (spaces >>. (skipStringCI "name" <?> "name"))
-                (spaces >>. skipChar ':' >>. spaces >>. between (skipChar '"') (skipChar '"') parseAnyNonSpace)
+                (spaces >>. skipChar ':' >>. spaces >>. between (skipChar '"') (skipChar '"') parseNameString)
                 (fun _ name -> Name name)
 
         let parseNotationAssociativity =
