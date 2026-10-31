@@ -23,12 +23,12 @@ Liyh is a programming language project exploring the paradigm based on symbolic 
 use Liyh
 
 greeting[name: String] ->
-    "Oh, hello {name}! And welcome to Liyh!"
+    "Oh, hello { name }! And welcome to Liyh!"
 
 main[] ->
     using Terminal() handle
         let greet = greeting["awesome user"]
-        println["Message: {greet}"]
+        println["Message: { greet }"]
 ```
 
 More examples are available on the [website](https://vanaur.github.io/Liyh-website/).
@@ -75,7 +75,13 @@ In practice, it is complicated with a global static type system, but preserved o
 > The project is still in its early stages and subject to changes and redesigns.
 
 ### Runtime
-Liyh compiles to a specialised bytecode VM written in C. If you want to learn more about the current runtime, you can check out this [description](/LyVM/README.md).
+Liyh compiles to a specialised bytecode VM written in C. If you want to learn more about the current runtime, you can check out this [description](liyh/LyVM/README.md).
+
+## Installing and using Liyh
+You can refer to the instructions on the [website](https://vanaur.github.io/Liyh-website) or in [this Markdown file](Installation.md) to find out how to install Liyh. All dependencies are managed by the installer.
+
+> [!IMPORTANT]
+> The project cannot be used as it stands at present, as it is still in the development phase! There is no standard library and not all features have been implemented yet.
 
 ## Every contribution is worthwhile 💪
 The project is in the development and reflexion phase, so many things are
