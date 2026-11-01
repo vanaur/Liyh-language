@@ -76,14 +76,14 @@ if (!(Test-Path $FfiHeader)) {
     if ($TarExitCode -ne 0) { throw "Libffi extraction failed." }
 }
 
-# .NET 9 SDK
+# .NET 10 SDK
 $DotnetExe = Join-Path $DotnetDir "dotnet.exe"
 if (!(Test-Path $DotnetExe)) {
-    Write-Host "Installing local .NET 9 SDK..." -ForegroundColor Gray
+    Write-Host "Installing local .NET 10 SDK..." -ForegroundColor Gray
     if (!(Test-Path $DotnetDir)) { New-Item -ItemType Directory -Path $DotnetDir | Out-Null }
     $InstallScript = Join-Path $InstallDir "dotnet-install.ps1"
     Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile $InstallScript -UseBasicParsing
-    & $InstallScript -Channel "9.0" -InstallDir $DotnetDir -NoPath
+    & $InstallScript -Channel "10.0" -InstallDir $DotnetDir -NoPath
     if (Test-Path $InstallScript) { Remove-Item $InstallScript -Force }
 }
 
@@ -108,7 +108,7 @@ if ($LASTEXITCODE -ne 0 -or !(Test-Path $CLibOutput)) {
 Write-Host "`n[3/6] Publishing .NET project for Windows (Self-Contained)..." -ForegroundColor Cyan
 
 $Rid = "win-x64"
-$BuildOutput = Join-Path $InstallDir "bin\Release\net9.0\$Rid\publish"
+$BuildOutput = Join-Path $InstallDir "bin\Release\net10.0\$Rid\publish"
 
 & $DotnetExe publish liyh -c Release -r $Rid --self-contained true -p:PublishReadyToRun=true -o $BuildOutput
 if ($LASTEXITCODE -ne 0) {
