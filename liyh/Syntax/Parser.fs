@@ -1298,9 +1298,33 @@ module Parser =
             (spacesOrComment >>. PatternParser.parsePattern)
             (spacesOrComment >>. skipString "->" >>. spacesOrComment >>. parseExpressionRef)
 
+    let private parsePipe =
+        skipChar '|' >>? notFollowedBy (skipChar '>')
+
     let private parseMatchingCases =
-        spacesOrComment >>. optional (skipChar '|') >>. spacesOrComment >>.
-        sepBy1 parseSingleCase (spacesOrComment >>. skipChar '|' .>> spacesOrComment)
+        let pipe = parsePipe .>> spacesOrComment
+
+        parse {
+            do! spacesOrComment
+            let! startPos = getPosition
+            let! hasPipe = (pipe >>% true) <|>% false
+            let! firstCasePos = getPosition
+            let! firstCase = parseSingleCase
+
+            let expectedCol =
+                if hasPipe then startPos.Column else firstCasePos.Column - 2L
+
+            let alignedPipe =
+                attempt (
+                    spacesOrComment >>. getPosition >>= fun pos ->
+                        if pos.Line = startPos.Line || pos.Column = expectedCol
+                        then pipe
+                        else fail "case not aligned"
+                )
+
+            let! rest = many (alignedPipe >>. parseSingleCase)
+            return firstCase :: rest
+        }
 
     // match cases
     let private parseMatch =
