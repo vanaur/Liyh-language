@@ -177,21 +177,17 @@ module Program =
                     pgraph
                     |> ProjectGraph.topologicalLayers
                     |> Array.ofList
-                    |> Array.Parallel.map (fun layer ->
-                        // let typechecked = TypeCheck.run layer errorQueue
-                        CoreCompiler.compileModules layer)
+                    |> Array.map (fun layer ->
+                        let typedModule = Semantic.TypeChecker.run layer sourceManager errorQueue
+
+                        errorQueue.ReportIfNeeded Console.Error
+                        if errorQueue.HasErrors() then
+                            errorQueue.ReportAll Console.Error true
+                            exit 1
+
+                        CoreCompiler.compileModules typedModule)
 
                 errorQueue.ReportIfNeeded Console.Error
-
-                (*
-
-                /// Check the expressions semantically. If no problems are found, group the expressions by
-                /// their rewritten form and the information related to commutativity and associativity.
-                let notationsInfo = TypeCheck.CheckNotations.check pgraph errorQueue
-
-                errorQueue.ReportIfNeeded Console.Error
-
-                *)
 
                 if not (containsEntryPoint pgraph) then
                     let report =

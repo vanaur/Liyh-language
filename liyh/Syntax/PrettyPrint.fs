@@ -11,7 +11,6 @@ module PrettyPrint =
             | Expression.ParseError error -> sprintf "Error: %A" error
             | UFCS ufcs -> sprintf "%s |> %s" (prettyPrintExpression ufcs.LHS) (prettyPrintExpression ufcs.RHS)
             | Identifier id -> id.ToString()
-            | BindingVariable name -> sprintf "'%s" name
             | CollectionAccess ca ->
                 sprintf
                     "%s.[%s]"
@@ -155,8 +154,7 @@ module PrettyPrint =
     and public prettyPrintPattern =
         removePos
         >> function
-            | VariablePattern s -> sprintf "'%s" s
-            | SymbolPattern id -> string id
+            | IdentPattern id -> string id
             | ApplyPattern(p, ps) ->
                 sprintf
                     "%s[%s]"

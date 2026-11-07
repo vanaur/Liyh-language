@@ -53,7 +53,6 @@ module SyntaxTree =
                                                                // parsing, so as not to stop at the first error encountered.
         | UFCS of UFCS
         | Identifier of Identifier
-        | BindingVariable of string
         | CollectionAccess of CollectionAccess
         | Literal of Literal
         | ExpressionSequence of ExpressionWithPos list
@@ -146,8 +145,7 @@ module SyntaxTree =
           Body: ExpressionWithPos }
 
     and public Pattern =
-        | VariablePattern of string                                 // e.g. 'z
-        | SymbolPattern of Identifier                               // e.g. none
+        | IdentPattern of Identifier                               // e.g. none
         | ApplyPattern of PatternWithPos * PatternWithPos list      // e.g. succ[zero]
         | LiteralPattern of Literal                                 // e.g. 8
         | TuplePattern of PatternWithPos list                       // e.g. (1, 2, 3)

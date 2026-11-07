@@ -27,8 +27,23 @@
     <Compile Include="ModuleSystem/Definition.fs" />
     <Compile Include="ModuleSystem/LiyhPackage.fs" />
 
-    <Compile Include="Typecheck/TypeCheck.fs" />
-    <Compile Include="Typecheck/Notations.fs" />
+    <Compile Include="Semantic/ErrorCodes.fs" />
+    <Compile Include="Semantic/DependencyAnalysis.fs" />
+    <Compile Include="Semantic/Dimensions.fs" />
+    <Compile Include="Semantic/Types.fs" />
+    <Compile Include="Semantic/TypedSyntaxTree.fs" />
+    <Compile Include="Semantic/TypecheckContext.fs" />
+    <Compile Include="Semantic/ForeignTypes.fs" />
+    <Compile Include="Semantic/Unification.fs" />
+    <Compile Include="Semantic/Environment.fs" />
+    <Compile Include="Semantic/Helpers.fs" />
+    <Compile Include="Semantic/Overload.fs" />
+    <Compile Include="Semantic/TypeResolve.fs" />
+    <Compile Include="Semantic/Mixfix.fs" />
+    <Compile Include="Semantic/InferenceChecking.fs" />
+    <Compile Include="Semantic/UserDefinedTypes.fs" />
+    <Compile Include="Semantic/Rules.fs" />
+    <Compile Include="Semantic/TypeCheck.fs" />
 
     <Compile Include="Core/Core.fs" />
     <Compile Include="Core/Helper.fs" />

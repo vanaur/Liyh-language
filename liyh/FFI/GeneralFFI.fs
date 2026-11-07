@@ -36,6 +36,24 @@ module public GeneralFFI =
      // | Struct of fields: (string * CType) list
         | Void
 
+        override this.ToString() =
+            match this with
+            | UInt8 -> "C.UInt8"
+            | Int8 -> "C.Int8"
+            | UInt16 -> "C.UInt16"
+            | Int16 -> "C.Int16"
+            | UInt32 -> "C.UInt32"
+            | Int32 -> "C.Int32"
+            | UInt64 -> "C.UInt64"
+            | Int64 -> "C.Int64"
+            | Float32 -> "C.Float32"
+            | Float64 -> "C.Float64"
+            | LongDouble -> "C.LongDouble"
+            | Char -> "C.Char"
+            | String -> "C.String" // char*
+            | Pointer cty -> sprintf "C.Ptr[%s]" (string cty)
+            | Void -> "C.Void"
+
     let private aviableCTypes =
         [| "C.UInt8"
            "C.Int8"

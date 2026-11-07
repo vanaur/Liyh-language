@@ -343,6 +343,12 @@ module public BytecodeCompiler =
             // raw global data
             |> Option.defaultValue (symbolName, false)
 
+    /// Gets the raw name of a rule.
+    let private demangledOverload (name: string) =
+        match name.IndexOf "@" with
+        | -1 -> name
+        | idx -> name.Substring(0, idx)
+
     module private RuleProcessing =
 
         /// Builds a "fake" rule to be added to the global context. Used for internal rules.
@@ -1064,11 +1070,11 @@ module public BytecodeCompiler =
 
                 if isCaptureWithinContext then
                     // Not a function call, but an "applicable" value
-                    builder.LoadAtom(resolvedName)
+                    builder.LoadAtom(demangledOverload resolvedName)
                 else
                     // A symbolic data structure
                     let childRegs = List.map (compileAsData context) children
-                    builder.AllocData(resolvedName, childRegs)
+                    builder.AllocData(demangledOverload resolvedName, childRegs)
 
             | RecordExtend { BaseRecord = base'; Extension = extensions } ->
                 // We compile fields as data recursively and allocate a symbolic object for it.
@@ -1700,7 +1706,7 @@ module public BytecodeCompiler =
 
                 if isCaptureWithinContext then
                     // Not a function call, but an "applicable" value
-                    builder.LoadAtom(resolvedName)
+                    builder.LoadAtom(demangledOverload resolvedName)
                 else
                     // Check in the FFI first
                     match context.Global.FFIRegistery.TryGetIndex(resolvedName) with
@@ -1730,7 +1736,7 @@ module public BytecodeCompiler =
                                 | _ ->
                                     argsRegs context.Strategy
 
-                            builder.AllocData(resolvedName, args, ?target = target)
+                            builder.AllocData(demangledOverload resolvedName, args, ?target = target)
 
         and compileSubstitution (substitution: CoreSubstitution) (context: CompilationContext) (target: Reg option) =
             let astReg = compileTermStrict context false None substitution.InExpr
@@ -1833,7 +1839,7 @@ module public BytecodeCompiler =
                 " This textual representation is for information only and is not usable as such."
                 ""
                 ""
-                " You can search for a function with CTRL+F with `name/arity`."
+                " You can search for a function with CTRL+F with `name@[...]/arity`."
                 ""
                 $" The entry point is `main` at label L{entryPointLabel}."
                 $" There are {compiledFunctions} compiled functions."
@@ -1885,6 +1891,7 @@ module public BytecodeCompiler =
                     match ruleInfo.ContextName with
                     | Some contextName -> ContextResolution.uncreateContextualName symbolName contextName
                     | None -> symbolName
+                    |> demangledOverload
 
                 let fallback mismatchTarget =
 

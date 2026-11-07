@@ -276,7 +276,7 @@ module private ParsingError =
         | Expression.ParseError err -> [err]
         | UFCS ufcs ->
             collectParsingErrorsFromExpression ufcs.LHS @ collectParsingErrorsFromExpression ufcs.RHS
-        | Identifier _ | BindingVariable _ | Literal _ -> []
+        | Identifier _ | Literal _ -> []
         | CollectionAccess ca ->
             collectParsingErrorsFromExpression ca.LHS @ List.collect collectParsingErrorsFromExpression ca.Indices
         | ExpressionSequence exprs -> List.collect collectParsingErrorsFromExpression exprs
@@ -330,7 +330,7 @@ module private ParsingError =
 
     and private collectParsingErrorsFromPattern (pat: PatternWithPos) =
         match pat.Node with
-        | VariablePattern _ | SymbolPattern _ | LiteralPattern _ | AlternativePattern _ | Wildcard -> []
+        | IdentPattern _ | LiteralPattern _ | AlternativePattern _ | Wildcard -> []
         | ApplyPattern (head, args) ->
             collectParsingErrorsFromPattern head @ List.collect collectParsingErrorsFromPattern args
         | TuplePattern pats | ListPattern pats -> List.collect collectParsingErrorsFromPattern pats
@@ -976,15 +976,10 @@ module Parser =
                       StartPos = pattern.StartPos
                       EndPos = pattern.EndPos }) basePattern postfixesList
 
-        // 'x, 'myVar
-        let private parseVariablePattern =
-            skipChar '\'' >>. NameParser.parseName false
-            |>> Pattern.VariablePattern
-
         // none, some, zero
         let private parseSymbolPattern =
             NameParser.parseIdentifier
-            |>> Pattern.SymbolPattern
+            |>> Pattern.IdentPattern
 
         // 8, "hello", true
         let private parseLiteralPattern =
@@ -1034,7 +1029,6 @@ module Parser =
         let private parseAtomicPattern =
             choice [
                 attempt (parseWithPos parseLiteralPattern)
-                parseWithPos parseVariablePattern
                 parseWithPos parseWildcard
                 attempt (parseWithPos parseTuplePattern)
                 between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef
@@ -1042,18 +1036,6 @@ module Parser =
                 parseWithPos parseRecordPattern
                 parseWithPos parseSymbolPattern
             ] <?> "atomic pattern" .>> spacesOrComment
-
-        //        let private parseAtomicPattern =
-        //            choice [
-        //                attempt (parseWithPos parseVariablePattern)
-        //                attempt (parseWithPos parseSymbolPattern)
-        //                attempt (parseWithPos parseWildcard)
-        //                attempt (parseWithPos parseLiteralPattern)
-        //                attempt (parseWithPos parseTuplePattern)
-        //                attempt (parseWithPos parseListPattern)
-        //                attempt (parseWithPos parseRecordPattern)
-        //                attempt (between (skipChar '(') (spacesOrComment >>. skipChar ')') parsePatternRef)
-        //            ] <?> "atomic pattern" .>> spacesOrComment
 
         let private parsePatternWithMixfixInternal () =
             fun (stream: CharStream<NotationState IndentState>) ->
@@ -1119,18 +1101,6 @@ module Parser =
     // ------- Expression parser ------- //
     //                                   //
 
-
-    // 'x, 'myVar
-    let private parseBindingVariable =
-        pipe2
-            (skipChar '\'')
-            (NameParser.parseName false)
-            (fun _ name ->
-                if List.contains name reserved then
-                    fail (sprintf "reserved identifier '%s'" name)
-                else
-                    preturn (Expression.BindingVariable name))
-            |> fun p -> p >>= id
 
     // 17, -0.2, 10_000, "hello", "hello, {4 + 2}!"
     let private parseLiteral =
@@ -1401,7 +1371,6 @@ module Parser =
               attempt (parseWithPos parseIdentifier)
               attempt (parseWithPos parseLiteral)
               attempt parseBetweenParens
-              parseWithPos parseBindingVariable
               parseTuple
               parseBracedExpression
               parseWithPos parseMatch
@@ -1637,7 +1606,7 @@ module Parser =
                         // Extract the head symbol and collect patterns
                         let rec findHeadAndPatterns p =
                             match p.Node with
-                            | Pattern.SymbolPattern id -> (Some id, [])
+                            | Pattern.IdentPattern id -> (Some id, [])
                             | Pattern.MixfixOperatorPattern(a, b) ->
                                 let op = operators |> List.find (fun x -> x.Name = a)
 
@@ -1815,18 +1784,27 @@ module Parser =
         let parseMixfixPattern =
             let validatedPatternPart =
                 let parseHole =
-                    skipChar '\'' >>. parseWithPos (NameParser.parseName false) |>> HolePart <?> "hole"
+                    attempt (
+                        skipChar '_' >>. parseWithPos (
+                            satisfy System.Char.IsLetter
+                            >>= fun first ->
+                                manySatisfy (fun c -> c = '_' || System.Char.IsLetter c || NameParser.isExtendedDigit c)
+                                >>= fun rest ->
+                                    preturn (string first + rest)
+                        ) |>> HolePart
+                    )
 
                 let parseFixedPart =
                     parseWithPos parseAnyNonSpace >>= fun fixedPart ->
-                        if List.contains fixedPart.Node reserved
-                        then fail (sprintf "The symbol '%s' was used as a fixed part of a notation, but it is reserved by the language" fixedPart.Node)
-                        else preturn (FixedPart fixedPart)
+                        if List.contains fixedPart.Node reserved then
+                            fail (sprintf "The symbol '%s' was used as a fixed part of a notation, but it is reserved by the language" fixedPart.Node)
+                        else
+                            preturn (FixedPart fixedPart)
 
-                choiceL [
-                    lookAhead (pchar '\'') >>. parseHole;
+                choice [
+                    parseHole
                     parseFixedPart
-                ] "hole or fixed part"
+                ] <?> "hole or fixed part"
 
             let parseTerminator =
                 attempt (spaces >>. skipString "->")

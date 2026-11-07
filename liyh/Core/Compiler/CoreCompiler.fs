@@ -1,40 +1,44 @@
-#nowarn "25"
-#nowarn "26"
-#nowarn "46"
 namespace Liyh.Core
 
 [<RequireQualifiedAccess>]
 module private FreshName =
     open System.Threading
 
-    let private counter = ref 0
+    let mutable private counter = 0L
 
-    let inline public get (baseName: string) =
-        let id = Interlocked.Increment(counter)
-        sprintf "_%s:%d" baseName id
+    /// Creates a new unique variable. This function is thread-safe.
+    let public get (baseName: string) =
+        let id = Interlocked.Increment(&counter)
+        $"_{baseName}:{id}"
 
-[<RequireQualifiedAccess>]
-module CoreCompiler =
+module public CoreCompiler =
     open Liyh.Module
     open Liyh.Syntax.SyntaxTree
+    open Liyh.Semantic.TypedSyntaxTree
     open Liyh.Core.Helper
     open LiyhPackage
 
+
+    //                      //
+    // --- Some Helpers --- //
+    //                      //
+
+
     type private WhileLoopVariableSource =
-        | FromPattern of PatternWithPos
+        | FromPattern of TPattern
         | FromString of string
 
-    let private tryGetVariable (patt: PatternWithPos) =
-        match removePos patt with
-        | VariablePattern varName -> Some varName
-        | Wildcard -> None
+    let private tryGetVariable (patt: TPattern) =
+        match patt.Kind with
+        | TPatternNode.TPatVariable ident -> Some (removePos ident.Written.Name)
+        | TPatternNode.TPatWildcard -> None
         | other -> failwithf "Expected variable or wildcard, got `%A`." other
 
-    /// Helper to compile while loops.
+    /// Helper to compile imperative while loops.
     let private whileLoop
         (variableNameSource: WhileLoopVariableSource)
-        (initVal: CoreTerm)
-        (endVal: CoreTerm)
+        (initialValue: CoreTerm)
+        (endValue: CoreTerm)
         (body: CoreTerm)
         (incrementation: string)
         (comparison: string)
@@ -51,32 +55,31 @@ module CoreCompiler =
         let runningVariableDeclaration =
             CoreLet
                 { Pattern = runningVariable
-                  Value = initVal
+                  Value = initialValue
                   IsMutable = true }
 
-        // Evaluate the end value once before the loop.
         let limitName = FreshName.get "limit"
         let limitVariable = Variable limitName
 
-        let limitDeclaration = 
+        let limitDeclaration =
             CoreLet
                 { Pattern = limitVariable
-                  Value = endVal
+                  Value = endValue
                   IsMutable = false }
 
-        // Evaluate the step value once before the loop
         let stepName = FreshName.get "step"
         let stepVariable = Variable stepName
+        let stepValue = Option.defaultValue (CoreTerm.Literal(CoreLiteral.Integer 1I)) stepValue
 
-        let stepDeclaration = 
-            CoreLet 
+        let stepDeclaration =
+            CoreLet
                 { Pattern = stepVariable
-                  Value = stepValue |> Option.defaultValue (CoreTerm.Literal(CoreLiteral.Integer 1I))
+                  Value = stepValue
                   IsMutable = false }
 
-        let incrementExpr = 
+        let incrementExpr =
             symbol incrementation [ runningVariable; stepVariable ]
-
+        
         let whileLoopBody =
             TermSequence
                 [ body
@@ -87,7 +90,7 @@ module CoreCompiler =
                 { Predicate = symbol comparison [ runningVariable; limitVariable ]
                   Body = whileLoopBody }
 
-        TermSequence 
+        TermSequence
             [ limitDeclaration
               stepDeclaration
               runningVariableDeclaration
@@ -101,295 +104,191 @@ module CoreCompiler =
             { Notations = List.empty
               CurrentHandler = None }
 
-    let rec private compileExpression (cstate: State) (expr: ExpressionWithPos) =
-        match removePos expr with
-        | UFCS ufcs -> compileUFCS cstate ufcs
-        | Identifier id -> simpleSymbol (string id)
-        | BindingVariable var -> Variable var
-        | CollectionAccess ca -> compileCollectionAccess cstate ca
-        | Apply apply -> compileApply cstate apply
-        | Literal (InterpolatedString lstr) -> compileInterpolatedString cstate lstr
-        | Literal l -> compileLiteral l
-        | MixfixOperator mixfix -> compileMixFix cstate mixfix
-        | Tuple xs -> Builtin.symbolTuple (List.map (compileExpression cstate) xs)
-        | List xs -> Builtin.symbolList (List.map (compileExpression cstate) xs)
-        | ListComprehension listComprehension -> compileListComprehension cstate listComprehension
-        | Range range -> compileRange cstate range
-        | Let(patt, value) -> compileLetVar cstate patt value false
-        | Var(patt, value) -> compileLetVar cstate patt value true
-        | ExpressionSequence xs -> TermSequence (List.map (compileExpression cstate) xs)
-        | While while' -> compileWhile cstate while'
-        | ForIn forin -> compileForIn cstate forin
-        | ForTo forto -> compileForTo cstate forto false
-        | ForDownTo forto -> compileForTo cstate forto true
-        | Lambda lambda -> compileLamda cstate lambda
-        | Match match' -> compileMatch cstate match'
-        | IfThenElse ifte -> compileIfThenElse cstate ifte
-        | Record fields -> compileRecord cstate fields
-        | RecordUsing(baseRecord, fields) -> compileRecordExtend cstate baseRecord fields
-        | ReAssign(v, e) -> UpdateVariable(v.Node, compileExpression cstate e)
-        | HandleEffect handle -> compileHandleEffect cstate handle
-        | ResumeWith resume -> compileResume cstate resume
-        | Substitution(env, inExpr) -> compileSubstitution cstate env inExpr
-        | UsingContext ctx -> compileUsingContext cstate ctx
-        | other -> failwithf "Todo: %A" other
+
+    //                               //
+    // --- Compiling Expressions --- //
+    //                               //
+
+
+    let rec private compileExpression (cstate: State) (expr: TExpression) : CoreTerm =
+        match expr.Kind with
+        | TExpressionNode.TError err ->
+            failwithf "Cannot compile AST containing error: %s" err.Description
+
+        | TExpressionNode.TUFCS ufcs ->
+            compileUFCS cstate ufcs
+
+        | TExpressionNode.TIdentifier ident ->
+            match ident.Kind with
+            | SymbolKind.LocalVariable ->
+                Variable (removePos ident.Written.Name)
+
+            | SymbolKind.Constructor _ ->
+                simpleSymbol (string ident.Written)
+
+            | SymbolKind.RuleReference mangledName ->
+                simpleSymbol mangledName
+
+            | SymbolKind.ExternFunction _ ->
+                simpleSymbol (string ident.Written)
+
+            | SymbolKind.PureSymbol ->
+                simpleSymbol (string ident.Written)
+
+        | TExpressionNode.TCollectionAccess ca ->
+            compileCollectionAccess cstate ca
+
+        | TExpressionNode.TApply apply ->
+            compileApply cstate apply
+
+        | TExpressionNode.TLit lit ->
+            compileLiteralNode lit
+
+        | TExpressionNode.TInterpolatedString parts ->
+            compileInterpolatedString cstate parts
+
+        | TExpressionNode.TMixfixOperator mixfix ->
+            compileMixFix cstate mixfix
+
+        | TExpressionNode.TTuple xs ->
+            Builtin.symbolTuple (List.map (compileExpression cstate) xs)
+
+        | TExpressionNode.TList xs ->
+            Builtin.symbolList (List.map (compileExpression cstate) xs)
+
+        | TExpressionNode.TListComprehension lc ->
+            compileListComprehension cstate lc
+
+        | TExpressionNode.TRange range ->
+            compileRange cstate range
+
+        | TExpressionNode.TLet l ->
+            CoreLet
+                { Pattern = compilePattern cstate l.LetPattern
+                  Value = compileExpression cstate l.LetValue
+                  IsMutable = (l.LetMutability = Mutability.Mutable) }
+
+        | TExpressionNode.TSequence xs ->
+            TermSequence (List.map (compileExpression cstate) xs)
+
+        | TExpressionNode.TWhile w ->
+            WhileLoop
+                { Predicate = compileExpression cstate w.WhileCondition
+                  Body = compileExpression cstate w.WhileBody }
+
+        | TExpressionNode.TForIn forin ->
+            compileForIn cstate forin
+
+        | TExpressionNode.TForTo forto ->
+            compileForTo cstate forto
+
+        | TExpressionNode.TReAssign ra ->
+            UpdateVariable(removePos ra.ReAssignTarget.Written.Name, compileExpression cstate ra.ReAssignValue)
+
+        | TExpressionNode.TMatch m ->
+            compileMatch cstate m
+
+        | TExpressionNode.TIfThenElse ifte ->
+            compileIfThenElse cstate ifte
+
+        | TExpressionNode.TLambda lambda ->
+            compileLambda cstate lambda
+
+        | TExpressionNode.TRecord fields ->
+            compileRecord cstate fields
+
+        | TExpressionNode.TRecordUsing ru ->
+            compileRecordUsing cstate ru
+
+        | TExpressionNode.TSubstitution s ->
+            compileSubstitution cstate s
 
         |> flattenTermSequence
 
-    and private compileUFCS (cstate: State) (ufcs: UFCS) =
-        let inline apply converted child =
-            match converted with
-            | Symbol symb -> Symbol { symb with Children = child :: symb.Children }
-            | Variable _ -> FunctionalApplication { Base = converted; Arguments = [ child ] }
-            | Closure _ -> FunctionalApplication { Base = converted; Arguments = [ child ] }
-            | _ -> failwith "Application on non-applicable term"
+    and private compileLiteralNode (lit: TLiteralNode) =
+        match lit with
+        | TLiteralNode.TLitInteger i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
+        | TLiteralNode.TLitFloat f -> CoreTerm.Literal (CoreLiteral.Float f)
+        | TLiteralNode.TLitChar c -> CoreTerm.Literal (CoreLiteral.Char c)
+        | TLiteralNode.TLitString s -> CoreTerm.Literal (CoreLiteral.String s)
+        | TLiteralNode.TLitUnit -> Builtin.symbolUnit
 
-        let rec collectChain current acc =
-            match current with
-            | UFCS { LHS = head; RHS = tail } -> collectChain (removePos tail) (removePos head :: acc)
-            | finalExpr -> List.rev (finalExpr :: acc)
+    and private compileUFCS (cstate: State) (ufcs: TUFCS) =
+        compileApply cstate ufcs.UfcsCall
 
-        match collectChain (UFCS ufcs) [] with
-        | [] -> failwith "Cannot process an empty UFCS chain"
-        | head :: tail ->
-            let firstVal = compileExpression cstate (withPosOf ufcs.LHS head)
-            List.fold (fun acc expr -> apply (compileExpression cstate (withPosOf ufcs.LHS expr)) acc) firstVal tail
+    and private compileApply (cstate: State) (apply: TApply) =
+        let args = List.map (compileExpression cstate) apply.ApplyArguments
 
-    and private compileCollectionAccess (cstate: State) { LHS = expr; Indices = indices } =
-        let indices = List.map (compileExpression cstate) indices
-        Builtin.symbolCollectionAccess (compileExpression cstate expr) (List.rev indices)
+        match apply.ApplyCallee.Kind with
+        | TExpressionNode.TIdentifier ident ->
+            match ident.Kind with
+            | SymbolKind.LocalVariable ->
+                FunctionalApplication { Base = Variable (removePos ident.Written.Name); Arguments = args }
 
-    and private compileListComprehension (cstate: State) (lc: ListComprehension) =
+            | SymbolKind.Constructor _ ->
+                symbol (string ident.Written) args
 
-        // If the range is an actual syntactic range, we can transform it into a while loop
-        // that iters only on numbers, without creating any list
+            | SymbolKind.RuleReference name ->
+                symbol name args
 
-        match removePos lc.ListExpr with
-        | Range range -> listComprehensionOverRange cstate range lc
+            | SymbolKind.ExternFunction _ ->
+                symbol (string ident.Written) args
+
+            | SymbolKind.PureSymbol ->
+                symbol (string ident.Written) args
+
         | _ ->
-            let compiledItem = compileExpression cstate lc.ItemValue
-            let compiledPattern = compilePattern cstate lc.Pattern
-            let compiledList = compileExpression cstate lc.ListExpr
-            let compiledCond = lc.IfPred |> Option.map (compileExpression cstate)
-
-            let cursorVarName = FreshName.get "lc_cursor"
-            let tailVarName = FreshName.get "lc_tail"
-            let resultVarName = FreshName.get "lc_result"
-            let nilVarName = FreshName.get "lc_nil"
-            
-            let cursorVar = Variable cursorVarName
-            let tailVar = Variable tailVarName
-            let resultVar = Variable resultVarName
-            let nilVar = Variable nilVarName
-
-            let bindCursor = CoreLet { Pattern = cursorVar; Value = compiledList; IsMutable = true }
-            let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsMutable = true }
-            let bindNil = CoreLet { Pattern = nilVar; Value = Builtin.symbolNil; IsMutable = false }
-
-            let appendExpr = Builtin.symbolCons compiledItem resultVar
-
-            let updateResult =
-                match compiledCond with
-                | Some cond -> ifte cond (UpdateVariable(resultVarName, appendExpr)) (Builtin.symbolUnit)
-                | None -> UpdateVariable(resultVarName, appendExpr)
-
-            let loopBody =
-                TermSequence [
-                    CoreLet { 
-                        Pattern = Builtin.symbolCons compiledPattern tailVar
-                        Value = cursorVar
-                        IsMutable = false 
-                    }
-                    updateResult
-                    UpdateVariable(cursorVarName, tailVar)
-                ]
-
-            let whileLoop =
-                WhileLoop {
-                    Predicate = symbol Internals.Neq [ cursorVar; nilVar ]
-                    Body = loopBody
-                }
-
-            TermSequence [
-                bindCursor
-                bindResult
-                bindNil
-                whileLoop
-                Builtin.symbolReverse resultVar
-            ]
-
-    /// Specific optimized `for-in` loops over syntactic ranges.
-    and private listComprehensionOverRange (cstate: State) (range: Range) (lc: ListComprehension) =
-        let bind name value isVar =
-            let varName = FreshName.get name
-            let varTerm = Variable varName
-            let binding = CoreLet { Pattern = varTerm; Value = value; IsMutable = isVar }
-            (varName, varTerm, binding)
-
-        let startExpr = compileExpression cstate range.RangeStart
-        let stopExpr = compileExpression cstate range.RangeStop
-        
-        let _, startVar, bindStart = bind "lc_start" startExpr false
-        let _, stopVar, bindStop   = bind "lc_stop"  stopExpr false
-        let resultName, resultVar, bindResult = bind "lc_result" Builtin.symbolNil true
-        
-        let loopName = FreshName.get "lc_i"
-        let loopCounterVar = Variable loopName
-
-        let loopBody =
-            let compiledPattern = compilePattern cstate lc.Pattern
-            let compiledItem = compileExpression cstate lc.ItemValue
-            
-            let appendExpr = Builtin.symbolCons compiledItem resultVar
-            let updateLogic = 
-                match lc.IfPred with
-                | Some pred -> 
-                    ifte (compileExpression cstate pred) 
-                        (UpdateVariable(resultName, appendExpr)) 
-                        (Builtin.symbolUnit)
-                | None -> UpdateVariable(resultName, appendExpr)
-
-            TermSequence [
-                CoreLet { Pattern = compiledPattern; Value = loopCounterVar; IsMutable = false }
-                updateLogic 
-            ]
-
-        let makeLoop startTerm stopTerm op cmp stepOpt =
-            whileLoop (FromString loopName) startTerm stopTerm loopBody op cmp stepOpt
-
-        match range.RangeStep with
-        | None ->
-            let loopBackwardsFromStop = makeLoop stopVar startVar Internals.Sub Internals.Geq None
-            let loopForwardsFromStop = makeLoop stopVar startVar Internals.Add Internals.Leq None
-
-            let dirCondition = symbol Internals.Leq [ startVar; stopVar ]
-
-            TermSequence [
-                bindStart; bindStop; bindResult
-                ifte dirCondition loopBackwardsFromStop loopForwardsFromStop
-                resultVar 
-            ]
-
-        | Some stepExpr ->
-            let stepCompiled = compileExpression cstate stepExpr
-            let _, stepVar, bindStep = bind "lc_step" stepCompiled false
-
-            let loopUp = makeLoop startVar stopVar Internals.Add Internals.Leq (Some stepVar)
-            let loopDown = makeLoop startVar stopVar Internals.Add Internals.Geq (Some stepVar)
-
-            let stepIsPositive = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
-
-            TermSequence [
-                bindStart; bindStop; bindStep; bindResult
-                ifte stepIsPositive loopUp loopDown
-                Builtin.symbolReverse resultVar
-            ]
-
-    and private compileApply (cstate: State) (apply: Apply) =
-        let args = List.map (compileExpression cstate) apply.Arguments
-
-        match removePos apply.LHS with
-        | Identifier id -> symbol (string id) args
-        | _ ->
-            let lhsTerm = compileExpression cstate apply.LHS
+            let lhsTerm = compileExpression cstate apply.ApplyCallee
             FunctionalApplication { Base = lhsTerm; Arguments = args }
 
-    //    and private compileApply (cstate: State) { LHS = lhs; Arguments = args } =
-    //        let lhs = compileExpression cstate lhs
-    //        let args = List.map (compileExpression cstate) args
-    //
-    //        match lhs with
-    //        | Symbol symb ->
-    //            if symb.Children.IsEmpty then copySymbolWithNewChildren symb args
-    //            else FunctionalApplication { Base = lhs; Arguments = args }
-    //
-    //        | Closure _ -> FunctionalApplication { Base = lhs; Arguments = args }
-    //        | x -> FunctionalApplication { Base = x; Arguments = args }
+    and private compileCollectionAccess (cstate: State) (ca: TCollectionAccess) =
+        let indices = List.map (compileExpression cstate) ca.AccessIndices
+        Builtin.symbolCollectionAccess (compileExpression cstate ca.AccessTarget) (List.rev indices)
 
-    and private compileInterpolatedString (cstate: State) (lstr: InterpolatedPart list) =
+    and private compileInterpolatedString (cstate: State) (parts: TInterpolatedPart list) =
+        let compiledParts =
+            List.map (function
+                | TInterpolatedPart.TStringPart s -> CoreTerm.Literal (CoreLiteral.String s.Node)
+                | TInterpolatedPart.TInterpolation e ->
+                    let ce = compileExpression cstate e
+                    symbol Internals.Ppshow [ ce ]) parts
 
-        let rec compileInterpolationPart cstate result =
-            function
-            | [] -> result
-            | Str s :: rest ->
-                let part = CoreTerm.Literal (CoreLiteral.String s.Node)
-                compileInterpolationPart cstate (part :: result) rest
+        match compiledParts with
+        | [] -> CoreTerm.Literal (CoreLiteral.String "")
+        | [ single ] -> single
+        | _ -> List.reduce (fun acc a -> symbol Internals.Strcat [ acc; a ]) compiledParts
 
-            | Interpolation e :: rest ->
-                let e = compileExpression cstate e
-                let spart = symbol Internals.Ppshow [ e ] //showSymbol e
-                compileInterpolationPart cstate (spart :: result) rest
+    and private compileRange (cstate: State) (range: TRange) =
+        let start = compileExpression cstate range.RangeFrom
+        let step = Option.map (compileExpression cstate) range.RangeBy
+        let stop = compileExpression cstate range.RangeTo
+        let stepTerm = Option.defaultValue Builtin.symbolNone (Option.map Builtin.symbolSome step)
+        Builtin.symbolRange start stepTerm stop
 
-        let parts = compileInterpolationPart cstate [] (List.rev lstr)
-        List.reduce (fun acc a -> symbol Internals.Strcat [ acc; a ]) parts
-
-    and private compileLiteral (lit: Literal) =
-        match lit with
-        | Literal.Char c -> CoreTerm.Literal (CoreLiteral.Char c)
-        | Literal.Float f -> CoreTerm.Literal (CoreLiteral.Float f)
-        | Literal.Integer i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
-        | Literal.String s -> CoreTerm.Literal (CoreLiteral.String s)
-        | Literal.Unit -> Builtin.symbolUnit
-
-    and private compileMixFix (cstate: State) (mixfix: ApplyOperator) =
-        match cstate.Notations |> List.tryFind (fun x -> removePos x.NotationName = mixfix.Name.Node) with
-        | None -> failwithf "Unknown notation: %s" mixfix.Name.Node
-        | Some notation ->
-            let args = List.map (compileExpression cstate) mixfix.Arguments
-            notationBinding cstate args notation
-
-    and private compileRange (cstate: State) { RangeStart = start; RangeStep = step; RangeStop = stop } =
-        let start = compileExpression cstate start
-        let step = Option.map (compileExpression cstate) step
-        let stop = compileExpression cstate stop
-
-        let step = Option.defaultValue Builtin.symbolNone (Option.map Builtin.symbolSome step)
-
-        Builtin.symbolRange start step stop
-
-    and private compileLetVar (cstate: State) (patt: PatternWithPos) (value: ExpressionWithPos) (isVar: bool) =
-        let patt = compilePattern cstate patt
-        let value = compileExpression cstate value
-
-        CoreLet
-            { Pattern = patt
-              Value = value
-              IsMutable = isVar }
-
-    and private compileWhile (cstate: State) { Predicate = pred; Body = body } =
-        let pred = compileExpression cstate pred
-        let body = compileExpression cstate body
-
-        WhileLoop { Predicate = pred; Body = body }
-
-    and private compileForTo (cstate: State) (forto: ForTo) (isDownTo: bool) =
-        let initialValue = compileExpression cstate forto.InitialValue
-        let endValue = compileExpression cstate forto.EndValue
-        let body = compileExpression cstate forto.Body
+    and private compileForTo (cstate: State) (forto: TForTo) =
+        let initialValue = compileExpression cstate forto.ForToInitial
+        let limitValue = compileExpression cstate forto.ForToLimit
+        let body = compileExpression cstate forto.ForToBody
+        let isDownTo = (forto.ForToDirection = ForDirection.Downwards)
 
         whileLoop
-            (FromPattern forto.Pattern)
+            (FromPattern forto.ForToPattern)
             initialValue
-            endValue
+            limitValue
             body
-            (if isDownTo then Internals.Sub else Internals.Add)
-            (if isDownTo then Internals.Geq else Internals.Leq)
+            (if isDownTo then Internals.Sub else Internals.Add)     // we could use the real internal
+            (if isDownTo then Internals.Geq else Internals.Leq)     // we could use the real internal
             None
 
-    and private compileForIn (cstate: State) (loop: ForIn) =
+    and private compileForIn (cstate: State) (loop: TForIn) =
+        match loop.ForInSource.Kind with
+        | TExpressionNode.TRange range ->
+            loopOverRange cstate range loop.ForInBody (FromPattern loop.ForInPattern)
 
-        // If the range is an actual syntactic range, we can transform it into a while loop
-        // that iters only on numbers, without creating any list
-
-        match removePos loop.ListExpr with
-        | Range range -> loopOverRange cstate range loop.Body (FromPattern loop.Pattern)
         | _ ->
-
-            // We use an iterator.
-
-            let compiledPattern = compilePattern cstate loop.Pattern
-            let compiledList = compileExpression cstate loop.ListExpr
-            let compiledBody = compileExpression cstate loop.Body
+            let compiledPattern = compilePattern cstate loop.ForInPattern
+            let compiledList = compileExpression cstate loop.ForInSource
+            let compiledBody = compileExpression cstate loop.ForInBody
 
             let cursorName = FreshName.get "iter_cursor"
             let tailName = FreshName.get "iter_tail"
@@ -432,15 +331,14 @@ module CoreCompiler =
                 bindNil
                 whileLoop ]
 
-    /// Specific optimized `for-in` loops over syntactic ranges.
     and private loopOverRange
         (cstate: State)
-        (range: Range)
-        (loopBody: ExpressionWithPos)
+        (range: TRange)
+        (loopBody: TExpression)
         (loopPattern: WhileLoopVariableSource)
         =
-        let startExpr = compileExpression cstate range.RangeStart
-        let stopExpr = compileExpression cstate range.RangeStop
+        let startExpr = compileExpression cstate range.RangeFrom
+        let stopExpr = compileExpression cstate range.RangeTo
         let bodyExpr = compileExpression cstate loopBody
 
         let bind name baseExpr =
@@ -456,13 +354,11 @@ module CoreCompiler =
             whileLoop loopPattern startVar stopVar bodyExpr op cmp stepOpt
 
         let stepBindings, loopLogic =
-            match range.RangeStep with
+            match range.RangeBy with
             | None ->
                 let loopUp = makeLoop Internals.Add Internals.Leq None
                 let loopDown = makeLoop Internals.Sub Internals.Geq None
-
                 let condition = symbol Internals.Leq [ startVar; stopVar ]
-                
                 ([], ifte condition loopUp loopDown)
 
             | Some stepExpr ->
@@ -470,18 +366,136 @@ module CoreCompiler =
                 let stepVar, bindStep = bind "range_step" stepCompiled
 
                 let loopUp = makeLoop Internals.Add Internals.Leq (Some stepVar)
-                let loopDown = makeLoop Internals.Add Internals.Geq (Some stepVar)
-                
+                let loopDown = makeLoop Internals.Sub Internals.Geq (Some stepVar)
                 let condition = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
 
                 ([bindStep], ifte condition loopUp loopDown)
 
         TermSequence ([bindStart; bindStop] @ stepBindings @ [loopLogic])
 
-    and private compileLamda (cstate: State) (lambda: Lambda) =
-        let compiledPatterns = 
-            lambda.Patterns 
-            |> List.map (compilePattern cstate)
+    and private compileListComprehension (cstate: State) (lc: TListComprehension) =
+        match lc.CompSource.Kind with
+        | TExpressionNode.TRange range ->
+            listComprehensionOverRange cstate range lc
+
+        | _ ->
+            let compiledItem = compileExpression cstate lc.CompItem
+            let compiledPattern = compilePattern cstate lc.CompPattern
+            let compiledList = compileExpression cstate lc.CompSource
+            let compiledCond = lc.CompFilter |> Option.map (compileExpression cstate)
+
+            let cursorVarName = FreshName.get "lc_cursor"
+            let tailVarName = FreshName.get "lc_tail"
+            let resultVarName = FreshName.get "lc_result"
+            let nilVarName = FreshName.get "lc_nil"
+            
+            let cursorVar = Variable cursorVarName
+            let tailVar = Variable tailVarName
+            let resultVar = Variable resultVarName
+            let nilVar = Variable nilVarName
+
+            let bindCursor = CoreLet { Pattern = cursorVar; Value = compiledList; IsMutable = true }
+            let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsMutable = true }
+            let bindNil = CoreLet { Pattern = nilVar; Value = Builtin.symbolNil; IsMutable = false }
+
+            let appendExpr = Builtin.symbolCons compiledItem resultVar
+
+            let updateResult =
+                match compiledCond with
+                | Some cond -> ifte cond (UpdateVariable(resultVarName, appendExpr)) Builtin.symbolUnit
+                | None -> UpdateVariable(resultVarName, appendExpr)
+
+            let loopBody =
+                TermSequence [
+                    CoreLet { 
+                        Pattern = Builtin.symbolCons compiledPattern tailVar
+                        Value = cursorVar
+                        IsMutable = false 
+                    }
+                    updateResult
+                    UpdateVariable(cursorVarName, tailVar)
+                ]
+
+            let whileLoop =
+                WhileLoop {
+                    Predicate = symbol Internals.Neq [ cursorVar; nilVar ]
+                    Body = loopBody
+                }
+
+            TermSequence [
+                bindCursor
+                bindResult
+                bindNil
+                whileLoop
+                Builtin.symbolReverse resultVar
+            ]
+
+    and private listComprehensionOverRange (cstate: State) (range: TRange) (lc: TListComprehension) =
+        let bind name value isVar =
+            let varName = FreshName.get name
+            let varTerm = Variable varName
+            let binding = CoreLet { Pattern = varTerm; Value = value; IsMutable = isVar }
+            (varName, varTerm, binding)
+
+        let startExpr = compileExpression cstate range.RangeFrom
+        let stopExpr = compileExpression cstate range.RangeTo
+        
+        let _, startVar, bindStart = bind "lc_start" startExpr false
+        let _, stopVar, bindStop   = bind "lc_stop"  stopExpr false
+        let resultName, resultVar, bindResult = bind "lc_result" Builtin.symbolNil true
+        
+        let loopName = FreshName.get "lc_i"
+        let loopCounterVar = Variable loopName
+
+        let loopBody =
+            let compiledPattern = compilePattern cstate lc.CompPattern
+            let compiledItem = compileExpression cstate lc.CompItem
+            
+            let appendExpr = Builtin.symbolCons compiledItem resultVar
+            let updateLogic = 
+                match lc.CompFilter with
+                | Some pred -> 
+                    ifte (compileExpression cstate pred) 
+                        (UpdateVariable(resultName, appendExpr)) 
+                        Builtin.symbolUnit
+                | None -> UpdateVariable(resultName, appendExpr)
+
+            TermSequence [
+                CoreLet { Pattern = compiledPattern; Value = loopCounterVar; IsMutable = false }
+                updateLogic 
+            ]
+
+        let makeLoop startTerm stopTerm op cmp stepOpt =
+            whileLoop (FromString loopName) startTerm stopTerm loopBody op cmp stepOpt
+
+        match range.RangeBy with
+        | None ->
+            let loopBackwardsFromStop = makeLoop stopVar startVar Internals.Sub Internals.Geq None
+            let loopForwardsFromStop = makeLoop stopVar startVar Internals.Add Internals.Leq None
+            let dirCondition = symbol Internals.Leq [ startVar; stopVar ]
+
+            TermSequence [
+                bindStart; bindStop; bindResult
+                ifte dirCondition loopBackwardsFromStop loopForwardsFromStop
+                resultVar 
+            ]
+
+        | Some stepExpr ->
+            let stepCompiled = compileExpression cstate stepExpr
+            let _, stepVar, bindStep = bind "lc_step" stepCompiled false
+
+            let loopUp = makeLoop startVar stopVar Internals.Add Internals.Leq (Some stepVar)
+            let loopDown = makeLoop startVar stopVar Internals.Sub Internals.Geq (Some stepVar)
+            let stepIsPositive = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
+
+            TermSequence [
+                bindStart; bindStop; bindStep; bindResult
+                ifte stepIsPositive loopUp loopDown
+                Builtin.symbolReverse resultVar
+            ]
+
+    and private compileLambda (cstate: State) (lambda: TLambda) =
+        let compiledPatterns = lambda.LambdaParameters |> List.map (compilePattern cstate)
 
         let (parameters, bindings) =
             compiledPatterns
@@ -498,12 +512,11 @@ module CoreCompiler =
                     freshArgName, Some binding)
             |> List.unzip
 
-        let originalBody = compileExpression cstate lambda.Body
+        let originalBody = compileExpression cstate lambda.LambdaBody
         let bindingStmts = List.choose id bindings
 
         let newBody =
-            if List.isEmpty bindingStmts then
-                originalBody
+            if List.isEmpty bindingStmts then originalBody
             else
                 match originalBody with
                 | TermSequence seq -> TermSequence (bindingStmts @ seq)
@@ -523,19 +536,19 @@ module CoreCompiler =
               Parameters = parameters
               Value = newBody }
 
-    and private compileMatch (cstate: State) (match': Match) =
-        let toMatch = compileExpression cstate match'.ToMatch
+    and private compileMatch (cstate: State) (match': TMatch) =
+        let toMatch = compileExpression cstate match'.MatchScrutinee
         let cases =
-            match'.Cases
-            |> List.map (fun (patt, value) -> compilePattern cstate patt, compileExpression cstate value)
+            match'.MatchCases
+            |> List.map (fun c -> compilePattern cstate c.CasePattern, compileExpression cstate c.CaseBody)
 
         CoreTerm.Match
             { ToMatch = toMatch
               Cases = cases }
 
-    and private compileIfThenElse (cstate: State) (ifte: IfThenElse) =
-        let condition = compileExpression cstate ifte.Condition
-        let thenBranch = compileExpression cstate ifte.ThenBranch
+    and private compileIfThenElse (cstate: State) (ifte: TIfThenElse) =
+        let condition = compileExpression cstate ifte.IfCondition
+        let thenBranch = compileExpression cstate ifte.IfThen
 
         let rec buildElseChain elifBranches finalElse =
             match elifBranches with
@@ -543,9 +556,9 @@ module CoreCompiler =
                 Option.map (compileExpression cstate) finalElse
                 |> Option.defaultValue Builtin.symbolUnit
 
-            | (elifCond, elifThen) :: rest ->
-                let elifCondCompiled = compileExpression cstate elifCond
-                let elifThenCompiled = compileExpression cstate elifThen
+            | elifBr :: rest ->
+                let elifCondCompiled = compileExpression cstate elifBr.ElifCondition
+                let elifThenCompiled = compileExpression cstate elifBr.ElifBody
                 let restChain = buildElseChain rest finalElse
 
                 CoreTerm.Match
@@ -554,168 +567,196 @@ module CoreCompiler =
                         [ (Builtin.symbolTrue, elifThenCompiled)
                           (Builtin.symbolFalse, restChain) ] }
 
-        let elseBranch = buildElseChain ifte.ElifBranches ifte.ElseBranch
-
-        let toMatch = condition
-        let cases =
-            [ (Builtin.symbolTrue, thenBranch)
-              (Builtin.symbolFalse, elseBranch) ]
+        let elseBranch = buildElseChain ifte.IfElifs ifte.IfElse
 
         CoreTerm.Match
-            { ToMatch = toMatch
-              Cases = cases }
+            { ToMatch = condition
+              Cases =
+                [ (Builtin.symbolTrue, thenBranch)
+                  (Builtin.symbolFalse, elseBranch) ] }
 
-    and private compileRecord (cstate: State) (fields: List<NameWithPos * ExpressionWithPos>) =
-        let fields = List.map (fun (name, value) -> removePos name, compileExpression cstate value) fields
-        RecordExtend { BaseRecord = None; Extension = fields }
+    and private compileRecord (cstate: State) (fields: TBinding<TExpression> list) =
+        let compiledFields = List.map (fun b -> removePos b.BindingName, compileExpression cstate b.BindingValue) fields
+        RecordExtend { BaseRecord = None; Extension = compiledFields }
 
-    and private compileRecordExtend (cstate: State) (baseRecord: ExpressionWithPos) (fields: List<NameWithPos * ExpressionWithPos>) =
-        let baseRecord = compileExpression cstate baseRecord
-        let fields = List.map (fun (name, value) -> removePos name, compileExpression cstate value) fields
+    and private compileRecordUsing (cstate: State) (ru: TRecordUsing) =
+        let baseRecord = compileExpression cstate ru.RecordBase
+        let updates = List.map (fun b -> removePos b.BindingName, compileExpression cstate b.BindingValue) ru.RecordUpdates
+        RecordExtend { BaseRecord = Some baseRecord; Extension = updates }
 
-        RecordExtend { BaseRecord = Some baseRecord; Extension = fields }
+    and private compileSubstitution (cstate: State) (s: TSubstitution) =
+        let env =
+            List.map (fun b ->
+                ({ Symbol = removePos b.BindingName; Children = [] }, compileExpression cstate b.BindingValue))
+                s.SubstReplacements
 
-    and private compileHandleEffect (cstate: State) (handle: Handle) =
-        let handler = string (removePos handle.Handler)
-        let state = compileExpression cstate handle.InitialState
-        let body = compileExpression cstate handle.Body
-        
-        Handle { Handler = handler; State = state; ToHandle = body }
+        let inExpr = compileExpression cstate s.SubstTarget
+        CoreTerm.Substitution { Env = env; InExpr = inExpr }
 
-    and private compileResume (cstate: State) (resume: ResumeWith) =
-        let state = compileExpression cstate resume.HandlerState
-        let value = compileExpression cstate resume.Value
+    and private compileMixFix (cstate: State) (mixfix: TMixfixOperator) =
+        compileExpression cstate mixfix.MixfixExpanded
 
-        Resume {
-            Rewrite = value
-            State = state
-            FromHandler = cstate.CurrentHandler.Value }
 
-    and private compileSubstitution (cstate: State) (env: list<NameWithPos * ExpressionWithPos>) (inExpr: ExpressionWithPos) =
-        let env = List.map (fun (a, b) -> let (Symbol sym) = simpleSymbol (removePos a) in sym, compileExpression cstate b) env
-        let inExpr = compileExpression cstate inExpr
+    //                          //
+    // --- Compile Patterns --- //
+    //                          //
 
-        CoreTerm.Substitution
-            { Env = env
-              InExpr = inExpr }
 
-    and private compileUsingContext (cstate: State) (ctx: UsingContext) =
-        CoreTerm.UsingContext
-            { Context = string (removePos ctx.ContextName)
-              Expr = compileExpression cstate ctx.ContentExpr }
+    and private compilePattern (cstate: State) (pattern: TPattern) : CoreTerm =
+        match pattern.Kind with
+        | TPatternNode.TPatError err -> failwithf "Cannot compile AST containing error: %s" err.Description
 
-    // --- Patterns --- //
+        | TPatternNode.TPatWildcard ->
+            CoreTerm.Wildcard
 
-    and private compilePattern (cstate: State) (pattern: PatternWithPos) =
-        match removePos pattern with
-        | VariablePattern v -> Variable v
-        | SymbolPattern s -> simpleSymbol (string s)
-        | ApplyPattern(lhs, args) -> compileApplyPattern cstate lhs args
-        | LiteralPattern lit -> compileLiteral lit
-        | TuplePattern xs -> Builtin.symbolTuple (List.map (compilePattern cstate) xs)
-        | ListPattern xs -> Builtin.symbolList (List.map (compilePattern cstate) xs)
-        | AsPattern(basePatt, asPatt) -> compileAsPattern cstate basePatt asPatt
-        | WhenPattern(basePatt, pred) -> compileWhenPattern cstate basePatt pred
-        | Wildcard -> CoreTerm.Wildcard
-        | MixfixOperatorPattern(name, args) -> compileMixFixPattern cstate name.Node args
-        | RecordPattern fields -> compileRecordPattern cstate fields
-        | AlternativePattern xs -> compileAlternativePattern xs
-        | TypedPattern(patt, ty) -> compileTypedPattern cstate patt ty
-        | other -> failwithf "Todo: %A" other
+        | TPatternNode.TPatLiteral lit ->
+            compileLiteralNode lit
 
-    and private compileApplyPattern (cstate: State) (lhs: PatternWithPos) (args: PatternWithPos list) =
-        let lhs = compilePattern cstate lhs
-        let args = List.map (compilePattern cstate) args
+        | TPatternNode.TPatVariable ident ->
+            Variable (removePos ident.Written.Name)
 
-        let raiseException () =
-            failwithf "Application on non-applicable symbol: %s" (PrettyPrinter.prettyPrintExpr lhs)
+        | TPatternNode.TPatConstructor ident ->
+            simpleSymbol (string ident.Written)
 
-        match lhs with
+        | TPatternNode.TPatApply apply ->
+            compileApplyPattern cstate apply.PatApplyHead apply.PatApplyArguments
+
+        | TPatternNode.TPatTuple xs ->
+            Builtin.symbolTuple (List.map (compilePattern cstate) xs)
+
+        | TPatternNode.TPatList xs ->
+            Builtin.symbolList (List.map (compilePattern cstate) xs)
+
+        | TPatternNode.TPatRecord fields ->
+            let compiledFields = List.map (fun b -> removePos b.BindingName, compilePattern cstate b.BindingValue) fields
+            RecordExtend { BaseRecord = None; Extension = compiledFields }
+
+        | TPatternNode.TPatMixfix mixfix ->
+            compileMixFixPattern cstate mixfix
+
+        | TPatternNode.TPatAs asPatt ->
+            let baseTerm = compilePattern cstate asPatt.PatAsBase
+            let aliasTerm = compilePattern cstate asPatt.PatAsAlias
+            AsClause(baseTerm, aliasTerm)
+
+        | TPatternNode.TPatWhen whenPatt ->
+            let baseTerm = compilePattern cstate whenPatt.PatWhenBase
+            let guardTerm = compileExpression cstate whenPatt.PatWhenGuard
+            WhenClause(baseTerm, guardTerm)
+
+        | TPatternNode.TPatTyped typed ->
+            // The compiler is static, so we have a type erasure here.
+            compilePattern cstate typed.PatTypedInner
+
+        | TPatternNode.TPatAlternative alts ->
+            compileAlternativePattern alts
+
+    and private compileApplyPattern (cstate: State) (lhs: TPattern) (args: TPattern list) =
+        let lhsTerm = compilePattern cstate lhs
+        let argsTerms = List.map (compilePattern cstate) args
+
+        match lhsTerm with
         | Symbol symb ->
-            if symb.Children.IsEmpty then Symbol { symb with Children = args }
-            else raiseException ()
+            if symb.Children.IsEmpty then Symbol { symb with Children = argsTerms }
+            else failwithf "Application on non-applicable symbol: %s" symb.Symbol
 
         | Variable v ->
-            VariableApply(v, args)
+            VariableApply(v, argsTerms)
 
         | _ ->
-            raiseException ()
+            failwithf "Application on non-applicable pattern term: %A" lhsTerm
 
-    and private compileAsPattern (cstate: State) (basePatt: PatternWithPos) (asPatt: PatternWithPos) =
-        let basePatt = compilePattern cstate basePatt
-        let asPatt = compilePattern cstate asPatt
-
-        AsClause(basePatt, asPatt)
-
-    and private compileMixFixPattern (cstate: State) (name: string) (args: PatternWithPos list) =
-        match cstate.Notations |> List.tryFind (fun x -> removePos x.NotationName = name) with
-        | None -> failwithf "Unknown notation: %s" name
+    and private compileMixFixPattern (cstate: State) (mix: TPatMixfix) =
+        let opName = removePos mix.PatMixfixSymbol.Written.Name
+        match cstate.Notations |> List.tryFind (fun n -> removePos n.NotationName = opName) with
+        | None -> failwithf "Unknown notation: %s" opName
         | Some notation ->
-            let args = List.map (compilePattern cstate) args
-            notationBinding cstate args notation
+            let args = List.map (compilePattern cstate) mix.PatMixfixOperands
+            notationBinding args notation
 
-    and private compileWhenPattern (cstate: State) (basePatt: PatternWithPos) (pred: ExpressionWithPos) =
-        let basePatt = compilePattern cstate basePatt
-        let pred = compileExpression cstate pred
-
-        WhenClause(basePatt, pred)
-
-    and private compileAlternativePattern (alternatives: LiteralWithPos list) =
-        // (A | B | C) -> 'x when 'x ∈ { A, B, C }
-        let alternatives = Builtin.symbolList (List.map (removePos >> compileLiteral) alternatives)
+    and private compileAlternativePattern (alts: TLiteral list) =
+        let altTerms = alts |> List.map (fun lit -> compileLiteralNode lit.Kind)
+        let altList = Builtin.symbolList altTerms
         let uv = Variable (FreshName.get "altp")
+        WhenClause(uv, Builtin.symbolContains altList uv)
 
-        WhenClause(uv, Builtin.symbolContains alternatives uv)
 
-    and private compileRecordPattern (cstate: State) (fields: (NameWithPos * PatternWithPos) list) =
-        let fields = List.map (fun (name, value) -> removePos name, compilePattern cstate value) fields
-        RecordExtend { BaseRecord = None; Extension = fields }
+    //                                 //
+    // --- Handle Mixfix Notations --- //
+    //                                 //
 
-    and private compileTypedPattern (cstate: State) (patt: PatternWithPos) (ty: TypeWithPos) =
-        // TODO
-        compilePattern cstate patt
 
-    and private notationBinding (cstate: State) (args: CoreTerm list) (notation: Notation) =
-        let pattern = removePos notation.NotationPattern
-        let rewrite = compileExpression cstate notation.NotationIs
+    and private compileNotationExpression (holes: Set<string>) (expr: ExpressionWithPos) : CoreTerm =
+        match removePos expr with
+        | Identifier id when List.isEmpty id.Qualifier && Set.contains (removePos id.Name) holes ->
+            Variable (removePos id.Name)
 
-        let holes =
-            pattern
-            |> List.choose (function
-                | HolePart h -> Some (Variable h.Node)
-                | _ -> None)
+        | Identifier id ->
+            simpleSymbol (string id)
 
-        let subst = Map.ofList (List.zip holes args)
+        | Apply { LHS = lhs; Arguments = args } ->
+            match removePos lhs with
+            | Identifier id ->
+                symbol (string id) (List.map (compileNotationExpression holes) args)
+
+            | _ ->
+                FunctionalApplication
+                    { Base = compileNotationExpression holes lhs
+                      Arguments = List.map (compileNotationExpression holes) args }
+
+        | Literal lit ->
+            match lit with
+            | Literal.Integer i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
+            | Literal.Float f   -> CoreTerm.Literal (CoreLiteral.Float f)
+            | Literal.Char c    -> CoreTerm.Literal (CoreLiteral.Char c)
+            | Literal.String s  -> CoreTerm.Literal (CoreLiteral.String s)
+            | Literal.Unit      -> Builtin.symbolUnit
+            | _ -> failwith "Unsupported literal in notation rewrite"
+
+        | Tuple xs -> Builtin.symbolTuple (List.map (compileNotationExpression holes) xs)
+        | List xs  -> Builtin.symbolList (List.map (compileNotationExpression holes) xs)
+        | other    -> failwithf "Unsupported expression in notation rewrite: %A" other
+
+    and private notationBinding (args: CoreTerm list) (notation: Notation) =
+        let holesList =
+            removePos notation.NotationPattern
+            |> List.choose (function HolePart h -> Some h.Node | _ -> None)
+
+        let holesSet = Set.ofList holesList
+        let rewrite = compileNotationExpression holesSet notation.NotationIs
+
+        let subst =
+            List.zip (List.map Variable holesList) args
+            |> Map.ofList
+
         CoreTermSubstitution.replaceCoreTerm subst rewrite
 
-    // --- Types --- //
 
-    and private compileType (ty: Type) =
-        failwith "Todo" // Symbolic or not ? Est-ce qu'on fait une branche spécifique pour les types ?
-                        // c'est sans doute mieux.
+    //                                          //
+    // --- Top Level Declarations & Modules --- //
+    //                                          //
 
-    // --- Top Level --- //
 
-    and private compileDefinition (cstate: State) (definition: TopLevelWithPos) =
+    and private compileTopLevel (cstate: State) (topLevel: TTopLevel) : CoreDefinition option =
         let compiled =
-            match removePos definition with
-            | TopLevel.Rule rule -> Some (compileRule cstate rule)
-            | TopLevel.LetRule letRule -> Some (compileRule cstate letRule)
-            | TopLevel.Handler handler -> Some (compileHandler cstate handler)
-            | TopLevel.Extern extrn -> None
-            | TopLevel.Context context -> Some (compileContext cstate context)
-            | other -> failwithf "Todo: %A" other
+            match topLevel.Node with
+            | TTopLevelNode.TRuleDef rule
+            | TTopLevelNode.TLetRuleDef rule -> Some (compileRule cstate rule)
+            | _ -> None // todo or not compilable
 
         Option.map (AlphaConversion.alphaConversionDefinition FreshName.get) compiled
 
-    and private compileRule (cstate: State) (rule: Rule) =
-        let body = compileExpression cstate rule.Body
-        let name = removePos rule.Name
-        let patterns = List.map (compilePattern cstate) rule.Patterns
-        let whenClause = Option.map (compileExpression cstate) rule.WhenClause
-        let strategy = Option.defaultValue Strict (Option.map removePos rule.Strategy)
+    and private compileRule (cstate: State) (rule: TRule) : CoreDefinition =
+        let name =
+            match rule.RuleSymbol.Kind with
+            | SymbolKind.RuleReference mangled when not (System.String.IsNullOrEmpty mangled) -> mangled
+            | _ -> removePos rule.RuleSymbol.Written.Name
 
+        let patterns = List.map (compilePattern cstate) rule.RulePatterns
         let lhs = symbol name patterns
+        let body = compileExpression cstate rule.RuleBody
+        let whenClause = Option.map (compileExpression cstate) rule.RuleWhen
+        let strategy = Option.defaultValue Strict (Option.map removePos rule.RuleStrategy)
 
         CoreDefinition.Rule
             { LHS = lhs
@@ -723,93 +764,62 @@ module CoreCompiler =
               WhenClause = whenClause
               Strategy = strategy }
 
-    and private compileHandler (cstate: State) (handler: Handler) =
-        let cstate = { cstate with CurrentHandler = Some handler.Name.Node }
-
-        let body = compileExpression cstate handler.Body
-        let name = handler.Name
-        let hstate = compilePattern cstate handler.State
-        let pattern = compilePattern cstate handler.Pattern
-        let whenClause = Option.map (compileExpression cstate) handler.WhenClause
-        let strategy = Option.defaultValue Strict (Option.map removePos handler.Strategy)
-
-        let lhs = pattern
-
-        CoreDefinition.Handler
-            { HandlerName = name.Node
-              LHS = lhs
-              RHS = body
-              State = hstate
-              WhenClause = whenClause
-              Strategy = strategy }
-
-    and private compileContext (cstate: State) (context: Context) =
-        CoreDefinition.Context
-            { ContextName = string (removePos context.Name)
-              Content = List.choose (compileDefinition cstate) context.Content
-              Using = List.map (removePos >> string) context.Using }
-
-    // --- Module --- //
-
     type public CoreNotationInfo =
         { Name: string
           Associativity: Associativity
           IsCommutative: bool }
 
-    /// Dictionary between notation's name/arity and their core informations.
     type public NotationEnv = Map<string * int, CoreNotationInfo>
 
-    let private compileModule (modl: ModuleInfo) =
-        let definitions = Definitions.classifyDefinitions modl
-
+    let private compileModule (modl: TModule) =
         let notations =
-            definitions
-            |> Map.tryFind Definitions.DefinitionType.Notation
-            |> Option.map (List.map (removePos >> function Notation notation -> notation))
-            |> Option.defaultValue []
+            modl.Declarations
+            |> List.choose (fun d ->
+                match d.Node with
+                | TTopLevelNode.TNotationDef nt -> Some nt
+                | _ -> None )
 
-        let cstate = { State.Empty with Notations = notations }
-        let definitions = Map.remove Definitions.DefinitionType.Notation definitions
+        let cstate = { Notations = notations; CurrentHandler = None }
 
         let notationsInfo =
             notations
             |> List.map (fun nt ->
+                let holes =
+                    removePos nt.NotationPattern
+                    |> List.choose (function HolePart h -> Some h.Node | _ -> None)
+                    |> Set.ofList
+
                 let key =
-                    match compileExpression cstate nt.NotationIs with
+                    match compileNotationExpression holes nt.NotationIs with
                     | Symbol { Symbol = symb; Children = children } -> (symb, children.Length)
                     | other -> failwithf "Notations can only rewrite to symbols, but got `%A`." other
 
-                key,
+                let value =
                     { Name = removePos nt.NotationName
                       Associativity = removePos nt.NotationAssociativity
-                      IsCommutative = removePos nt.NotationCommutative })
+                      IsCommutative = removePos nt.NotationCommutative }
+
+                (key, value))
             |> Map.ofList
 
-        let compiledModule =
-            definitions.Values
-            |> List.ofSeq
-            |> List.concat
-            |> List.choose (compileDefinition cstate)
+        let compiledDefs =
+            modl.Declarations
+            |> List.choose (compileTopLevel cstate)
 
-        (compiledModule, notationsInfo)
+        (compiledDefs, notationsInfo)
 
     type public LayeredCompilationEnv =
         { Definitions: CoreDefinition list
           NotationEnv: NotationEnv }
 
-    /// Compiles each modules of the list to the LiyhCore intermediate representation.
-    /// The compilation is done in parallel for each modules.
-    let public compileModules (modules: ModuleInfo list) : LayeredCompilationEnv =
+    let public compileModules (modules: TModule list) : LayeredCompilationEnv =
         let compiledResults =
             modules
             |> Array.ofList
             |> Array.Parallel.map compileModule
 
         let compiledModuleDefinitions, notationsMaps = Array.unzip compiledResults
-        let mergedModuleDefinitions =  List.concat compiledModuleDefinitions
-
-        // Some upstream checks verify for collisions, so we do not
-        // have to handle this here for the map's keys.
+        let mergedModuleDefinitions = List.concat compiledModuleDefinitions
 
         let mergedNotations =
             notationsMaps
@@ -824,12 +834,11 @@ module CoreCompiler =
           Definitions: CoreDefinition list
           NotationEnv: NotationEnv }
 
-    /// Merges compilation environment tables for each layer into a global environment.
-    /// Assumes no collisions between definitions across layers.
     let public getGlobalCompilationEnv
         (ffiBindings: GlobalFFIBindings)
         (compilationEnvLayers: LayeredCompilationEnv array)
-        : GlobalCompilationEnv =
+        : GlobalCompilationEnv
+        =
 
         let coreDefinitions =
             compilationEnvLayers
