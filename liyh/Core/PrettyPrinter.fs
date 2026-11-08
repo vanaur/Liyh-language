@@ -14,9 +14,6 @@ module PrettyPrinter =
         | Symbol { Symbol = s
                    Children = [] } -> s
 
-        | Builtin.Ptr p ->
-            sprintf "ptr[0x%016x]" (int64 p)
-
         | Symbol { Symbol = s
                    Children = xs } ->
             if List.isEmpty xs then

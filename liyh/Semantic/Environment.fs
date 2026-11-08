@@ -1,6 +1,7 @@
 #nowarn "40"
 namespace rec Liyh.Semantic
 
+open Liyh.FFI
 open Liyh.FFI.GeneralFFI
 open Liyh.Syntax.SyntaxTree
 open Liyh.Semantic.TypedSyntaxTree
@@ -120,6 +121,7 @@ module private BuiltinSignatures =
     let private cmpInt = TArrow([ TInt; TInt ], TBool, Set.empty)
     let private cmpFloat = TArrow([ TFloat; TFloat ], TBool, Set.empty)
     let private binBool = TArrow([ TBool; TBool ], TBool, Set.empty)
+    let private uniBool = TArrow([ TBool ], TBool, Set.empty)
 
     /// Polymorphic equality predicate: `∀ 'α, ['α; 'α] → Bool`.
     let private polyEq () =
@@ -139,60 +141,56 @@ module private BuiltinSignatures =
     /// Built-in and natives functions.
     let public all : Map<string, Scheme list> =
         [
-            "__internal_add", [ Scheme.empty binInt; Scheme.empty binFloat ]
-            "__internal_sub", [ Scheme.empty binInt; Scheme.empty binFloat ]
-            "__internal_mul", [ Scheme.empty binInt; Scheme.empty binFloat ]
-            "__internal_div", [ Scheme.empty binInt; Scheme.empty binFloat ]
-            "__internal_mod", [ Scheme.empty binInt ]
-            "__internal_neg", [ Scheme.empty (TArrow([ TInt ], TInt, Set.empty)); Scheme.empty (TArrow([ TFloat ], TFloat, Set.empty)) ]
+            Internals.Add, [ Scheme.empty binInt; Scheme.empty binFloat ]
+            Internals.Sub, [ Scheme.empty binInt; Scheme.empty binFloat ]
+            Internals.Mul, [ Scheme.empty binInt; Scheme.empty binFloat ]
+            Internals.Div, [ Scheme.empty binInt; Scheme.empty binFloat ]
+            Internals.Mod, [ Scheme.empty binInt ]
 
-            "__internal_eq",  [ polyEq () ]
-            "__internal_neq", [ polyEq () ]
-            "__internal_lt",  [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
-            "__internal_le",  [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
-            "__internal_leq", [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
-            "__internal_gt",  [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
-            "__internal_ge",  [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
-            "__internal_geq", [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
+            Internals.Eq,  [ polyEq () ]
+            Internals.Neq, [ polyEq () ]
+            Internals.Le,  [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
+            Internals.Leq, [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
+            Internals.Ge,  [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
+            Internals.Geq, [ Scheme.empty cmpInt; Scheme.empty cmpFloat ]
+            Internals.Nt,  [ Scheme.empty uniBool ]
+            Internals.And, [ Scheme.empty binBool ]
+            Internals.Or,  [ Scheme.empty binBool ]
 
-            "__internal_and", [ Scheme.empty binBool ]
-            "__internal_or",  [ Scheme.empty binBool ]
-            "__internal_not", [ Scheme.empty (TArrow([ TBool ], TBool, Set.empty)) ]
+            Internals.Strcat, [ Scheme.empty (TArrow([ TString; TString ], TString, Set.empty)) ]
+            Internals.Print,  [ Scheme.empty (TArrow([ TString ], TUnit, Set.empty)) ]
+            Internals.Ppshow, [ polyShow () ]
 
-            "__internal_strcat", [ Scheme.empty (TArrow([ TString; TString ], TString, Set.empty)) ]
-            "__internal_print",  [ Scheme.empty (TArrow([ TString ], TUnit, Set.empty)) ]
-            "__internal_ppshow", [ polyShow () ]
+            Internals.IsInt,     [ polyTypeCheck () ]
+            Internals.IsFloat,   [ polyTypeCheck () ]
+            Internals.IsChar,    [ polyTypeCheck () ]
+            Internals.IsString,  [ polyTypeCheck () ]
+            Internals.IsBool,    [ polyTypeCheck () ]
+            Internals.IsNumeric, [ polyTypeCheck () ]
 
-            "__internal_is_int",     [ polyTypeCheck () ]
-            "__internal_is_float",   [ polyTypeCheck () ]
-            "__internal_is_char",    [ polyTypeCheck () ]
-            "__internal_is_string",  [ polyTypeCheck () ]
-            "__internal_is_bool",    [ polyTypeCheck () ]
-            "__internal_is_numeric", [ polyTypeCheck () ]
+            Internals.CastItf, [ Scheme.empty (TArrow([ TInt ], TFloat, Set.empty)) ]
+            Internals.CastItc, [ Scheme.empty (TArrow([ TInt ], TChar, Set.empty)) ]
+            Internals.CastIts, [ Scheme.empty (TArrow([ TInt ], TString, Set.empty)) ]
 
-            "__internal_cast_itf", [ Scheme.empty (TArrow([ TInt ], TFloat, Set.empty)) ]
-            "__internal_cast_itc", [ Scheme.empty (TArrow([ TInt ], TChar, Set.empty)) ]
-            "__internal_cast_its", [ Scheme.empty (TArrow([ TInt ], TString, Set.empty)) ]
+            Internals.CastFti, [ Scheme.empty (TArrow([ TFloat ], TInt, Set.empty)) ]
+            Internals.CastFtc, [ Scheme.empty (TArrow([ TFloat ], TChar, Set.empty)) ]
+            Internals.CastFts, [ Scheme.empty (TArrow([ TFloat ], TString, Set.empty)) ]
 
-            "__internal_cast_fti", [ Scheme.empty (TArrow([ TFloat ], TInt, Set.empty)) ]
-            "__internal_cast_ftc", [ Scheme.empty (TArrow([ TFloat ], TChar, Set.empty)) ]
-            "__internal_cast_fts", [ Scheme.empty (TArrow([ TFloat ], TString, Set.empty)) ]
+            Internals.CastCti, [ Scheme.empty (TArrow([ TChar ], TInt, Set.empty)) ]
+            Internals.CastCtf, [ Scheme.empty (TArrow([ TChar ], TFloat, Set.empty)) ]
+            Internals.CastCts, [ Scheme.empty (TArrow([ TChar ], TString, Set.empty)) ]
 
-            "__internal_cast_cti", [ Scheme.empty (TArrow([ TChar ], TInt, Set.empty)) ]
-            "__internal_cast_ctf", [ Scheme.empty (TArrow([ TChar ], TFloat, Set.empty)) ]
-            "__internal_cast_cts", [ Scheme.empty (TArrow([ TChar ], TString, Set.empty)) ]
+            Internals.CastSti, [ Scheme.empty (TArrow([ TString ], TInt, Set.empty)) ]
+            Internals.CastStf, [ Scheme.empty (TArrow([ TString ], TFloat, Set.empty)) ]
+            Internals.CastStc, [ Scheme.empty (TArrow([ TString ], TChar, Set.empty)) ]
 
-            "__internal_cast_sti", [ Scheme.empty (TArrow([ TString ], TInt, Set.empty)) ]
-            "__internal_cast_stf", [ Scheme.empty (TArrow([ TString ], TFloat, Set.empty)) ]
-            "__internal_cast_stc", [ Scheme.empty (TArrow([ TString ], TChar, Set.empty)) ]
-
-            "__buffer_alloc",     [ Scheme.empty (TArrow([ TInt ], TCType (CType.Pointer CType.Void), Set.empty)) ]
-            "__buffer_get",       [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void); TInt ], TInt, Set.empty)) ]
-            "__buffer_set",       [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void); TInt; TInt ], TUnit, Set.empty)) ]
-            "__buffer_realloc",   [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void); TInt ], TCType (CType.Pointer CType.Void), Set.empty)) ]
-            "__buffer_length",    [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void) ], TInt, Set.empty)) ]
-            "__buffer_to_string", [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void) ], TString, Set.empty)) ]
-            "__string_to_buffer", [ Scheme.empty (TArrow([ TString ], TCType (CType.Pointer CType.Void), Set.empty)) ]
+            Internals.BufferAlloc,     [ Scheme.empty (TArrow([ TInt ], TCType (CType.Pointer CType.Void), Set.empty)) ]
+            Internals.BufferGet,       [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void); TInt ], TInt, Set.empty)) ]
+            Internals.BufferSet,       [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void); TInt; TInt ], TUnit, Set.empty)) ]
+            Internals.BufferRealloc,   [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void); TInt ], TCType (CType.Pointer CType.Void), Set.empty)) ]
+            Internals.BufferLength,    [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void) ], TInt, Set.empty)) ]
+            Internals.BufferToString,  [ Scheme.empty (TArrow([ TCType (CType.Pointer CType.Void) ], TString, Set.empty)) ]
+            Internals.StringToBuffer,  [ Scheme.empty (TArrow([ TString ], TCType (CType.Pointer CType.Void), Set.empty)) ]
         ]
         |> Map.ofList
 

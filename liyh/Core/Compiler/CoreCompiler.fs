@@ -16,6 +16,7 @@ module public CoreCompiler =
     open Liyh.Syntax.SyntaxTree
     open Liyh.Semantic.TypedSyntaxTree
     open Liyh.Core.Helper
+    open Liyh.FFI
     open LiyhPackage
 
 

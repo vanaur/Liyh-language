@@ -3,236 +3,187 @@ namespace Liyh.Core
 /// The "internals" are native instructions in the runtime.
 [<RequireQualifiedAccess>]
 module Internals =
+    open Liyh.FFI
     open Liyh.Core
 
     // --- Arithmetic internals --- //
 
-    let [<Literal>] public Add = "__internal_add"
-    let [<Literal>] public Sub = "__internal_sub"
-    let [<Literal>] public Mul = "__internal_mul"
-    let [<Literal>] public Div = "__internal_div"
-    let [<Literal>] public Mod = "__internal_mod"
-
-    /// Internal arithmetic operation (+, -, *, /, %).
-    let public arithmeticInternals =
-        [| Add
-           Sub
-           Mul
-           Div
-           Mod |]
-
     let public (|Internal_add|_|) = function
-        | Symbol { Symbol = Add; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Add; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_sub|_|) = function
-        | Symbol { Symbol = Sub; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Sub; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_mul|_|) = function
-        | Symbol { Symbol = Mul; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Mul; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_div|_|) = function
-        | Symbol { Symbol = Div; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Div; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_mod|_|) = function
-        | Symbol { Symbol = Mod; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Mod; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     // --- Boolean internals --- //
 
-    let [<Literal>] public Eq = "__internal_eq"
-    let [<Literal>] public Neq = "__internal_neq"
-    let [<Literal>] public Le = "__internal_le"
-    let [<Literal>] public Leq = "__internal_leq"
-    let [<Literal>] public Ge = "__internal_ge"
-    let [<Literal>] public Geq = "__internal_geq"
-    let [<Literal>] public Or = "__internal_or"
-    let [<Literal>] public And = "__internal_and"
-
-    /// Internal boolean operations for comparison (eq, neq, le, leq, ge, geq, or, and).
-    let public booleanInternals =
-        [| Eq
-           Neq
-           Le
-           Leq
-           Ge
-           Geq
-           Or
-           And |]
-
     let public (|Internal_eq|_|) = function
-        | Symbol { Symbol = Eq; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Eq; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Internal_nt|_|) = function
+        | Symbol { Symbol = Internals.Nt; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_neq|_|) = function
-        | Symbol { Symbol = Neq; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Neq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_le|_|) = function
-        | Symbol { Symbol = Le; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Le; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_leq|_|) = function
-        | Symbol { Symbol = Leq; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Leq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_ge|_|) = function
-        | Symbol { Symbol = Ge; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Ge; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_geq|_|) = function
-        | Symbol { Symbol = Geq; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Geq; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_or|_|) = function
-        | Symbol { Symbol = Or; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Or; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_and|_|) = function
-        | Symbol { Symbol = And; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.And; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     // --- Primitive types checking internals --- //
 
-    let [<Literal>] public IsInt = "__internal_is_int"
-    let [<Literal>] public IsFloat = "__internal_is_float"
-    let [<Literal>] public IsChar = "__internal_is_char"
-    let [<Literal>] public IsString = "__internal_is_string"
-    let [<Literal>] public IsBool = "__internal_is_bool"
-    let [<Literal>] public IsNumeric = "__internal_is_numeric"
-
-    /// Internal primitive type checking (is_int, is_float, is_char, is_string).
-    let public primitiveTypeCheckingInternals =
-        [| IsInt
-           IsFloat
-           IsChar
-           IsString
-           IsBool
-           IsNumeric |]
-
     let public (|Internal_is_int|) = function
-        | Symbol { Symbol = IsInt; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.IsInt; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_is_float|) = function
-        | Symbol { Symbol = IsFloat; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.IsFloat; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_is_char|) = function
-        | Symbol { Symbol = IsChar; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.IsChar; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_is_string|) = function
-        | Symbol { Symbol = IsString; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.IsString; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_is_bool|) = function
-        | Symbol { Symbol = IsBool; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.IsBool; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_is_numeric|) = function
-        | Symbol { Symbol = IsNumeric; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.IsNumeric; Children = [ a ] } -> Some(a)
         | _ -> None
 
     // --- Pretty printing --- //
 
-    let [<Literal>] public Print = "__internal_print"
-    let [<Literal>] public Strcat = "__internal_strcat"
-    let [<Literal>] public Ppshow = "__internal_ppshow"
-
     let public (|Internal_print|_|) = function
-        | Symbol { Symbol = Print; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.Print; Children = [ a ] } -> Some(a)
         | _ -> None
 
     let public (|Internal_strcat|_|) = function
-        | Symbol { Symbol = Strcat; Children = [ a; b ] } -> Some(a, b)
+        | Symbol { Symbol = Internals.Strcat; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 
     let public (|Internal_ppshow|_|) = function
-        | Symbol { Symbol = Ppshow; Children = [ a ] } -> Some(a)
+        | Symbol { Symbol = Internals.Ppshow; Children = [ a ] } -> Some(a)
         | _ -> None
 
     // --- Primitive types casting internals --- //
 
-    let [<Literal>] public CastSti = "__internal_cast_sti"  // String to Int
-    let [<Literal>] public CastStf = "__internal_cast_stf"  // String to Float
-    let [<Literal>] public CastStc = "__internal_cast_stc"  // String to Char
-
-    let [<Literal>] public CastIts = "__internal_cast_its"  // Int to String
-    let [<Literal>] public CastItf = "__internal_cast_itf"  // Int to Float
-    let [<Literal>] public CastItc = "__internal_cast_itc"  // Int to Char
-
-    let [<Literal>] public CastFts = "__internal_cast_fts"  // Float to String
-    let [<Literal>] public CastFti = "__internal_cast_fti"  // Float to Int
-    let [<Literal>] public CastFtc = "__internal_cast_ftc"  // Float to Char
-
-    let [<Literal>] public CastCts = "__internal_cast_cts"  // Char to String
-    let [<Literal>] public CastCti = "__internal_cast_cti"  // Char to Int
-    let [<Literal>] public CastCtf = "__internal_cast_ctf"  // Char to Float
-
-    let public primitiveTypeCastingInternals =
-        [| CastSti
-           CastStf
-           CastStc
-           CastIts
-           CastItf
-           CastItc
-           CastFts
-           CastFti
-           CastFtc
-           CastCts
-           CastCti
-           CastCtf |]
-
     let public (|Internal_cast_sti|_|) = function
-        | Symbol { Symbol = CastSti; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastSti; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_stf|_|) = function
-        | Symbol { Symbol = CastStf; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastStf; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_stc|_|) = function
-        | Symbol { Symbol = CastStc; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastStc; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_its|_|) = function
-        | Symbol { Symbol = CastIts; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastIts; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_itf|_|) = function
-        | Symbol { Symbol = CastItf; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastItf; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_itc|_|) = function
-        | Symbol { Symbol = CastItc; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastItc; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_fts|_|) = function
-        | Symbol { Symbol = CastFts; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastFts; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_fti|_|) = function
-        | Symbol { Symbol = CastFti; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastFti; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_ftc|_|) = function
-        | Symbol { Symbol = CastFtc; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastFtc; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_cts|_|) = function
-        | Symbol { Symbol = CastCts; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastCts; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_cti|_|) = function
-        | Symbol { Symbol = CastCti; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastCti; Children = [ a ] } -> Some a
         | _ -> None
 
     let public (|Internal_cast_ctf|_|) = function
-        | Symbol { Symbol = CastCtf; Children = [ a ] } -> Some a
+        | Symbol { Symbol = Internals.CastCtf; Children = [ a ] } -> Some a
+        | _ -> None
+
+    // --- Buffer internals --- //
+
+    let public (|Buffer_alloc|_|) = function
+        | Symbol { Symbol = Internals.BufferAlloc; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Buffer_set|_|) = function
+        | Symbol { Symbol = Internals.BufferSet; Children = [ a; b; c ] } -> Some(a, b, c)
+        | _ -> None
+
+    let public (|Buffer_get|_|) = function
+        | Symbol { Symbol = Internals.BufferGet; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Buffer_realloc|_|) = function
+        | Symbol { Symbol = Internals.BufferRealloc; Children = [ a; b ] } -> Some(a, b)
+        | _ -> None
+
+    let public (|Buffer_length|_|) = function
+        | Symbol { Symbol = Internals.BufferLength; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|Buffer_to_string|_|) = function
+        | Symbol { Symbol = Internals.BufferToString; Children = [ a ] } -> Some a
+        | _ -> None
+
+    let public (|String_to_buffer|_|) = function
+        | Symbol { Symbol = Internals.StringToBuffer; Children = [ a ] } -> Some a
         | _ -> None
 
 /// The "builtins" are built-in functions of symbols for the runtime.
@@ -248,8 +199,8 @@ module rec Builtin =
 
     // --- Lists --- //
 
-    let [<Literal>] public Cons = "cons"
-    let [<Literal>] public Nil = "nil"
+    let [<Literal>] public Cons = "Cons"
+    let [<Literal>] public Nil = "Nil"
     let [<Literal>] public Reverse = "reverse"
     let [<Literal>] public Range = "range"
     let [<Literal>] public Contains = "contains"
@@ -273,7 +224,7 @@ module rec Builtin =
         loop xs
 
     let public symbolCollectionAccess (expr: CoreTerm) (indices: CoreTerm list) =
-        symbol "collection_access" [ expr; symbolTuple indices ]
+        symbol Access [ expr; symbolTuple indices ]
 
     let public (|Nil|_|) =
         function
@@ -346,8 +297,8 @@ module rec Builtin =
 
     // --- Option --- //
 
-    let [<Literal>] public Some' = "some"
-    let [<Literal>] public None' = "none"
+    let [<Literal>] public Some' = "Some"
+    let [<Literal>] public None' = "None"
 
     let public symbolSome x = symbol Some' [ x ]
     let public symbolNone = simpleSymbol None'
@@ -491,16 +442,5 @@ module rec Builtin =
     let public (|Neq|_|) =
         function
         | Symbol { Symbol = Neq; Children = [ a; b ] } -> Some(a, b)
-        | _ -> None
-
-    // --- Debug --- //
-
-    let [<Literal>] public BuiltinDebugBench = "debugbench"
-
-    let public symbolDebugBench a b = symbol BuiltinDebugBench [ a; b ]
-
-    let public (|DebugBench|_|) =
-        function
-        | Symbol { Symbol = BuiltinDebugBench; Children = [ a; b ] } -> Some(a, b)
         | _ -> None
 

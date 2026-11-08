@@ -9,8 +9,8 @@ namespace Liyh.LyVM
 module public BytecodeCompiler =
     open System
     open System.Collections.Generic
-    open Liyh.Module
     open Liyh.FFI.GeneralFFI
+    open Liyh.FFI
     open Liyh.Module.LiyhPackage
     open Liyh.Utils
     open Liyh.Core
@@ -854,8 +854,12 @@ module public BytecodeCompiler =
         /// Returns a raw result (0 or 1). This is used when the user does not need the boolean result.
         and tryCompileIntrinsicBoolean (context: CompilationContext) (term: CoreTerm) (target: Reg option) =
             match term with
-            | Symbol { Symbol = op; Children = [left; right] }
-                when Set.contains op (Set.ofArray Internals.booleanInternals) ->
+            | Symbol { Symbol = Internals.Nt; Children = [ x ] } ->
+                let rX = compileTermStrict context false None x
+                Some (builder.Not(rX, ?target = target))
+
+            | Symbol { Symbol = op; Children = [ left; right ] }
+                when op <> Internals.Nt && Set.contains op (Set.ofArray Internals.booleanInternals) ->
 
                 let rLeft = compileTermStrict context false None left
                 let rRight = compileTermStrict context false None right

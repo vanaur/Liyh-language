@@ -22,6 +22,7 @@
     <Compile Include="Syntax/PrettyPrint.fs" />
 
     <Compile Include="FFI/GeneralFFI.fs" />
+    <Compile Include="FFI/Internals.fs" />
 
     <Compile Include="ModuleSystem/Module.fs" />
     <Compile Include="ModuleSystem/Definition.fs" />
