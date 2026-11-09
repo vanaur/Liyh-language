@@ -425,7 +425,7 @@ module public BytecodeCompiler =
 
                 let strategyWeight = function
                     | Outermost -> 2
-                    | (Lazy | Strict) -> 1
+                    | (Lazy | Strict | Assert) -> 1
                     | Invalid -> 0
 
                 let unifiedStrategy =
@@ -1693,7 +1693,7 @@ module public BytecodeCompiler =
                 // with the different rules using the symbol as LHS.
                 let inline argsRegs (strategy: Strategy) =
                     match strategy with
-                    | Strict ->
+                    | (Strict | Assert) ->
                         // Strict: everything is evaluated before the call (default behavior).
                         List.map (compileTermStrict context false None) children
 
@@ -1963,10 +1963,16 @@ module public BytecodeCompiler =
                     let localStrategy = Strategy.FromAST rule.Strategy
 
                     match localStrategy with
-                    | Strategy.Invalid ->
+                    | (Strategy.Assert | Strategy.Invalid) ->
+                        let titleMsg =
+                            match localStrategy with
+                            | Strategy.Assert -> "Assertion failed: "
+                            | Strategy.Invalid -> "Invalid rule matched: "
+                            | _ -> failwith "??"
+
                         let errorValReg = compileTerm leafContext false None rule.RHS
                         let errorStrReg = builder.PPShow(errorValReg)
-                        let header = ColorTerm.colorize (ColorTerm.Color.Basic "red") "Invalid rule matched: "
+                        let header = ColorTerm.colorize (ColorTerm.Color.Basic "red") titleMsg
                         let prefixReg = builder.LoadString header
                         let eolReg = builder.LoadString "\n"
 

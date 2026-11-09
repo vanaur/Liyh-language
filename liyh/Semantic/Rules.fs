@@ -180,7 +180,14 @@ module private Rules =
         : TRule * Set<string>
         =
         let declRetTypeOpt, allowedEffectsOpt = resolveRetAnnotation tsCtx scope monoEnv rule
-        Option.iter (fun d -> Unification.unifyOrReport tsCtx expectedRetType d rule.Type.Value) declRetTypeOpt
+
+        let isBottom =
+            match Option.map removePos rule.Strategy with
+            | Some (Assertion | Invalid) -> true
+            | _ -> false
+
+        if not isBottom then
+            Option.iter (fun d -> Unification.unifyOrReport tsCtx expectedRetType d rule.Type.Value) declRetTypeOpt
 
         let whenTExprOpt =
             rule.WhenClause
@@ -192,7 +199,7 @@ module private Rules =
 
         let bodyTExpr, bodyEffects =
             match Option.map removePos rule.Strategy with
-            | Some Invalid ->
+            | (Some Assertion) | (Some Invalid) ->
                 let bTExpr, effs = InferenceChecking.inferExpression tsCtx scope fullEnv rule.Body
                 checkUndeclaredEffects tsCtx name rule effs allowedEffectsOpt
                 bTExpr, effs
@@ -522,9 +529,9 @@ module private Rules =
                     rule.Patterns
                     |> List.exists (removePos >> _.IsTypedPattern)
 
-                let isInvalidStrategy =
+                let isBottomStrategy =
                     match Option.map removePos rule.Strategy with
-                    | Some Invalid -> true
+                    | Some (Assertion | Invalid) -> true
                     | _ -> false
 
                 let inferPatt (expectedOpt: LiyhType option) (scope: TypeScope) (patt: PatternWithPos) =
@@ -557,7 +564,7 @@ module private Rules =
                         List.iter2 unifyParam cluster.CandidateParamTypes rule.Patterns
 
                         match fst (resolveRetAnnotation tsCtx scope env rule) with
-                        | Some declType when not isInvalidStrategy ->
+                        | Some declType when not isBottomStrategy ->
                             Unification.unify tsCtx cluster.CandidateRetType declType
                         | _ -> ()
                     )

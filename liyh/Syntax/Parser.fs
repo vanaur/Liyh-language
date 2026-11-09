@@ -1536,6 +1536,7 @@ module Parser =
             (keyword "innermost" <|> keyword "strict") >>% Strict
             (keyword "lazy") >>% Lazy
             (keyword "outermost") >>% Outermost
+            (keyword "assertion" <|> keyword "assert") >>% Assertion
             (keyword "invalid") >>% Invalid ] <?> "rewriting strategy (innermost, outermost or invalid)"
 
     let private parseUse =

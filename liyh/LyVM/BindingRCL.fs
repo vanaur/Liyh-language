@@ -195,6 +195,7 @@ type public Strategy =
     | Strict
     | Lazy
     | Outermost
+    | Assert
     | Invalid
 
     static member FromAST (astStrat: Liyh.Syntax.SyntaxTree.RewritingStrategy) =
@@ -202,6 +203,7 @@ type public Strategy =
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Strict -> Strict
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Lazy -> Lazy
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Outermost -> Outermost
+        | Liyh.Syntax.SyntaxTree.RewritingStrategy.Assertion -> Assert
         | Liyh.Syntax.SyntaxTree.RewritingStrategy.Invalid -> Invalid
 
 [<Struct>]

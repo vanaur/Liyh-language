@@ -281,6 +281,10 @@ module SyntaxTree =
         | Outermost
 
         /// No rewriting is possible; this is an exceptional case (compile time or runtime).
+        /// This strategy has the same weight as strict rules: it serves as preventing from invalid arguments.
+        | Assertion
+
+        /// No rewriting is possible; this is an exceptional case (compile time or runtime).
         | Invalid
 
         /// Cache results for future uses.
