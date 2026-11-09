@@ -194,9 +194,10 @@ module private RuleLookup =
     /// Selects a type scheme given an optional type to test against (for bidirectional type inference).
     let public selectCandidateByExpectedType
         (tsCtx: TypecheckContext)
+        (name: string)
         (expectedOpt: LiyhType option)
         (schemes: Scheme list)
-        : Resolution<LiyhType * Set<string>, Scheme>
+        : Resolution<LiyhType * Set<string> * string, Scheme>   // return: (type, effects, target name)
         =
         let probe s =
             match expectedOpt with
@@ -215,7 +216,11 @@ module private RuleLookup =
                 match actual.Prune() with
                 | TArrow(_, _, effs) -> effs
                 | _ -> Set.empty
-            (actual, latentEffects)
+
+            let mangled = Scheme.getMangledName scheme
+            let targetName = if System.String.IsNullOrEmpty mangled then name else mangled
+
+            (actual, latentEffects, targetName)
 
         let hasUnconstrainedType =
             match expectedOpt with

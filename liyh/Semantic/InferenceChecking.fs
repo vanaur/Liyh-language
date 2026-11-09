@@ -728,16 +728,18 @@ module private InferenceChecking =
             | None ->
                 match Map.tryFind lookupKey env.Signatures with
                 | Some schemes ->
-                    let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference lookupKey) (Some span)
-                    match RuleLookup.selectCandidateByExpectedType tsCtx None schemes with
-                    | Unique (ty, _) ->
+                    match RuleLookup.selectCandidateByExpectedType tsCtx lookupKey None schemes with
+                    | Unique (ty, _, targetName) ->
+                        let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference targetName) (Some span)
                         (mkTyped ty span (TExpressionNode.TIdentifier resIdent), Set.empty)
 
                     | Ambiguous candidates ->
+                        let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference lookupKey) (Some span)
                         RuleLookup.reportAmbiguity tsCtx lookupKey candidates expression
                         (mkTyped (tsCtx.FreshError()) span (TExpressionNode.TIdentifier resIdent), Set.empty)
 
                     | NotFound ->
+                        let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference lookupKey) (Some span)
                         (mkTyped (tsCtx.FreshError()) span (TExpressionNode.TIdentifier resIdent), Set.empty)
 
                 | None ->
@@ -1690,18 +1692,20 @@ module private InferenceChecking =
 
             let name = removePos ident.Name
             let schemes = env.Signatures.[name]
-            let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference name) (Some span)
 
-            match RuleLookup.selectCandidateByExpectedType tsCtx (Some expected) schemes with
-            | Unique(actual, effects) ->
+            match RuleLookup.selectCandidateByExpectedType tsCtx name (Some expected) schemes with
+            | Unique(actual, effects, targetName) ->
+                let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference targetName) (Some span)
                 Unification.unifyOrReport tsCtx actual expected expression
                 (mkTyped actual span (TExpressionNode.TIdentifier resIdent), effects)
 
             | Ambiguous candidates ->
+                let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference name) (Some span)
                 RuleLookup.reportAmbiguity tsCtx name candidates expression
                 (mkTyped (tsCtx.FreshError()) span (TExpressionNode.TIdentifier resIdent), Set.empty)
 
             | NotFound ->
+                let resIdent = tsCtx.CreateIdent ident (SymbolKind.RuleReference name) (Some span)
                 RuleLookup.reportNoMatching tsCtx name expected expression
                 (mkTyped (tsCtx.FreshError()) span (TExpressionNode.TIdentifier resIdent), Set.empty)
 

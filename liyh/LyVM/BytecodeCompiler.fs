@@ -1710,7 +1710,8 @@ module public BytecodeCompiler =
 
                 if isCaptureWithinContext then
                     // Not a function call, but an "applicable" value
-                    builder.LoadAtom(demangledOverload resolvedName)
+                    builder.LoadAtom(resolvedName)
+                    //builder.LoadAtom(demangledOverload resolvedName)
                 else
                     // Check in the FFI first
                     match context.Global.FFIRegistery.TryGetIndex(resolvedName) with
