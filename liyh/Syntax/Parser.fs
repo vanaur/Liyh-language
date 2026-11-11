@@ -1543,7 +1543,7 @@ module Parser =
         pipe3
             (spaces >>. keyword "use")
             (spacesOrComment >>. parseWithPos NameParser.parseIdentifier)
-            (opt (attempt (spacesOrComment >>. keyword "as" >>. notFollowedBy letter >>. spacesOrComment >>. parseWithPos (NameParser.parseName false))))
+            (opt (attempt (spacesOrComment >>. keyword "as" >>. spacesOrComment >>. parseWithPos (NameParser.parseName false))))
             (fun _ lib as' -> { Lib = lib; Qualifier = as' })
         |>> TopLevel.Use
 

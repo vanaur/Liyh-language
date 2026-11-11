@@ -11,23 +11,38 @@ module public TypeChecker =
     let private typecheckModule
         (sourceManager: SourceManager)
         (errorQueue: ErrorQueue)
+        (importedInterfaces: Map<string, ModuleInterface>)
         (modl: ModuleInfo)
-        : TModule
+        : TModule * ModuleInterface
         =
 
 
         // --- Setup the administrative context --- //
 
 
-        let moduleIdentifier = string modl.Identifier + ".liyh"
+        let modulePath = LiyhPackage.identifierToPath modl.Identifier
 
         let lines =
-            moduleIdentifier
-            |> sourceManager.TryGetLines
-            |> Option.defaultWith (fun _ -> failwithf "unknown source: '%s'." moduleIdentifier)
+            sourceManager.TryGetLines modulePath
+            |> Option.orElseWith (fun () -> sourceManager.TryGetLines (System.IO.Path.GetFullPath modulePath))
+            |> Option.defaultWith (fun _ -> failwithf "unknown source: '%s'." modulePath)
 
         let tsCtx = TypecheckContext(lines)
         let mutable env = Env.Empty
+
+        // Injection of direct (non-transitive) dependency interfaces.
+        for KeyValue(depId, aliasOpt) in modl.Uses do
+            let fullKey = string depId
+            let nameKey = removePos depId.Name
+
+            let ifaceOpt =
+                match Map.tryFind fullKey importedInterfaces with
+                | Some iface -> Some iface
+                | None -> Map.tryFind nameKey importedInterfaces
+
+            match ifaceOpt with
+            | Some iface -> env <- Env.importInterface depId aliasOpt iface env
+            | None -> ()
 
         // Build the typed AST's definitions.
         let elaboratedDeclarations = ResizeArray<TTopLevel>()
@@ -114,20 +129,37 @@ module public TypeChecker =
                 env <- newEnv
                 elaboratedDeclarations.AddRange(ruleDecls)
 
+        // Checking for leaks of private types and extracting the public interface.
+        Env.checkInterfaceLeaks tsCtx env modl
+        let iface = Env.extractInterface modl env
+
         tsCtx.EmitDiagnosticsTo(errorQueue)
 
         { Description = None
-          Declarations = Seq.toList elaboratedDeclarations }
+          Declarations = Seq.toList elaboratedDeclarations }, iface
 
     /// Runs the type checker on the given (supposed) independent list of modules.
     let public run
         (modules: ModuleInfo list)
+        (importedInterfaces: Map<string, ModuleInterface>)
         (sourceManager: SourceManager)
         (errorQueue: ErrorQueue)
-        : TModule list
+        : TModule list * Map<string, ModuleInterface>
         =
 
-        modules
-        |> Array.ofList
-        |> Array.Parallel.map (typecheckModule sourceManager errorQueue)
-        |> Array.toList
+        let results =
+            modules
+            |> Array.ofList
+            |> Array.Parallel.map (typecheckModule sourceManager errorQueue importedInterfaces)
+            |> Array.toList
+
+        let tmodules = List.map fst results
+        let newIfaces =
+            results
+            |> List.collect (fun (_, iface) ->
+                [ string iface.Identifier, iface
+                  removePos iface.Identifier.Name, iface ])
+            |> Map.ofList
+
+        let mergedIfaces = Map.fold (fun acc k v -> Map.add k v acc) importedInterfaces newIfaces
+        (tmodules, mergedIfaces)

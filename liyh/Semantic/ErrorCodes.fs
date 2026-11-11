@@ -90,6 +90,9 @@ module public ErrorCodes =
         /// A record's value has duplicate fields in its definition.
         | DuplicateRecordFields = 25
 
+        /// A module's exported symbol contains private types.
+        | PublicExposedSymbolLeak = 26
+
     type public WarningCode =
 
         /// Compatible Liyh type used where a native C FFI type is preferred for consistency.

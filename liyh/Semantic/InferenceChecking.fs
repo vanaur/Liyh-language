@@ -1693,9 +1693,9 @@ module private InferenceChecking =
 
         // Type-based resolution for overloaded rules.
         | Identifier ident, expected
-            when env.ContainsSignature (removePos ident.Name) ->
+            when env.ContainsSignature (string ident) ->
 
-            let name = removePos ident.Name
+            let name = string ident
             let schemes = env.TryFindSignature(name).Value
 
             match RuleLookup.selectCandidateByExpectedType tsCtx name (Some expected) schemes with

@@ -492,3 +492,176 @@ module private Scheme =
 
         loop body
 
+
+// --- Module handling --- //
+
+
+/// Represents the public interface exported by a compiled module.
+type public ModuleInterface =
+    { Identifier: Identifier
+      Scope: ModuleScope }
+
+module private Env =
+
+    /// Collect all the named types of the given type.
+    let rec private collectNamedTypes (t: LiyhType) : Set<string> =
+        match t.Prune() with
+        | TApp(name, args) ->
+            let sub = args |> List.map collectNamedTypes |> Set.unionMany
+            Set.add name sub
+
+        | TArrow(args, ret, _) ->
+            (args |> List.map collectNamedTypes |> Set.unionMany) + collectNamedTypes ret
+
+        | TTuple ts ->
+            ts |> List.map collectNamedTypes |> Set.unionMany
+
+        | TRecord(fields, rest) ->
+            (fields |> Map.values |> Seq.map collectNamedTypes |> Set.unionMany) + collectNamedTypes rest
+
+        | TMeasure(baseT, _) ->
+            collectNamedTypes baseT
+
+        | _ -> Set.empty
+
+    /// Checks that no locally defined types marked as private are leaked into exported signatures.
+    let public checkInterfaceLeaks (tsCtx: TypecheckContext) (env: Env) (modl: Liyh.Module.ModuleInfo) =
+        let exportsSet = Set.ofList (List.map removePos modl.Exports)
+        let localAdts = Set.ofSeq env.LocalScope.Adts.Keys
+        let localAliases = Set.ofSeq env.LocalScope.TypeAlias.Keys
+        let privateLocalTypes = (localAdts + localAliases) - exportsSet
+
+        for expNameWp in modl.Exports do
+            let expName = removePos expNameWp
+
+            // Leaks in rules.
+            match Map.tryFind expName env.LocalScope.Signatures with
+            | None -> ()
+            | Some schemes ->
+                for Scheme(_, _, body, _) in schemes do
+                    let leaked = Set.intersect (collectNamedTypes body) privateLocalTypes
+                    if not (Set.isEmpty leaked) then
+                        let leakedStr = String.concat ", " leaked
+                        let desc = sprintf "Exported symbol '%s' exposes private type(s): %s." expName leakedStr
+                        let hint = "Add the private type(s) to the module's export list or make this declaration private."
+                        tsCtx.ReportError ErrorCode.PublicExposedSymbolLeak desc [] hint expNameWp
+
+            // Leaks in type constructors
+            match Map.tryFind expName env.LocalScope.Adts with
+            | None -> ()
+            | Some _ ->
+                let ctors =
+                    env.LocalScope.Constructors
+                    |> Map.values
+                    |> Seq.concat
+                    |> Seq.filter (fun ctor -> ctor.TypeName = expName)
+
+                for cdef in ctors do
+                    for argTy in cdef.ArgTypes do
+                        let leaked = Set.intersect (collectNamedTypes argTy) privateLocalTypes
+                        if not (Set.isEmpty leaked) then
+                            let leakedStr = String.concat ", " leaked
+                            let desc = sprintf "Exported constructor '%s.%s' exposes private type(s): %s." expName cdef.Name leakedStr
+                            let hint = "Export the private type(s) or adjust the constructor signature."
+                            tsCtx.ReportError ErrorCode.PublicExposedSymbolLeak desc [] hint expNameWp
+
+            match Map.tryFind expName env.LocalScope.TypeAlias with
+            | None -> ()
+            | Some aliasDef ->
+                let leaked = Set.intersect (collectNamedTypes aliasDef.TargetType) privateLocalTypes
+                if not (Set.isEmpty leaked) then
+                    let leakedStr = String.concat ", " leaked
+                    let desc = sprintf "Exported type alias '%s' expands to private type(s): %s." expName leakedStr
+                    let hint = "Export the target type(s) or make this type alias private."
+                    tsCtx.ReportError ErrorCode.PublicExposedSymbolLeak desc [] hint expNameWp
+
+    /// Injects a module interface into `ImportedScope`.
+    let public extractInterface (modl: Liyh.Module.ModuleInfo) (env: Env) : ModuleInterface =
+        let exportsSet = Set.ofList (List.map removePos modl.Exports)
+
+        let exportedConstructors =
+            env.LocalScope.Constructors
+            |> Map.filter (fun key cdefs ->
+                exportsSet.Contains key
+                || cdefs |> List.exists (fun ctor -> exportsSet.Contains ctor.TypeName))
+
+        let exportedScope =
+            { Signatures = env.LocalScope.Signatures |> Map.filter (fun k _ -> exportsSet.Contains k)
+              Constructors = exportedConstructors
+              Adts = env.LocalScope.Adts |> Map.filter (fun k _ -> exportsSet.Contains k)
+              TypeAlias = env.LocalScope.TypeAlias |> Map.filter (fun k _ -> exportsSet.Contains k)
+              Notations = env.LocalScope.Notations |> Map.filter (fun k _ -> exportsSet.Contains k)
+              Externs = env.LocalScope.Externs |> Map.filter (fun (_, fn) _ -> exportsSet.Contains fn)
+              Units = env.LocalScope.Units |> Map.filter (fun k _ -> exportsSet.Contains k)
+              Handlers = env.LocalScope.Handlers |> Map.filter (fun k _ -> exportsSet.Contains k)
+              Effects = env.LocalScope.Effects |> Map.filter (fun k _ -> exportsSet.Contains k) }
+
+        { Identifier = modl.Identifier; Scope = exportedScope }
+
+    let public importInterface (depId: Identifier) (aliasOpt: string option) (iface: ModuleInterface) (env: Env) : Env =
+        let fullPath = string depId
+        let terminalName = removePos depId.Name
+
+        let prefixes =
+            match aliasOpt with
+            | Some alias -> [ alias ]
+            | None ->
+                let baseList = [ ""; terminalName ]
+                if fullPath <> terminalName then fullPath :: baseList else baseList
+
+        let inline qualify prefix name =
+            if System.String.IsNullOrEmpty prefix then name
+            else sprintf "%s.%s" prefix name
+
+        let mutable importedSigs = env.ImportedScope.Signatures
+        let mutable importedCtors = env.ImportedScope.Constructors
+        let mutable importedAdts = env.ImportedScope.Adts
+        let mutable importedAliases = env.ImportedScope.TypeAlias
+        let mutable importedNotations = env.ImportedScope.Notations
+        let mutable importedEffects = env.ImportedScope.Effects
+
+        for prefix in prefixes do
+            // Signatures
+            for KeyValue(name, schemes) in iface.Scope.Signatures do
+                let qualName = qualify prefix name
+                let fixedSchemes =
+                    schemes
+                    |> List.map (fun (Scheme(tvs, dvs, body, mangled)) ->
+                        let target = if System.String.IsNullOrEmpty mangled then name else mangled
+                        Scheme(tvs, dvs, body, target))
+
+                let existing = Map.tryFind qualName importedSigs |> Option.defaultValue []
+                importedSigs <- Map.add qualName (existing @ fixedSchemes) importedSigs
+
+            // ADT constructors
+            for KeyValue(name, cdefs) in iface.Scope.Constructors do
+                let qualName = qualify prefix name
+                let existing = Map.tryFind qualName importedCtors |> Option.defaultValue []
+                importedCtors <- Map.add qualName (existing @ cdefs) importedCtors
+
+            // Sum types
+            for KeyValue(name, adt) in iface.Scope.Adts do
+                importedAdts <- Map.add (qualify prefix name) adt importedAdts
+
+            // Type aliases
+            for KeyValue(name, alias) in iface.Scope.TypeAlias do
+                importedAliases <- Map.add (qualify prefix name) alias importedAliases
+
+            // Notations
+            for KeyValue(name, nt) in iface.Scope.Notations do
+                importedNotations <- Map.add name nt importedNotations
+
+            // Effects
+            for KeyValue(name, eff) in iface.Scope.Effects do
+                importedEffects <- Map.add name eff importedEffects
+
+        let newImportedScope =
+            { env.ImportedScope with
+                Signatures = importedSigs
+                Constructors = importedCtors
+                Adts = importedAdts
+                TypeAlias = importedAliases
+                Notations = importedNotations
+                Effects = importedEffects }
+
+        { env with ImportedScope = newImportedScope }

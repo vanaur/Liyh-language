@@ -56,9 +56,10 @@ module LiyhPackage =
         | name :: qualifier -> { Qualifier = List.rev (List.map (fun q -> { Node = q; StartPos = null; EndPos = null }) qualifier); Name = { Node = name; StartPos = null; EndPos = null } }
         | [] -> failwithf "invalid path: %s" fullPath
 
-    /// Convert a Liyh identifier to a file path.
-    let private identifierToPath (identifier: Identifier) =
-        Path.Combine(Path.Combine(identifier.Qualifier |> List.map _.Node |> Array.ofList), identifier.Name.Node + ".liyh")
+    /// Convert a Liyh identifier to a relative file path (e.g. MyLib.Hello -> MyLib/Hello.liyh).
+    let public identifierToPath (identifier: Identifier) =
+        let parts = (identifier.Qualifier |> List.map (fun q -> q.Node)) @ [ identifier.Name.Node + ".liyh" ]
+        Path.Combine(Array.ofList parts)
 
     let private resolveRelativePath (currentFilePath: string) (identifier: Identifier) =
         Path.Combine(Path.GetDirectoryName(currentFilePath), identifierToPath identifier)
@@ -134,7 +135,8 @@ module LiyhPackage =
             pgraph.[mi] |> Set.toList
 
         let public tryGetModule (id: Identifier) (ProjectGraph pgraph) =
-            pgraph |> Map.tryPick (fun mi _ -> if mi.Identifier = id then Some mi else None)
+            let target = string id
+            pgraph |> Map.tryPick (fun mi _ -> if string mi.Identifier = target then Some mi else None)
 
         let public graphToString (ProjectGraph g: ProjectGraph) : string =
             let sb = StringBuilder()
@@ -229,9 +231,9 @@ module LiyhPackage =
 
                             let depModId = pathToIdentifier projectRoot depPath
                             let depModule =
-                                Option.defaultWith
-                                    (fun _ -> ModuleInfo.empty depModId)
-                                    (ProjectGraph.tryGetModule depId pgraph')
+                                match ProjectGraph.tryGetModule depModId pgraph' with
+                                | Some m -> m
+                                | None -> ModuleInfo.empty depModId
 
                             deps <- Set.add depModule deps
 
@@ -332,10 +334,10 @@ module LiyhPackage =
         moduleContent
         |> List.filter (_.Node >> _.IsModuleExport)
         |> List.collect (function { Node = ModuleExport exports } -> exports)
-        |> List.map removePos
 
     let private checkExports (sourceManager: SourceManager) (currentPath: string) (moduleInfo: ModuleInfo) (errorQueue: ErrorQueue) =
-        match List.filter (not << Definitions.containsDefinitionName moduleInfo) moduleInfo.Exports with
+        let exportNames = List.map removePos moduleInfo.Exports
+        match List.filter (not << Definitions.containsDefinitionName moduleInfo) exportNames with
         | [] -> true
         | undefinedExportedSymbols ->
             let msg =

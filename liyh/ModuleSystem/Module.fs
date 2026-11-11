@@ -14,7 +14,7 @@ type public ModuleInfo =
         Uses: UseMap
 
         /// list of exported symbols
-        Exports: string list
+        Exports: NameWithPos list
 
         /// the optional description of the module (in the very top of the file)
         ModuleDescription: string option
@@ -33,7 +33,7 @@ type public ModuleInfo =
 
     override this.Equals (obj: obj) =
         match obj with
-        | :? ModuleInfo as { Identifier = identifier } -> this.Identifier = identifier
+        | :? ModuleInfo as other -> string this.Identifier = string other.Identifier
         | _ -> false
 
     override this.GetHashCode() = hash this.Identifier
@@ -41,7 +41,7 @@ type public ModuleInfo =
     interface IComparable with
         member this.CompareTo (obj: obj) =
             match obj with
-            | :? ModuleInfo as { Identifier = identifier } -> compare this.Identifier identifier
+            | :? ModuleInfo as other -> compare (string this.Identifier) (string other.Identifier)
             | _ -> -1
 
     static member empty (identifier: Identifier) =

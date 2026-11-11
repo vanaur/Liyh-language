@@ -173,19 +173,21 @@ module Program =
                 let pgraph, rootModule = fillProjectGraph sourceManager rootModule pgraph errorQueue
                 errorQueue.ReportIfNeeded Console.Error
 
-                let compiledLayers =
-                    pgraph
-                    |> ProjectGraph.topologicalLayers
-                    |> Array.ofList
-                    |> Array.map (fun layer ->
-                        let typedModule = Semantic.TypeChecker.run layer sourceManager errorQueue
+                let layers = ProjectGraph.topologicalLayers pgraph
+                let mutable currentInterfaces = Map.empty
+                let mutable compiledLayers = []
 
-                        errorQueue.ReportIfNeeded Console.Error
-                        if errorQueue.HasErrors() then
-                            errorQueue.ReportAll Console.Error true
-                            exit 1
+                for layer in layers do
+                    let typedModules, nextInterfaces =
+                        Semantic.TypeChecker.run layer currentInterfaces sourceManager errorQueue
 
-                        CoreCompiler.compileModules typedModule)
+                    currentInterfaces <- nextInterfaces
+                    //errorQueue.ReportIfNeeded Console.Error
+
+                    let compiled = CoreCompiler.compileModules typedModules
+                    compiledLayers <- compiled :: compiledLayers
+
+                let compiledLayers = List.rev compiledLayers |> Array.ofList
 
                 errorQueue.ReportIfNeeded Console.Error
 
