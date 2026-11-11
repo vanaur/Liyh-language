@@ -125,7 +125,7 @@ module public CoreCompiler =
                 Variable (removePos ident.Written.Name)
 
             | SymbolKind.Constructor _ ->
-                simpleSymbol (string ident.Written)
+                simpleSymbol (removePos ident.Written.Name)
 
             | SymbolKind.RuleReference mangledName ->
                 simpleSymbol mangledName
@@ -227,7 +227,7 @@ module public CoreCompiler =
                 FunctionalApplication { Base = Variable (removePos ident.Written.Name); Arguments = args }
 
             | SymbolKind.Constructor _ ->
-                symbol (string ident.Written) args
+                symbol (removePos ident.Written.Name) args
 
             | SymbolKind.RuleReference name ->
                 symbol name args
@@ -617,7 +617,9 @@ module public CoreCompiler =
             Variable (removePos ident.Written.Name)
 
         | TPatternNode.TPatConstructor ident ->
-            simpleSymbol (string ident.Written)
+            match ident.Kind with
+            | SymbolKind.RuleReference name -> simpleSymbol name
+            | _ -> simpleSymbol (removePos ident.Written.Name)
 
         | TPatternNode.TPatApply apply ->
             compileApplyPattern cstate apply.PatApplyHead apply.PatApplyArguments
