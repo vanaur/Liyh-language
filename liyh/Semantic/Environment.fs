@@ -604,7 +604,9 @@ module private Env =
 
         let prefixes =
             match aliasOpt with
-            | Some alias -> [ alias ]
+            | Some alias ->
+                if alias = terminalName then [ terminalName; fullPath ]
+                else [ alias ]
             | None ->
                 let baseList = [ ""; terminalName ]
                 if fullPath <> terminalName then fullPath :: baseList else baseList

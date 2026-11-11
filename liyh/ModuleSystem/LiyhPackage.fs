@@ -61,6 +61,27 @@ module LiyhPackage =
         let parts = (identifier.Qualifier |> List.map (fun q -> q.Node)) @ [ identifier.Name.Node + ".liyh" ]
         Path.Combine(Array.ofList parts)
 
+    /// Convert a Liyh identifier to a relative directory path (e.g. MyLib -> MyLib, A.B -> A/B).
+    let public identifierToDirPath (identifier: Identifier) =
+        let parts = (identifier.Qualifier |> List.map (fun q -> q.Node)) @ [ identifier.Name.Node ]
+        Path.Combine(Array.ofList parts)
+
+    let private resolveDirRelativePath (currentFilePath: string) (identifier: Identifier) =
+        Path.Combine(Path.GetDirectoryName(currentFilePath), identifierToDirPath identifier)
+        |> Path.GetFullPath
+
+    let private resolveDirFromProjectRoot (projectRootPath: string) (identifier: Identifier) =
+        Path.Combine(projectRootPath, identifierToDirPath identifier)
+        |> Path.GetFullPath
+
+    let private resolveHybridDirPath (projectRootPath: string) (projectName: string) (currentFilePath: string) (identifier: Identifier) =
+        let dirFromRoot = resolveDirFromProjectRoot projectRootPath identifier
+        if Directory.Exists(dirFromRoot) then Some dirFromRoot
+        else
+            let dirRel = resolveDirRelativePath currentFilePath identifier
+            if Directory.Exists(dirRel) then Some dirRel
+            else None
+
     let private resolveRelativePath (currentFilePath: string) (identifier: Identifier) =
         Path.Combine(Path.GetDirectoryName(currentFilePath), identifierToPath identifier)
         |> Path.GetFullPath
@@ -218,13 +239,14 @@ module LiyhPackage =
                 | Some uses ->
                     let mutable deps = Set.empty
                     let mutable pgraph' = pgraph
+                    let mutable resolvedUses = []
 
                     for use' in uses do
                         let { Node = depId } = fst (useToIdentifier use')
+                        let aliasOpt = snd (useToIdentifier use') |> Option.map removePos
                         let depPath = resolveHybridPath projectRoot projectName filePath depId
 
                         if isLiyhRoot depId then
-                            // Waiting a standard library and all of that
                             ()
                         elif File.Exists depPath then
                             pgraph' <- build depPath visited' pgraph'
@@ -236,32 +258,74 @@ module LiyhPackage =
                                 | None -> ModuleInfo.empty depModId
 
                             deps <- Set.add depModule deps
+                            resolvedUses <- (depModId, aliasOpt) :: resolvedUses
 
                         else
-                            let informations =
-                                let candidates = candidateFiles (use'.Lib.Node.Qualifier |> List.map _.Node) depPath
-                                if Seq.isEmpty candidates then []
-                                else [ Liyh.Utils.DamerauLevenshtein.formatSuggestions "the module" candidates ]
+                            match resolveHybridDirPath projectRoot projectName filePath depId with
+                            | Some depDir ->
+                                // Recursive search throughout the entire folder tree.
+                                let subFiles =
+                                    Directory.GetFiles(depDir, "*.liyh", SearchOption.AllDirectories)
+                                    |> Array.toList
 
-                            let lines =
-                                sourceManager.TryGetLines filePath
-                                |> Option.defaultValue Array.empty
+                                if List.isEmpty subFiles then
+                                    let report =
+                                        { ErrorType = Package
+                                          ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.UnfoundModuleError
+                                          EnclosingPosition = Some use'.Lib.StartPos, Some use'.Lib.EndPos
+                                          Description = sprintf "Directory '%s' contains no '.liyh' files." (string use')
+                                          AllLines = sourceManager.TryGetLines filePath |> Option.defaultValue Array.empty
+                                          Informations = []
+                                          Hint = "Only directories containing '.liyh' files can be imported." }
+                                    errorQueue.AddError report
+                                else
+                                    for subFile in subFiles do
+                                        // Prevents a file within the folder from importing itself.
+                                        if not (String.Equals(Path.GetFullPath subFile, Path.GetFullPath filePath, StringComparison.OrdinalIgnoreCase)) then
+                                            pgraph' <- build subFile visited' pgraph'
 
-                            let report =
-                                { ErrorType = Package
-                                  ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.UnfoundModuleError
-                                  EnclosingPosition = Some use'.Lib.StartPos, Some use'.Lib.EndPos
-                                  Description = sprintf "Module '%s' not found." (string use')
-                                  AllLines = lines
-                                  Informations = informations
-                                  Hint = "Imports are case-sensitive and only files with extension `.liyh` are considered." }
-                            errorQueue.AddError report
+                                        let subModId = pathToIdentifier projectRoot subFile
+                                        let subModule =
+                                            match ProjectGraph.tryGetModule subModId pgraph' with
+                                            | Some m -> m
+                                            | None -> ModuleInfo.empty subModId
 
-                    let useMap =
-                        uses
-                        |> List.map (fun node -> removePos node.Lib, Option.map removePos node.Qualifier)
-                        |> Map.ofList
+                                        deps <- Set.add subModule deps
 
+                                        let relPath = Path.GetRelativePath(depDir, subFile)
+                                        let relWithoutExt = relPath.Replace(".liyh", "")
+                                        let relNamespace =
+                                            relWithoutExt.Split(Path.DirectorySeparatorChar)
+                                            |> String.concat "."
+
+                                        let subAlias =
+                                            match aliasOpt with
+                                            | Some m -> Some (sprintf "%s.%s" m relNamespace)
+                                            | None -> Some relNamespace
+
+                                        resolvedUses <- (subModId, subAlias) :: resolvedUses
+
+                            | None ->
+                                let informations =
+                                    let candidates = candidateFiles (use'.Lib.Node.Qualifier |> List.map _.Node) depPath
+                                    if Seq.isEmpty candidates then []
+                                    else [ Liyh.Utils.DamerauLevenshtein.formatSuggestions "the module" candidates ]
+
+                                let lines =
+                                    sourceManager.TryGetLines filePath
+                                    |> Option.defaultValue Array.empty
+
+                                let report =
+                                    { ErrorType = Package
+                                      ErrorCode = ErrorCodes.format ErrorCodes.ErrorCode.UnfoundModuleError
+                                      EnclosingPosition = Some use'.Lib.StartPos, Some use'.Lib.EndPos
+                                      Description = sprintf "Module or directory '%s' not found." (string use')
+                                      AllLines = lines
+                                      Informations = informations
+                                      Hint = "Imports are case-sensitive and only files or directories containing `.liyh` files are considered." }
+                                errorQueue.AddError report
+
+                    let useMap = Map.ofList resolvedUses
                     ProjectGraph.addModule { ModuleInfo.empty moduleId with Uses = useMap } deps pgraph'
 
         if not (File.Exists rootFilePath) then
