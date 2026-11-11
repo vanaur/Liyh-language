@@ -1,7 +1,7 @@
 namespace Liyh.Semantic
 
 [<AutoOpen>]
-module private ErrorCodes =
+module public ErrorCodes =
 
     // E-XYZ / W-XYZ
     // E=ERROR, W=WARNING, X=COMPILER-CURRENT-PASS, YZ=DIAGNOSTIC-CODE

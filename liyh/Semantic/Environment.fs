@@ -38,7 +38,7 @@ module private TypeSubstitution =
 
 /// A type scheme: `body` with the listed type and dimension variables universally quantified.
 /// Other free variables in `body` remain monomorphic.
-type private Scheme =
+type public Scheme =
     | Scheme of
         typeVars:       (TypeVar ref) list *    // scheme for the classical type variables
         dimVars:        (DimVar ref) list *     // scheme for the dimensional type variables
@@ -46,7 +46,7 @@ type private Scheme =
         mangledName:    string                  // the associated mangled name
 
 /// A sum type constructor definition.
-type private ConstructorDef =
+type public ConstructorDef =
     { Name: string
       TypeName: string
       TypeParams: (TypeVar ref) list
@@ -75,12 +75,12 @@ type private HandlerDef = unit // TODO
 type private EffectDef = unit // TODO
 
 /// A sum type signature definition.
-type private SumTypeDef =
+type public SumTypeDef =
     { Name: string
       TypeParams: string list }
 
 /// A type alias definition.
-type private TypeAliasDef =
+type public TypeAliasDef =
     { Name: string
       TypeParams: (TypeVar ref) list
       TargetType: LiyhType
@@ -95,7 +95,7 @@ type private TypeAliasDef =
             TypeSubstitution.apply subst this.TargetType
 
 /// A foreign function interface (FFI) definition.
-type private ExternDef =
+type public ExternDef =
     { Library: string
       FunctionName: string
       Scheme: Scheme }
@@ -194,48 +194,138 @@ module private BuiltinSignatures =
         ]
         |> Map.ofList
 
-/// The environment for type checking and type inference.
-type private Env =
-    { Signatures: Map<string, Scheme list>              // the list of possible signatures
-      Constructors: Map<string, ConstructorDef list>    // the list of defined ADT's constructors (list of overloads)
-      Units: Map<string, UnitDef>                       // the list of defined units
-      Externs: Map<string * string, ExternDef list>     // the list of external functions
-
-      Notations: Map<string, Notation>                  // the list of defined notations
-
-      DeclaredSymbols: Set<string>                      // the list of declared symbols in a symbolic scope
-      InSymbolicScope: bool                             // check whether we are in a symbolic scope or not
-
-      LambdaDepth: int                                  // current lexical depth
-      Mutables: Map<string, MutableValue>               // the list of current mutable varible by lexical depth and mutation done or not
-      Locals: Map<string, LocalVar>                     // the list of local variables
-
-      Adts: Map<string, SumTypeDef>                     // the list of sum types
-      TypeAlias: Map<string, TypeAliasDef>              // the list of type alias
-
-      Handlers: Map<string, HandlerDef>                 // the list of defined handlers
-      Effects: Map<string, EffectDef> }                 // the list of defined effects
+/// All the static symbol tables in a module (which may be exportable).
+type public ModuleScope =
+    { Signatures: Map<string, Scheme list>
+      Constructors: Map<string, ConstructorDef list>
+      Adts: Map<string, SumTypeDef>
+      TypeAlias: Map<string, TypeAliasDef>
+      Notations: Map<string, Notation>
+      Externs: Map<string * string, ExternDef list>
+      Units: Map<string, UnitDef>
+      Handlers: Map<string, HandlerDef>
+      Effects: Map<string, EffectDef> }
 
     static member Empty =
         { Signatures = BuiltinSignatures.all
           Constructors = Map.empty
-          Units = Map.empty
-          Externs = Map.empty
-
-          Notations = Map.empty
-
-          DeclaredSymbols = Set.empty
-          InSymbolicScope = false
-
-          LambdaDepth = 0
-          Mutables = Map.empty
-          Locals = Map.empty
-
           Adts = Map.empty
           TypeAlias = Map.empty
-
+          Notations = Map.empty
+          Externs = Map.empty
+          Units = Map.empty
           Handlers = Map.empty
           Effects = Map.empty }
+
+/// The environment for type checking and type inference.
+type private Env =
+    {
+
+      // --- Locally defined and imported symbol tables --- //
+
+      LocalScope: ModuleScope
+      ImportedScope: ModuleScope
+
+      // --- What is local to an expression or the body of a rule --- //
+
+      Locals: Map<string, LocalVar>
+      Mutables: Map<string, MutableValue>
+      LambdaDepth: int
+
+      // --- What is local to an expression or the body of a rule within a symbolic scope --- //
+
+      DeclaredSymbols: Set<string>
+      InSymbolicScope: bool }
+
+    static member Empty =
+        { LocalScope = ModuleScope.Empty
+          ImportedScope = { ModuleScope.Empty with Signatures = Map.empty } // no duplicates with the builtins
+          Locals = Map.empty
+          Mutables = Map.empty
+          LambdaDepth = 0
+          DeclaredSymbols = Set.empty
+          InSymbolicScope = false }
+
+    member public this.TryFindSignature(name: string) : Scheme list option =
+        match Map.tryFind name this.LocalScope.Signatures with
+        | Some s -> Some s
+        | None -> Map.tryFind name this.ImportedScope.Signatures
+
+    member public this.ContainsSignature(name: string) : bool =
+        Map.containsKey name this.LocalScope.Signatures
+        || Map.containsKey name this.ImportedScope.Signatures
+
+    member this.TryFindConstructor(name: string) : ConstructorDef list option =
+        match Map.tryFind name this.LocalScope.Constructors with
+        | Some c -> Some c
+        | None -> Map.tryFind name this.ImportedScope.Constructors
+
+    member this.ContainsConstructor(name: string) : bool =
+        Map.containsKey name this.LocalScope.Constructors
+        || Map.containsKey name this.ImportedScope.Constructors
+
+    member this.TryFindAdt(name: string) : SumTypeDef option =
+        match Map.tryFind name this.LocalScope.Adts with
+        | Some a -> Some a
+        | None -> Map.tryFind name this.ImportedScope.Adts
+
+    member this.ContainsAdt(name: string) : bool =
+        Map.containsKey name this.LocalScope.Adts
+        || Map.containsKey name this.ImportedScope.Adts
+
+    member this.TryFindTypeAlias(name: string) : TypeAliasDef option =
+        match Map.tryFind name this.LocalScope.TypeAlias with
+        | Some t -> Some t
+        | None -> Map.tryFind name this.ImportedScope.TypeAlias
+
+    member this.ContainsTypeAlias(name: string) : bool =
+        Map.containsKey name this.LocalScope.TypeAlias
+        || Map.containsKey name this.ImportedScope.TypeAlias
+
+    member this.TryFindNotation(name: string) : Notation option =
+        match Map.tryFind name this.LocalScope.Notations with
+        | Some n -> Some n
+        | None -> Map.tryFind name this.ImportedScope.Notations
+
+    member this.ContainsNotation(name: string) : bool =
+        Map.containsKey name this.LocalScope.Notations
+        || Map.containsKey name this.ImportedScope.Notations
+
+    member this.TryFindExtern(lib: string, fn: string) : ExternDef list option =
+        match Map.tryFind (lib, fn) this.LocalScope.Externs with
+        | Some e -> Some e
+        | None -> Map.tryFind (lib, fn) this.ImportedScope.Externs
+
+    member this.ContainsExtern(lib: string, fn: string) : bool =
+        Map.containsKey (lib, fn) this.LocalScope.Externs
+        || Map.containsKey (lib, fn) this.ImportedScope.Externs
+
+    member this.TryFindEffect(name: string) : EffectDef option =
+        match Map.tryFind name this.LocalScope.Effects with
+        | Some eff -> Some eff
+        | None -> Map.tryFind name this.ImportedScope.Effects
+
+    member this.ContainsEffect(name: string) : bool =
+        Map.containsKey name this.LocalScope.Effects
+        || Map.containsKey name this.ImportedScope.Effects
+
+    member this.WithLocalSignatures(sigs: Map<string, Scheme list>) =
+        { this with LocalScope = { this.LocalScope with Signatures = sigs } }
+
+    member this.WithLocalConstructors(ctors: Map<string, ConstructorDef list>) =
+        { this with LocalScope = { this.LocalScope with Constructors = ctors } }
+
+    member this.WithLocalAdts(adts: Map<string, SumTypeDef>) =
+        { this with LocalScope = { this.LocalScope with Adts = adts } }
+
+    member this.WithLocalTypeAliases(aliases: Map<string, TypeAliasDef>) =
+        { this with LocalScope = { this.LocalScope with TypeAlias = aliases } }
+
+    member this.WithLocalNotations(notations: Map<string, Notation>) =
+        { this with LocalScope = { this.LocalScope with Notations = notations } }
+
+    member this.WithLocalExterns(externs: Map<string * string, ExternDef list>) =
+        { this with LocalScope = { this.LocalScope with Externs = externs } }
 
 /// A dictionary `type variable name : actual type variable` for both variables and dimensions.
 /// This type allows to keep the same type variables across a given scope.
@@ -334,7 +424,7 @@ module private Scheme =
 
     /// Returns the set of free type variables of the env signatures.
     let private freeVarsEnv (env: Env) : Set<TypeVar ref> =
-        env.Signatures
+        env.LocalScope.Signatures
         |> Map.values
         |> Seq.concat
         |> Seq.map (function Scheme (quantified, _, body, _) -> (freeVars body) - (Set.ofList quantified))
@@ -351,7 +441,7 @@ module private Scheme =
 
         let inTypeDV = freeDimVars t
         let inEnvDV =
-            env.Signatures
+            env.LocalScope.Signatures
             |> Map.values
             |> Seq.concat
             |> Seq.map (function Scheme(_, dvs, b, _) -> (freeDimVars b - Set.ofList dvs))

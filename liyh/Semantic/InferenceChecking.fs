@@ -34,10 +34,10 @@ module private InferenceChecking =
         | Lambda _ -> true
         | Identifier id ->
             let name = string id
-            match Map.tryFind name env.Signatures with
+            match env.TryFindSignature name with
             | Some (_ :: _ :: _) -> true // a rule with multiple overloads
             | _ ->
-                match Map.tryFind name env.Constructors with
+                match env.TryFindConstructor name with
                 | Some (_ :: _ :: _) -> true // a constructor with multiple overloads
                 | _ -> false
         | _ -> false
@@ -72,7 +72,7 @@ module private InferenceChecking =
         : 'Result
         =
         let notationName = removePos nameWithPos
-        match Map.tryFind notationName env.Notations with
+        match env.TryFindNotation notationName with
         // This case should not happen since the parser won't allow it.
         | None ->
             let desc = sprintf "Unknown notation or mixfix operator: '%s'." notationName
@@ -130,10 +130,10 @@ module private InferenceChecking =
 
         | IdentPattern ident
             when not (List.isEmpty ident.Qualifier)
-                || not (Map.containsKey (removePos ident.Name) env.Signatures) ->
+                || not (env.ContainsSignature (removePos ident.Name)) ->
 
             let lookupKey = string ident
-            match Map.tryFind lookupKey env.Constructors with
+            match env.TryFindConstructor lookupKey with
             | Some [ cdef ] when List.isEmpty cdef.ArgTypes -> Some (cdef.ToType(tsCtx))
             | _ -> None
 
@@ -161,7 +161,7 @@ module private InferenceChecking =
             match removePos phead with
             | IdentPattern id ->
                 let name = string id
-                match Map.tryFind name env.Constructors with
+                match env.TryFindConstructor name with
                 | Some cdefs ->
                     let matching = cdefs |> List.filter (fun c -> List.length c.ArgTypes = List.length pargs)
                     match matching with
@@ -380,8 +380,8 @@ module private InferenceChecking =
 
             | None ->
                 match headNameOpt with
-                | Some name when Map.containsKey name env.Signatures && patternContext = RulePattern ->
-                    let schemes = env.Signatures.[name]
+                | Some name when env.ContainsSignature name && patternContext = RulePattern ->
+                    let schemes = env.TryFindSignature(name).Value
                     let subResults = pargs |> List.map (inferPattern tsCtx scope env None)
                     let subTpats, subBindings = List.unzip subResults
                     let subTypes = List.map (fun (p: TPattern) -> p.Type) subTpats
@@ -703,11 +703,11 @@ module private InferenceChecking =
             let resIdent = tsCtx.CreateIdent id (SymbolKind.Constructor "Bool") (Some span)
             (mkTyped TBool span (TExpressionNode.TIdentifier resIdent), Set.empty)
 
-        | Identifier (QualifiedIdentifier([ lib ], fn)) when Map.containsKey (lib, fn) env.Externs ->
+        | Identifier (QualifiedIdentifier([ lib ], fn)) when env.ContainsExtern (lib, fn) ->
             let id = removePos expression |> function Identifier i -> i | _ -> failwith "unreachable"
             let resIdent = tsCtx.CreateIdent id (SymbolKind.ExternFunction lib) (Some span)
 
-            match env.Externs.[(lib, fn)] with
+            match env.TryFindExtern(lib, fn).Value with
             | [ edef ] ->
                 let ty = Scheme.instantiate tsCtx edef.Scheme
                 (mkTyped ty span (TExpressionNode.TIdentifier resIdent), Set.empty)
@@ -726,7 +726,7 @@ module private InferenceChecking =
                 (mkTyped local.Type span (TExpressionNode.TIdentifier local.Ident), Set.empty)
 
             | None ->
-                match Map.tryFind lookupKey env.Signatures with
+                match env.TryFindSignature lookupKey with
                 | Some schemes ->
                     match RuleLookup.selectCandidateByExpectedType tsCtx lookupKey None schemes with
                     | Unique (ty, _, targetName) ->
@@ -743,7 +743,7 @@ module private InferenceChecking =
                         (mkTyped (tsCtx.FreshError()) span (TExpressionNode.TIdentifier resIdent), Set.empty)
 
                 | None ->
-                    match Map.tryFind lookupKey env.Constructors with
+                    match env.TryFindConstructor lookupKey with
                     | Some cdefs ->
                         let typeName = (List.head cdefs).TypeName
                         let resIdent = tsCtx.CreateIdent ident (SymbolKind.Constructor typeName) (Some span)
@@ -867,7 +867,7 @@ module private InferenceChecking =
 
         | ReAssign(varName, valueExpr) ->
             let varSpan = spanOf varName
-            match Map.tryFind (removePos varName) env.Signatures with
+            match env.TryFindSignature (removePos varName) with
             | Some schemes ->
                 match Map.tryFind (removePos varName) env.Mutables with
                 | None ->
@@ -1146,10 +1146,11 @@ module private InferenceChecking =
             let totalReplEffs = replResults |> List.map (fun (_, _, effs) -> effs) |> Set.unionMany
             let extendedEnv =
                 List.fold (fun (accEnv: Env) (name, b, _) ->
-                    if Map.containsKey name accEnv.Constructors then
+                    if accEnv.ContainsConstructor name then
                         accEnv
-                    elif Map.containsKey name accEnv.Signatures then
-                        { accEnv with Signatures = Map.add name [ Scheme.empty b.BindingValue.Type ] accEnv.Signatures }
+                    elif accEnv.ContainsSignature name then
+                        let currentSigs = accEnv.LocalScope.Signatures
+                        accEnv.WithLocalSignatures (Map.add name [ Scheme.empty b.BindingValue.Type ] currentSigs)
                     else
                         { accEnv with DeclaredSymbols = Set.add name accEnv.DeclaredSymbols }
                 ) env replResults
@@ -1167,10 +1168,10 @@ module private InferenceChecking =
                     i <- i + 1
                     let nameWp, _ = substs.[i]
                     let originTypeOpt =
-                        match Map.tryFind name env.Signatures with
+                        match env.TryFindSignature name with
                         | Some [ scheme ] -> Some (Scheme.instantiate tsCtx scheme)
                         | _ ->
-                            match Map.tryFind name env.Constructors with
+                            match env.TryFindConstructor name with
                             | Some [ cdef ] -> Some (cdef.ToType(tsCtx))
                             | _ -> None
 
@@ -1553,7 +1554,7 @@ module private InferenceChecking =
 
         let calleeInfo =
             match lhs with
-            | Identifier (QualifiedIdentifier([ lib ], fn)) -> Some (lib, fn, Map.tryFind (lib, fn) env.Externs)
+            | Identifier (QualifiedIdentifier([ lib ], fn)) -> Some (lib, fn, env.TryFindExtern(lib, fn))
             | _ -> None
 
         let calleeNameOpt =
@@ -1561,16 +1562,20 @@ module private InferenceChecking =
             | Identifier id -> Some(string id)
             | _ -> None
 
-        let lookup table =
+        let lookupSig =
             calleeNameOpt
-            |> Option.bind (fun n -> Map.tryFind n table |> Option.map (fun v -> n, v))
+            |> Option.bind (fun n -> env.TryFindSignature n |> Option.map (fun v -> n, v))
+
+        let lookupCtor =
+            calleeNameOpt
+            |> Option.bind (fun n -> env.TryFindConstructor n |> Option.map (fun v -> n, v))
 
         let isLocal =
             match lhs with
             | Identifier id -> Map.containsKey (string id) env.Locals
             | _ -> false
 
-        match isLocal, lookup env.Signatures, lookup env.Constructors, calleeInfo, lhs with
+        match isLocal, lookupSig, lookupCtor, calleeInfo, lhs with
         // Local variables take precedence over any global rule or constructor.
         | true, _, _, _, _ ->
             inferRegularCall ()
@@ -1634,12 +1639,12 @@ module private InferenceChecking =
             let arrowType = TArrow(expectedParams, expectedRet, bodyEffs)
             (mkTyped arrowType span (TExpressionNode.TLambda lambdaNode), bodyEffs)
 
-        | Identifier (QualifiedIdentifier([ lib ], fn)), expected when Map.containsKey (lib, fn) env.Externs ->
+        | Identifier (QualifiedIdentifier([ lib ], fn)), expected when env.ContainsExtern(lib, fn) ->
             let fullName = sprintf "%s.%s" lib fn
             let id = removePos expression |> function Identifier i -> i | _ -> failwith "unreachable"
             let resIdent = tsCtx.CreateIdent id (SymbolKind.ExternFunction lib) (Some span)
 
-            match env.Externs.[(lib, fn)] with
+            match env.TryFindExtern(lib, fn).Value with
             | [ edef ] ->
                 let actual = Scheme.instantiate tsCtx edef.Scheme
                 Unification.unifyOrReport tsCtx actual expected expression
@@ -1664,11 +1669,11 @@ module private InferenceChecking =
 
         // Type-based resolution for overloaded constructors.
         | Identifier ident, expected
-            when not (Map.containsKey (string ident) env.Signatures)
-            && Map.containsKey (string ident) env.Constructors ->
+            when not (env.ContainsSignature (string ident))
+            && env.ContainsConstructor (string ident) ->
 
             let lookupKey = string ident
-            let cdefs = env.Constructors.[lookupKey]
+            let cdefs = (env.TryFindConstructor lookupKey).Value
             let typeName = (List.head cdefs).TypeName
             let resIdent = tsCtx.CreateIdent ident (SymbolKind.Constructor typeName) (Some span)
 
@@ -1688,10 +1693,10 @@ module private InferenceChecking =
 
         // Type-based resolution for overloaded rules.
         | Identifier ident, expected
-            when List.isEmpty ident.Qualifier && Map.containsKey (removePos ident.Name) env.Signatures ->
+            when env.ContainsSignature (removePos ident.Name) ->
 
             let name = removePos ident.Name
-            let schemes = env.Signatures.[name]
+            let schemes = env.TryFindSignature(name).Value
 
             match RuleLookup.selectCandidateByExpectedType tsCtx name (Some expected) schemes with
             | Unique(actual, effects, targetName) ->

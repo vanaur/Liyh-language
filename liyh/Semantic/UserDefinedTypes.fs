@@ -7,11 +7,11 @@ module private TypeDefs =
 
     /// Registers ADT headers so that the names are known before using them.
     let rec public registerSumTypeHeaders (tsCtx: TypecheckContext) (env: Env) (sumTypes: SumType list) : Env =
-        let mutable adtsMap = env.Adts
+        let mutable adtsMap = env.LocalScope.Adts
 
         for st in sumTypes do
             let typeName = removePos st.Name
-            if Map.containsKey typeName adtsMap || Map.containsKey typeName env.TypeAlias then
+            if Map.containsKey typeName adtsMap || env.ContainsTypeAlias typeName then
                 let desc = sprintf "Duplicate type declaration: type '%s' is already defined." typeName
                 tsCtx.ReportError ErrorCode.DuplicateTypeDeclarationError desc [] null st.Name
             else
@@ -25,7 +25,7 @@ module private TypeDefs =
                 let adtDef = { Name = typeName; TypeParams = paramNames }
                 adtsMap <- Map.add typeName adtDef adtsMap
 
-        { env with Adts = adtsMap }
+        env.WithLocalAdts adtsMap
 
     /// Resolves ADT constructors and elaborates them into TTypeDef top-level declarations.
     and public registerSumTypeConstructors
@@ -34,7 +34,7 @@ module private TypeDefs =
         (sumTypes: SumType list)
         : Env * TTopLevel list
         =
-        let mutable ctorsMap = env.Constructors
+        let mutable ctorsMap = env.LocalScope.Constructors
         let mutable elaboratedSumTypes = []
 
         for st in sumTypes do
@@ -99,7 +99,7 @@ module private TypeDefs =
 
             elaboratedSumTypes <- tTop :: elaboratedSumTypes
 
-        ({ env with Constructors = ctorsMap }, List.rev elaboratedSumTypes)
+        (env.WithLocalConstructors ctorsMap, List.rev elaboratedSumTypes)
 
     /// Registers new type aliases to the environment and elaborates them into TTypeAliasDef declarations.
     and public registerTypeAliases
@@ -109,7 +109,9 @@ module private TypeDefs =
         : Env * TTopLevel list
         =
         let mutable validAliases = []
-        let mutable knownNames = Set.union (Map.keys env.TypeAlias |> Set.ofSeq) (Map.keys env.Adts |> Set.ofSeq)
+        let mutable knownNames =
+            Set.union (Map.keys env.LocalScope.TypeAlias |> Set.ofSeq)
+                      (Map.keys env.LocalScope.Adts |> Set.ofSeq)
 
         for (nameWp, varTypesWp, targetTypeWp) in aliases do
             let aliasName = removePos nameWp
@@ -235,7 +237,7 @@ module private TypeDefs =
                       TargetType = targetType
                       NamePos = nameWp }
 
-                currentEnv <- { currentEnv with TypeAlias = Map.add name aliasDef currentEnv.TypeAlias }
+                currentEnv <- currentEnv.WithLocalTypeAliases (Map.add name aliasDef currentEnv.LocalScope.TypeAlias)
 
                 let aliasIdent = tsCtx.CreateIdent { Qualifier = []; Name = nameWp } SymbolKind.PureSymbol (Some (spanOf nameWp))
                 let tAlias : TTypeAlias =

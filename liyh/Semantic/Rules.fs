@@ -77,13 +77,13 @@ module private Rules =
 
                 match headNameOpt with
                 // A reducible known rule.
-                | Some name when Map.containsKey name env.Signatures && not (Map.containsKey name env.Constructors) ->
+                | Some name when env.ContainsSignature name && not (env.ContainsConstructor name) ->
                     let desc = sprintf "Rule pattern matches reducible rule '%s', but evaluation strategy is not 'outermost'." name
                     let hint = "By default, Liyh applies 'innermost' (strict) rewriting. Subterms are reduced before this clause can match. You should use the 'outermost' rewriting strategy. Outermost rules are always tested before 'innermost' ones."
                     tsCtx.ReportWarning WarningCode.NonOutermostPatternWarning desc [] hint patt
 
                 // A functional higher-order varaible
-                | Some name when not (Map.containsKey name env.Constructors) ->
+                | Some name when not (env.ContainsConstructor name) ->
                     let desc = sprintf "Higher-order variable pattern `%s[...]` captures an unreduced function or rule call, but evaluation strategy is not 'outermost'." name
                     let hint = "By default, Liyh applies 'innermost' (strict) rewriting. Subterms are reduced before this clause can match. You should use the 'outermost' rewriting strategy. Outermost rules are always tested before 'innermost' ones."
                     tsCtx.ReportWarning WarningCode.NonOutermostPatternWarning desc [] hint patt
@@ -94,7 +94,7 @@ module private Rules =
 
             | MixfixOperatorPattern(nameWithPos, args) ->
                 let notationName = removePos nameWithPos
-                match Map.tryFind notationName env.Notations with
+                match env.TryFindNotation notationName with
                 | Some notation ->
                     let holes = Mixfix.getNotationHoles notation
 
@@ -284,7 +284,7 @@ module private Rules =
     let private checkMain (tsCtx: TypecheckContext) (env: Env) (rules: (Rule * bool) list) =
         let repRule = fst (List.head rules)
 
-        if Map.containsKey "main" env.Signatures then
+        if env.ContainsSignature "main" then
             let desc = "The program entry point 'main' is already defined."
             let hint = "A program can contain at most one 'main' function."
             tsCtx.ReportError ErrorCode.DuplicateDeclarationError desc [] hint repRule.Name
@@ -358,8 +358,8 @@ module private Rules =
 
                 let moduleName = string (removePos extrn.AsName)
                 let key = (moduleName, fnName)
-                let existing = Map.tryFind key currentEnv.Externs |> Option.defaultValue []
-                currentEnv <- { currentEnv with Externs = Map.add key (existing @ [ def ]) currentEnv.Externs }
+                let existing = Map.tryFind key currentEnv.LocalScope.Externs |> Option.defaultValue []
+                currentEnv <- currentEnv.WithLocalExterns(Map.add key (existing @ [ def ]) currentEnv.LocalScope.Externs)
 
                 let fnIdent = tsCtx.CreateIdent { Qualifier = [ extrn.AsName.Node.Name ]; Name = signature.Name } (SymbolKind.ExternFunction rawLibFile) (Some (spanOf signature.Name))
                 let tsig : TSignature =

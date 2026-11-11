@@ -68,7 +68,7 @@ module private Mixfix =
                     validateNotationTemplate tsCtx nt
                     loop (Map.add name nt notationMap) rest
 
-        { env with Notations = loop env.Notations notations }
+        env.WithLocalNotations (loop env.LocalScope.Notations notations)
 
     /// Replaces the holes in a notation expression with the actual expression arguments.
     let rec public substExpression
@@ -212,10 +212,11 @@ module private Mixfix =
 
     /// Finds whether a given rule name corresponds to a commutative notation in the environment.
     let public tryFindCommutativeNotation (env: Env) (ruleName: string) : Notation option =
-        env.Notations
-        |> Map.toSeq
-        |> Seq.map snd
+        seq {
+            env.LocalScope.Notations.Values
+            env.ImportedScope.Notations.Values
+        }
+        |> Seq.concat
         |> Seq.tryFind (fun notation ->
             removePos notation.NotationCommutative = true
             && getNotationTargetSymbolName notation = Some ruleName)
-

@@ -12,7 +12,7 @@ module private TypeResolve =
         |> List.map (fun idWithPos ->
             let effectName = string (removePos idWithPos)
 
-            if not (Map.containsKey effectName env.Effects) then
+            if not (env.ContainsEffect effectName) then
                 let desc = sprintf "No effect named '%s' was found in the current environment." effectName
                 let infos = [ suggestAlternativesEffects env effectName ]
 
@@ -90,7 +90,7 @@ module private TypeResolve =
         | NamedType ident ->
             let fullName = string ident
 
-            match Map.tryFind fullName env.TypeAlias with
+            match env.TryFindTypeAlias fullName with
             | Some aliasDef ->
                 let n = List.length aliasDef.TypeParams
                 if n > 0 then
@@ -102,7 +102,7 @@ module private TypeResolve =
                     aliasDef.Expand([])
 
             | None ->
-                match Map.tryFind fullName env.Adts with
+                match env.TryFindAdt fullName with
                 | Some typeDef ->
                     let n = List.length typeDef.TypeParams
                     if n > 0 then
@@ -147,7 +147,7 @@ module private TypeResolve =
             let fullName = string ident
             let resolvedArgs = argTypes |> List.map (resolveType tsCtx scope env)
 
-            match Map.tryFind fullName env.TypeAlias with
+            match env.TryFindTypeAlias fullName with
             | Some aliasDef ->
                 let expectedArity = List.length aliasDef.TypeParams
                 let actualArity = List.length resolvedArgs
@@ -161,15 +161,16 @@ module private TypeResolve =
                     aliasDef.Expand(resolvedArgs)
 
             | None ->
-                match Map.tryFind fullName env.Adts with
+                match env.TryFindAdt fullName with
                 | Some typeDef ->
                     let expectedArity = List.length typeDef.TypeParams
                     let actualArity = List.length resolvedArgs
 
                     if actualArity <> expectedArity then
+                        let ts = String.concat ", " typeDef.TypeParams
                         fail ErrorCode.TypeArityMismatchError
                             (sprintf "Type `%s` expects %d argument(s), but got %d." fullName expectedArity actualArity)
-                            [ sprintf "`%s` expects parameters: [%s]." fullName (String.concat ", " typeDef.TypeParams) ]
+                            [ sprintf "`%s` expects parameters: [%s]." fullName ts ]
                             null
                     else
                         TApp(fullName, resolvedArgs)
@@ -204,7 +205,7 @@ module private TypeResolve =
         (env: Env)
         : (LiyhType list * LiyhType) option
         =
-        Map.tryFind lookupKey env.Constructors
+        env.TryFindConstructor lookupKey
         |> Option.map (fun cdefs ->
             let probe (cdef: ConstructorDef) =
                 match expectedOpt with

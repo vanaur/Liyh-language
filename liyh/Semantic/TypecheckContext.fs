@@ -17,7 +17,7 @@ exception private UnifyException of InternalDiagnostic
 /// Checkpoint covering both variable bindings (types and dimensions) and the
 /// reported diagnostics for backtracking.
 [<Struct>]
-type private Checkpoint =
+type public Checkpoint =
     { UndoCount: int
       DiagnosticCount: int }
 
@@ -28,7 +28,7 @@ type private UndoAction =
 
 /// Type checker context: generates new variables, logs variable bindings, collects diagnostics,
 /// and allows to roll back the entire process using checkpoints.
-type private TypecheckContext(lines: string seq) =
+type public TypecheckContext(lines: string seq) =
     let diagnostics = ResizeArray<ErrorReport>()
     let undoStack = ResizeArray<UndoAction>()
 
