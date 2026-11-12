@@ -321,6 +321,51 @@ module public CoreCompiler =
                 bindStep
                 ifte stepIsPositive loopUp loopDown ]
 
+    /// Helper to reverse a list.
+    and private compileListReverse (listTerm: CoreTerm) : CoreTerm =
+        let cursorName = FreshName.get "rev_cursor"
+        let accName = FreshName.get "rev_acc"
+        let headName = FreshName.get "rev_head"
+        let tailName = FreshName.get "rev_tail"
+        let nilName = FreshName.get "rev_nil"
+
+        let cursorVar = Variable cursorName
+        let accVar = Variable accName
+        let headVar = Variable headName
+        let tailVar = Variable tailName
+        let nilVar = Variable nilName
+
+        let bindCursor = CoreLet { Pattern = cursorVar; Value = listTerm; IsMutable = true }
+        let bindAcc = CoreLet { Pattern = accVar; Value = Builtin.symbolNil; IsMutable = true }
+        let bindNil = CoreLet { Pattern = nilVar; Value = Builtin.symbolNil; IsMutable = false }
+
+        let consPattern = Builtin.symbolCons headVar tailVar
+
+        let loopBody =
+            TermSequence [
+                CoreLet {
+                    Pattern = consPattern
+                    Value = cursorVar
+                    IsMutable = false
+                }
+                UpdateVariable(accName, Builtin.symbolCons headVar accVar)
+                UpdateVariable(cursorName, tailVar)
+            ]
+
+        let whileLoop =
+            WhileLoop {
+                Predicate = symbol Internals.Neq [ cursorVar; nilVar ]
+                Body = loopBody
+            }
+
+        TermSequence [
+            bindCursor
+            bindAcc
+            bindNil
+            whileLoop
+            accVar
+        ]
+
     and private compileRange (cstate: State) (range: TRange) : CoreTerm =
         let resultName = FreshName.get "range_res"
         let resultVar = Variable resultName
@@ -334,7 +379,8 @@ module public CoreCompiler =
         TermSequence [
             bindResult
             rangeLoop
-            Builtin.symbolReverse resultVar ]
+            compileListReverse resultVar
+        ]
 
     and private compileForTo (cstate: State) (forto: TForTo) =
         let initialValue = compileExpression cstate forto.ForToInitial
@@ -465,7 +511,7 @@ module public CoreCompiler =
                 bindResult
                 bindNil
                 whileLoop
-                Builtin.symbolReverse resultVar
+                compileListReverse resultVar
             ]
 
     and private listComprehensionOverRange (cstate: State) (range: TRange) (lc: TListComprehension) =
@@ -496,7 +542,8 @@ module public CoreCompiler =
         TermSequence [
             bindResult
             rangeLoop
-            Builtin.symbolReverse resultVar ]
+            compileListReverse resultVar
+        ]
 
     and private compileLambda (cstate: State) (lambda: TLambda) =
         let compiledPatterns = lambda.LambdaParameters |> List.map (compilePattern cstate)
