@@ -367,10 +367,10 @@ module public CoreCompiler =
                 let stepVar, bindStep = bind "range_step" stepCompiled
 
                 let loopUp = makeLoop Internals.Add Internals.Leq (Some stepVar)
-                let loopDown = makeLoop Internals.Sub Internals.Geq (Some stepVar)
-                let condition = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
+                let loopDown = makeLoop Internals.Add Internals.Geq (Some stepVar)
+                let stepIsPositive = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
 
-                ([bindStep], ifte condition loopUp loopDown)
+                ([ bindStep ], ifte stepIsPositive loopUp loopDown)
 
         TermSequence ([bindStart; bindStop] @ stepBindings @ [loopLogic])
 
