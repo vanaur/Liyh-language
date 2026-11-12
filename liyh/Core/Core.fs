@@ -52,7 +52,7 @@ type public CoreTerm =
     | Wildcard
 
 and public CoreLiteral =
-    | Integer of bigint
+    | Integer of int64
     | Float of double
     | String of string
     | Char of char

@@ -71,7 +71,7 @@ module public CoreCompiler =
 
         let stepName = FreshName.get "step"
         let stepVariable = Variable stepName
-        let stepValue = Option.defaultValue (CoreTerm.Literal(CoreLiteral.Integer 1I)) stepValue
+        let stepValue = Option.defaultValue (CoreTerm.Literal(CoreLiteral.Integer 1)) stepValue
 
         let stepDeclaration =
             CoreLet
@@ -209,7 +209,7 @@ module public CoreCompiler =
 
     and private compileLiteralNode (lit: TLiteralNode) =
         match lit with
-        | TLiteralNode.TLitInteger i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
+        | TLiteralNode.TLitInteger i -> CoreTerm.Literal (CoreLiteral.Integer i)
         | TLiteralNode.TLitFloat f -> CoreTerm.Literal (CoreLiteral.Float f)
         | TLiteralNode.TLitChar c -> CoreTerm.Literal (CoreLiteral.Char c)
         | TLiteralNode.TLitString s -> CoreTerm.Literal (CoreLiteral.String s)
@@ -270,8 +270,8 @@ module public CoreCompiler =
         =
 
         let isFloat = range.RangeFrom.Type.Prune().IsTFloat
-        let zero = if isFloat then CoreTerm.Literal(CoreLiteral.Float 0.0) else CoreTerm.Literal(CoreLiteral.Integer 0I)
-        let one = if isFloat then CoreTerm.Literal(CoreLiteral.Float 1.0) else CoreTerm.Literal(CoreLiteral.Integer 1I)
+        let zero = if isFloat then CoreTerm.Literal(CoreLiteral.Float 0.0) else CoreTerm.Literal(CoreLiteral.Integer 0)
+        let one = if isFloat then CoreTerm.Literal(CoreLiteral.Float 1.0) else CoreTerm.Literal(CoreLiteral.Integer 1)
 
         let bind name value =
             let varName = FreshName.get name
@@ -715,7 +715,7 @@ module public CoreCompiler =
 
         | Literal lit ->
             match lit with
-            | Literal.Integer i -> CoreTerm.Literal (CoreLiteral.Integer (bigint i))
+            | Literal.Integer i -> CoreTerm.Literal (CoreLiteral.Integer i)
             | Literal.Float f   -> CoreTerm.Literal (CoreLiteral.Float f)
             | Literal.Char c    -> CoreTerm.Literal (CoreLiteral.Char c)
             | Literal.String s  -> CoreTerm.Literal (CoreLiteral.String s)
