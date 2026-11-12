@@ -473,13 +473,120 @@ module private Rules =
 
         (finalEnv, elaboratedTopLevels)
 
+
+
+    //
+    // Rule Overload Partitioning & Clustering
+    //
+    // In Liyh, clauses sharing the same rule name can represent either:
+    //   1. Pattern branches of a single function (e.g., base vs. recursive clauses).
+    //   2. Distinct overloads compiled to separate mangled symbols (e.g., `f@[Int]` vs `f@[String]`).
+    //
+    // To prevent silent rule splits while isolating genuine overloads, clauses are grouped into
+    // `RuleCluster`s according to three core principles:
+    //
+    // 1. Explicit Generics vs. Unannotated Wildcards:
+    //    - Syntactic type variables written by the user (e.g., `x: 't`) signal an intentional
+    //      polymorphic overload and are forbidden from merging into concrete clusters (`x: Int`).
+    //    - Conversely, unannotated patterns (`_`, `x`, literals like `0`) produce implicit inference
+    //      variables (`TVar`). These represent unconstrained terms and must merge into an existing
+    //      concrete cluster rather than spawning a redundant generic overload.
+    //
+    // 2. Deep Type Refinement:
+    //    When a subsequent clause joins an existing cluster, `refineType` deeply propagates
+    //    concrete types into any remaining placeholder type variables (e.g., refining `List['a]`
+    //    into `List[Int]` when encountering `x: Int :: xs`). This prevents later incompatible
+    //    clauses from unifying with leftover generic arguments.
+    //
+    // 3. Strict Ambiguity Detection:
+    //    If an unannotated fallback clause (e.g., `f[_, y: Float]`) unifies equally well with
+    //    multiple disjoint clusters (`f[Int, Float]` and `f[String, Float]`), the compiler raises
+    //    an `AmbiguousOverloadError` instead of arbitrarily picking a cluster.
+    //
+
+
+
     type private RuleCluster =
         { ClusterName: string
           CandidateParamTypes: LiyhType list
+          ExplicitGenericParams: bool list
           CandidateRetType: LiyhType
           Rules: (Rule * bool) list }
 
-    /// Partition the clauses of a rule into different clusters of overloads.
+    /// Checks if a syntactic type annotation contains any explicit type variables (e.g. `'a`).
+    let rec private typeAstHasVariable (ty: TypeWithPos) : bool =
+        match removePos ty with
+        | Type.VariableType _ -> true
+        | Type.RuleType (ps, r) -> List.exists typeAstHasVariable ps || typeAstHasVariable r
+        | Type.TupleType ts -> List.exists typeAstHasVariable ts
+        | Type.RowRecordType fs -> List.exists (snd >> typeAstHasVariable) fs
+        | Type.ParametrizedType (_, args) -> List.exists typeAstHasVariable args
+        | Type.ModuloEffectType (t, _) -> typeAstHasVariable t
+        | _ -> false
+
+    /// Determines if a pattern explicitly declares generic intent via type variable annotations.
+    let rec private patternHasExplicitGeneric (patt: PatternWithPos) : bool =
+        match removePos patt with
+        | Pattern.TypedPattern (p, ty) -> typeAstHasVariable ty || patternHasExplicitGeneric p
+        | Pattern.AsPattern (p1, p2) -> patternHasExplicitGeneric p1 || patternHasExplicitGeneric p2
+        | Pattern.WhenPattern (p, _) -> patternHasExplicitGeneric p
+        | Pattern.TuplePattern ps
+        | Pattern.ListPattern ps -> List.exists patternHasExplicitGeneric ps
+        | Pattern.ApplyPattern (head, args) ->
+            patternHasExplicitGeneric head || List.exists patternHasExplicitGeneric args
+        | Pattern.MixfixOperatorPattern (_, args) -> List.exists patternHasExplicitGeneric args
+        | Pattern.RecordPattern fs -> List.exists (snd >> patternHasExplicitGeneric) fs
+        | _ -> false
+
+    /// Detects structural conflict when an explicitly declared generic type meets a concrete type.
+    let rec private hasGenericStructuralMismatch (cExplicit: bool) (rExplicit: bool) (cT: LiyhType) (rT: LiyhType) : bool =
+        match cT.Prune(), rT.Prune() with
+        | TVar _, TVar _ -> false
+        | TVar _, _ -> cExplicit
+        | _, TVar _ -> rExplicit
+        | TTuple cs, TTuple rs when cs.Length = rs.Length ->
+            List.exists2 (hasGenericStructuralMismatch cExplicit rExplicit) cs rs
+        | TApp (cn, cas), TApp (rn, ras) when cn = rn && cas.Length = ras.Length ->
+            List.exists2 (hasGenericStructuralMismatch cExplicit rExplicit) cas ras
+        | TArrow (cps, cr, _), TArrow (rps, rr, _) when cps.Length = rps.Length ->
+            List.exists2 (hasGenericStructuralMismatch cExplicit rExplicit) cps rps
+            || hasGenericStructuralMismatch cExplicit rExplicit cr rr
+        | TRecord (cfs, _), TRecord (rfs, _) ->
+            cfs
+            |> Map.exists (fun k cv ->
+                match Map.tryFind k rfs with
+                | Some rv -> hasGenericStructuralMismatch cExplicit rExplicit cv rv
+                | None -> false)
+        | TMeasure (cb, _), TMeasure (rb, _) ->
+            hasGenericStructuralMismatch cExplicit rExplicit cb rb
+        | _ -> false
+
+    /// Deeply refines an existing type schema by replacing unconstrained type variables
+    /// with concrete structural types discovered in subsequent clauses.
+    let rec private refineType (t1: LiyhType) (t2: LiyhType) : LiyhType =
+        match t1.Prune(), t2.Prune() with
+        | TVar _, t
+        | t, TVar _ -> t
+        | TApp (n1, args1), TApp (n2, args2) when n1 = n2 && args1.Length = args2.Length ->
+            TApp (n1, List.map2 refineType args1 args2)
+        | TTuple ts1, TTuple ts2 when ts1.Length = ts2.Length ->
+            TTuple (List.map2 refineType ts1 ts2)
+        | TArrow (ps1, r1, eff1), TArrow (ps2, r2, eff2) when ps1.Length = ps2.Length ->
+            TArrow (List.map2 refineType ps1 ps2, refineType r1 r2, eff1 + eff2)
+        | TRecord (fs1, rest1), TRecord (fs2, rest2) ->
+            let merged =
+                Map.fold (fun acc k v2 ->
+                    match Map.tryFind k acc with
+                    | Some v1 -> Map.add k (refineType v1 v2) acc
+                    | None -> Map.add k v2 acc
+                ) fs1 fs2
+            TRecord (merged, rest1)
+        | TMeasure (b1, _), TMeasure (b2, _) ->
+            let dim = match t1.Prune() with TMeasure(_, d) -> d | _ -> Dimension.empty
+            TMeasure (refineType b1 b2, dim)
+        | t, _ -> t
+
+    /// Partitions rule clauses into distinct overload clusters by structural compatibility.
     let private partitionRules (tsCtx: TypecheckContext) (env: Env) (rules: (Rule * bool) list) : (Rule * bool) list list =
         let globalCp = tsCtx.Checkpoint()
 
@@ -489,45 +596,7 @@ module private Rules =
             for (rule, isLet) in rules do
                 let ruleName = removePos rule.Name
                 let arity = List.length rule.Patterns
-                let mutable matchedClusterIdx = None
-
-                (*
-
-                // checks if any cluster unifies with the actual signature
-                let compatibleClusterIndices =
-                    clusters
-                    |> List.indexed
-                    |> List.choose (fun (i, cluster) ->
-                        if cluster.ClusterName = ruleName && List.length cluster.CandidateParamTypes = arity then
-                            let matchSuccess =
-                                tsCtx.Attempt (fun _ ->
-                                    let scope = TypeScope.create()
-                                    let pTypes =
-                                        rule.Patterns
-                                        |> List.mapi (fun idx p ->
-                                            let expectedTypeOpt = Some (cluster.CandidateParamTypes.[idx].Prune())
-                                            let (tp, _) = InferenceChecking.inferPattern InferenceChecking.RulePattern tsCtx scope env expectedTypeOpt p
-                                            tp.Type)
-
-                                    List.iter2 (Unification.unify tsCtx) cluster.CandidateParamTypes pTypes
-
-                                    match fst (resolveRetAnnotation tsCtx scope env rule) with
-                                    | Some declType ->
-                                        match Option.map removePos rule.Strategy with
-                                        | Some Invalid -> ()
-                                        | _ -> Unification.unify tsCtx cluster.CandidateRetType declType
-                                    | None -> ())
-                            if Option.isSome matchSuccess then Some i else None
-                        else None)
-
-                *)
-
-
-
-
-                let hasTypedPattern =
-                    rule.Patterns
-                    |> List.exists (removePos >> _.IsTypedPattern)
+                let clauseExplicitGenerics = List.map patternHasExplicitGeneric rule.Patterns
 
                 let isBottomStrategy =
                     match Option.map removePos rule.Strategy with
@@ -539,33 +608,34 @@ module private Rules =
                     |> fst
                     |> _.Type
 
+                // A clause is compatible with a cluster if arities match, explicit generics
+                // do not clash with concrete types, and patterns/returns unify cleanly.
                 let isClusterCompatible (cluster: RuleCluster) =
                     cluster.ClusterName = ruleName
                     && cluster.CandidateParamTypes.Length = arity
                     && tsCtx.Probe (fun _ ->
                         let rawScope = TypeScope.create()
 
-                        let checkGenericMismatch (cType: LiyhType) (patt: PatternWithPos) =
-                            let rType = inferPatt None rawScope patt
-
-                            match cType.Prune(), rType.Prune() with
-                            | TVar _, TVar _ -> ()
-                            | (TVar _, _ | _, TVar _) when hasTypedPattern ->
-                                raise (UnifyException { Message = "Generic mismatch"; Informations = []; Hint = null })
-                            | _ -> ()
-
-                        List.iter2 checkGenericMismatch cluster.CandidateParamTypes rule.Patterns
+                        // Ensure explicit generic parameters do not silently swallow concrete overloads
+                        for i = 0 to arity - 1 do
+                            let cExplicit = cluster.ExplicitGenericParams.[i]
+                            let rExplicit = clauseExplicitGenerics.[i]
+                            if cExplicit || rExplicit then
+                                let cType = cluster.CandidateParamTypes.[i]
+                                let rType = inferPatt None rawScope rule.Patterns.[i]
+                                if hasGenericStructuralMismatch cExplicit rExplicit cType rType then
+                                    raise (UnifyException { Message = "Generic mismatch"; Informations = []; Hint = null })
 
                         let scope = TypeScope.create()
-                        let unifyParam (cType: LiyhType) (patt: PatternWithPos) =
-                            let pType = inferPatt (Some (cType.Prune())) scope patt
+                        for i = 0 to arity - 1 do
+                            let cType = cluster.CandidateParamTypes.[i].Prune()
+                            let expectedOpt = if cType.IsTVar then None else Some cType
+                            let pType = inferPatt expectedOpt scope rule.Patterns.[i]
                             Unification.unify tsCtx cType pType
-
-                        List.iter2 unifyParam cluster.CandidateParamTypes rule.Patterns
 
                         match fst (resolveRetAnnotation tsCtx scope env rule) with
                         | Some declType when not isBottomStrategy ->
-                            Unification.unify tsCtx cluster.CandidateRetType declType
+                            Unification.unify tsCtx (cluster.CandidateRetType.Prune()) declType
                         | _ -> ()
                     )
 
@@ -574,31 +644,57 @@ module private Rules =
                     |> List.indexed
                     |> List.choose (fun (i, cluster) -> if isClusterCompatible cluster then Some i else None)
 
-
                 match compatibleClusterIndices with
+                // Matches an existing cluster: merge the clause and deeply refine parameter types.
                 | [ idx ] ->
                     let cluster = clusters.[idx]
-                    let updated = { cluster with Rules = cluster.Rules @ [ (rule, isLet) ] }
+                    let scope = TypeScope.create()
+                    let newPTypes =
+                        rule.Patterns
+                        |> List.mapi (fun i p ->
+                            let cType = cluster.CandidateParamTypes.[i].Prune()
+                            let expectedOpt = if cType.IsTVar then None else Some cType
+                            (inferPatt expectedOpt scope p).Prune())
+
+                    let refinedParamTypes =
+                        List.map2 refineType cluster.CandidateParamTypes newPTypes
+
+                    let refinedExplicitGenerics =
+                        List.map2 (||) cluster.ExplicitGenericParams clauseExplicitGenerics
+
+                    let refinedRetType =
+                        match fst (resolveRetAnnotation tsCtx scope env rule) with
+                        | Some declType when not isBottomStrategy ->
+                            refineType cluster.CandidateRetType declType
+                        | _ -> cluster.CandidateRetType.Prune()
+
+                    let updated =
+                        { cluster with
+                            CandidateParamTypes = refinedParamTypes
+                            ExplicitGenericParams = refinedExplicitGenerics
+                            CandidateRetType = refinedRetType
+                            Rules = cluster.Rules @ [ (rule, isLet) ] }
+
                     clusters <- List.mapi (fun i item -> if i = idx then updated else item) clusters
 
+                // No compatible cluster found: create a new overload cluster.
                 | [] ->
                     if ruleName = "main" && not (List.isEmpty clusters) then
                         let desc = "The 'main' function cannot be overloaded."
                         tsCtx.ReportError ErrorCode.AmbiguousOverloadError desc [] null rule.Name
 
-                    // No compatible cluster: creating a new cluster.
                     let scope = TypeScope.create()
                     let pTypes =
                         rule.Patterns
                         |> List.map (fun p ->
-                            let (tp, _) = InferenceChecking.inferPattern InferenceChecking.RulePattern tsCtx scope env None p
-                            tp.Type)
+                            InferenceChecking.inferPattern InferenceChecking.RulePattern tsCtx scope env None p
+                            |> fst
+                            |> _.Type)
 
                     if ruleName = "main" && List.length pTypes = 1 then
                         let expectedMainArg = TApp("List", [ TString ])
                         Unification.unifyOrReport tsCtx pTypes.[0] expectedMainArg rule.Patterns.[0]
 
-                    // Enforce commutativity symmetry on candidate cluster types
                     match Mixfix.tryFindCommutativeNotation env ruleName with
                     | Some _ when List.length pTypes = 2 && not env.InSymbolicScope ->
                         Unification.unify tsCtx pTypes.[0] pTypes.[1]
@@ -615,11 +711,13 @@ module private Rules =
                     let newCluster =
                         { ClusterName = ruleName
                           CandidateParamTypes = pTypes
+                          ExplicitGenericParams = clauseExplicitGenerics
                           CandidateRetType = rType
                           Rules = [ (rule, isLet) ] }
 
                     clusters <- clusters @ [ newCluster ]
 
+                // Ambiguous clause matching multiple disjoint overload clusters.
                 | many ->
                     let candidatesDesc =
                         many
