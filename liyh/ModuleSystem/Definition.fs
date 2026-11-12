@@ -71,27 +71,28 @@ module Definitions =
         |> Option.defaultValue []
 
     /// Retrieves the name of the given definition.
-    let private getName (tlwp: TopLevelWithPos) =
+    let private getNames (tlwp: TopLevelWithPos) =
         match tlwp.Node with
-        | TopLevel.Rule { Name = name } -> name.Node
-        | TopLevel.LetRule { Name = name } -> name.Node
-        | TopLevel.Handler { Name = name } -> name.Node
-        | TopLevel.Effect (name', _, _) -> name'.Node
-        | TopLevel.Type { Name = name } -> name.Node
-        | TopLevel.TypeAlias (name', _, _) -> name'.Node
-        | TopLevel.Notation notation -> notation.NotationName.Node
-        | TopLevel.Context ctx -> ctx.Name.Node
-        | _ -> failwith "??"
+        | TopLevel.Rule { Name = name } -> [ name.Node ]
+        | TopLevel.LetRule { Name = name } -> [ name.Node ]
+        | TopLevel.Handler { Name = name } -> [ name.Node ]
+        | TopLevel.Effect (name', _, _) -> [ name'.Node ]
+        | TopLevel.Type { Name = name } -> [ name.Node ]
+        | TopLevel.TypeAlias (name', _, _) -> [ name'.Node ]
+        | TopLevel.Notation notation -> [ notation.NotationName.Node ]
+        | TopLevel.Context ctx -> [ ctx.Name.Node ]
+        | TopLevel.Extern extrn -> extrn.Content |> List.map (removePos >> _.Name >> removePos)
+        | _ -> []
 
     /// Try to return the definition according to its type and its name, if found.
     let public tryGet (kind: DefinitionType) (name: string) (modl: ModuleInfo) =
         tryGetByType kind modl
-        |> List.tryFind (fun tlwp -> getName tlwp = name)
+        |> List.tryFind (fun tlwp -> List.contains name (getNames tlwp))
 
     /// Return the list of the whole definition's name in the given module.
     let public listAllDefinitionNames (modl: ModuleInfo) =
         classifyDefinitions modl
-        |> Map.map (fun _ v -> List.map getName v)
+        |> Map.map (fun _ defs -> List.collect getNames defs)
 
     /// Check if the given module contains a definition by it's name.
     let public containsDefinitionName (modl: ModuleInfo) (name: string) =
@@ -112,23 +113,28 @@ module Definitions =
             filteredTypes
             |> Map.toList
             |> List.collect (fun (typ, lst) ->
-                lst |> List.map (fun tlwp -> (getName tlwp, typ, tlwp.StartPos))
+                lst |> List.collect (fun tlwp ->
+                    getNames tlwp |> List.map (fun name -> (name, typ, tlwp.StartPos))
+                )
             )
 
         let rules =
             defsByType |> Map.tryFind Rule |> Option.defaultValue []
-            |> List.map (fun tlwp -> (getName tlwp, Rule, tlwp.StartPos))
+            |> List.collect (fun tlwp ->
+                getNames tlwp |> List.map (fun name -> (name, Rule, tlwp.StartPos))
+            )
 
         let handlers =
             defsByType |> Map.tryFind Handler |> Option.defaultValue []
-            |> List.map (fun tlwp -> (getName tlwp, Handler, tlwp.StartPos))
+            |> List.collect (fun tlwp ->
+                getNames tlwp |> List.map (fun name -> (name, Handler, tlwp.StartPos))
+            )
 
         let allDefs = nameTypePosList @ rules @ handlers
 
         allDefs
         |> List.groupBy (fun (name, _, _) -> name)
         |> List.choose (fun (name, items) ->
-            // On sépare les types présents pour ce nom
             let types = items |> List.map (fun (_, typ, _) -> typ) |> List.distinct
             let positions = items |> List.map (fun (_, _, pos) -> pos)
             match types with
@@ -137,56 +143,3 @@ module Definitions =
                 else Some (name, positions, types)
             | _ -> None
         )
-
-    // Unfinished:
-
-    /// Retrieves all symbols from a definition.
-    let public getSymbolsOfExpression (expr: ExpressionWithPos) =
-
-        let rec loop result { Node = node } =
-            let listOfExpr1 xs = List.map (snd >> loop result) xs |> List.concat
-            let listOfExpr2 xs = List.map (loop result) xs |> List.concat
-
-            match node with
-            | Expression.Identifier id -> id :: result
-            | Expression.Apply { LHS = a; Arguments = b } -> loop result a @ listOfExpr2 b
-            | Expression.CollectionAccess { LHS = a; Indices = b } -> loop result a @ listOfExpr2 b
-            | Expression.ExpressionSequence xs -> listOfExpr2 xs
-            | Expression.ForDownTo { InitialValue = a; EndValue = b; Body = c } -> loop result a @ loop result b @ loop result c
-            | Expression.ForIn { ListExpr = a; Body = b } -> loop result a @ loop result b
-            | Expression.ForTo { InitialValue = a; EndValue = b; Body = c } -> loop result a @ loop result b @ loop result c
-            | Expression.HandleEffect { InitialState = a; Body = b } -> loop result a @ loop result b
-            | Expression.Lambda { Body = a } -> loop result a
-            | Expression.Let(_, a) -> loop result a
-            | Expression.Var(_, a) -> loop result a
-            | Expression.List xs -> listOfExpr2 xs
-            | Expression.ListComprehension { ItemValue = a; ListExpr = c; IfPred = d } -> loop result a @ loop result c @ Option.defaultValue result (Option.map (loop result) d)
-            | Expression.Match { ToMatch = a; Cases = b } -> loop result a @ listOfExpr1 b
-            | Expression.MixfixOperator { Arguments = a } -> listOfExpr2 a
-            | Expression.Range { RangeStart = a; RangeStep = b; RangeStop = c } -> loop result a @ loop result c @ Option.defaultValue result (Option.map (loop result) b)
-            | Expression.ReAssign(_, a) -> loop result a
-            | Expression.Record xs -> listOfExpr1 xs
-            | Expression.RecordUsing(_, a) -> listOfExpr1 a
-            | Expression.ResumeWith rw -> loop result rw.HandlerState @ loop result rw.Value
-            | Expression.Tuple xs -> listOfExpr2 xs
-            | Expression.UFCS { LHS = a; RHS = b } -> loop result a @ loop result b
-            | Expression.While { Predicate = a; Body = b } -> loop result a @ loop result b
-            | _ -> result
-
-        loop [] expr
-        |> List.distinct
-
-    /// List all symbols used in the module.
-    let public getAllSymbolsUsed (modl: ModuleInfo) =
-
-        let rec loop result =
-            function
-            | [] -> result
-            | { Node = TopLevel.Rule { WhenClause = whenClause; Body = expr } } :: xs ->
-                loop (result @ getSymbolsOfExpression expr) xs
-                @ Option.defaultValue result (Option.map getSymbolsOfExpression whenClause)
-
-            | _ :: xs -> loop result xs
-
-        loop [] modl.ModuleContent
-
