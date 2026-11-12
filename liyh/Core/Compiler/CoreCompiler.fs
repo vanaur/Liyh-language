@@ -29,10 +29,11 @@ module public CoreCompiler =
         | FromPattern of TPattern
         | FromString of string
 
-    let private tryGetVariable (patt: TPattern) =
+    let rec private tryGetVariable (patt: TPattern) =
         match patt.Kind with
         | TPatternNode.TPatVariable ident -> Some (removePos ident.Written.Name)
         | TPatternNode.TPatWildcard -> None
+        | TPatternNode.TPatTyped typed -> tryGetVariable typed.PatTypedInner
         | other -> failwithf "Expected variable or wildcard, got `%A`." other
 
     /// Helper to compile imperative while loops.
@@ -259,12 +260,81 @@ module public CoreCompiler =
         | [ single ] -> single
         | _ -> List.reduce (fun acc a -> symbol Internals.Strcat [ acc; a ]) compiledParts
 
-    and private compileRange (cstate: State) (range: TRange) =
-        let start = compileExpression cstate range.RangeFrom
-        let step = Option.map (compileExpression cstate) range.RangeBy
-        let stop = compileExpression cstate range.RangeTo
-        let stepTerm = Option.defaultValue Builtin.symbolNone (Option.map Builtin.symbolSome step)
-        Builtin.symbolRange start stepTerm stop
+    /// Helper to compile range lists.
+    and private compileRangeIteration
+        (cstate: State)
+        (range: TRange)
+        (loopVarSource: WhileLoopVariableSource)
+        (makeBody: CoreTerm -> CoreTerm)
+        : CoreTerm
+        =
+
+        let isFloat = range.RangeFrom.Type.Prune().IsTFloat
+        let zero = if isFloat then CoreTerm.Literal(CoreLiteral.Float 0.0) else CoreTerm.Literal(CoreLiteral.Integer 0I)
+        let one = if isFloat then CoreTerm.Literal(CoreLiteral.Float 1.0) else CoreTerm.Literal(CoreLiteral.Integer 1I)
+
+        let bind name value =
+            let varName = FreshName.get name
+            let varTerm = Variable varName
+            let binding = CoreLet { Pattern = varTerm; Value = value; IsMutable = false }
+            (varTerm, binding)
+
+        let startExpr = compileExpression cstate range.RangeFrom
+        let stopExpr = compileExpression cstate range.RangeTo
+
+        let startVar, bindStart = bind "range_start" startExpr
+        let stopVar, bindStop = bind "range_stop" stopExpr
+
+        let runningVariableName =
+            match loopVarSource with
+            | FromPattern pattern -> Option.defaultValue (FreshName.get "itr") (tryGetVariable pattern)
+            | FromString name -> name
+
+        let runningVariable = Variable runningVariableName
+        let loopBody = makeBody runningVariable
+
+        let makeLoop op cmp stepTerm =
+            whileLoop (FromString runningVariableName) startVar stopVar loopBody op cmp (Some stepTerm)
+
+        match range.RangeBy with
+        | None ->
+            let loopUp = makeLoop Internals.Add Internals.Leq one
+            let loopDown = makeLoop Internals.Sub Internals.Geq one
+            let condition = symbol Internals.Leq [ startVar; stopVar ]
+
+            TermSequence [
+                bindStart
+                bindStop
+                ifte condition loopUp loopDown ]
+
+        | Some stepExpr ->
+            let stepCompiled = compileExpression cstate stepExpr
+            let stepVar, bindStep = bind "range_step" stepCompiled
+
+            let loopUp   = makeLoop Internals.Add Internals.Leq stepVar
+            let loopDown = makeLoop Internals.Add Internals.Geq stepVar
+            let stepIsPositive = symbol Internals.Geq [ stepVar; zero ]
+
+            TermSequence [
+                bindStart
+                bindStop
+                bindStep
+                ifte stepIsPositive loopUp loopDown ]
+
+    and private compileRange (cstate: State) (range: TRange) : CoreTerm =
+        let resultName = FreshName.get "range_res"
+        let resultVar = Variable resultName
+        let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsMutable = true }
+
+        let loopName = FreshName.get "range_i"
+        let rangeLoop =
+            compileRangeIteration cstate range (FromString loopName) (fun counterVar ->
+                UpdateVariable(resultName, Builtin.symbolCons counterVar resultVar))
+
+        TermSequence [
+            bindResult
+            rangeLoop
+            Builtin.symbolReverse resultVar ]
 
     and private compileForTo (cstate: State) (forto: TForTo) =
         let initialValue = compileExpression cstate forto.ForToInitial
@@ -338,41 +408,8 @@ module public CoreCompiler =
         (loopBody: TExpression)
         (loopPattern: WhileLoopVariableSource)
         =
-        let startExpr = compileExpression cstate range.RangeFrom
-        let stopExpr = compileExpression cstate range.RangeTo
         let bodyExpr = compileExpression cstate loopBody
-
-        let bind name baseExpr =
-            let varName = FreshName.get name
-            let varTerm = Variable varName
-            let binding = CoreLet { Pattern = varTerm; Value = baseExpr; IsMutable = false }
-            (varTerm, binding)
-
-        let startVar, bindStart = bind "range_start" startExpr
-        let stopVar, bindStop = bind "range_stop" stopExpr
-
-        let makeLoop op cmp stepOpt =
-            whileLoop loopPattern startVar stopVar bodyExpr op cmp stepOpt
-
-        let stepBindings, loopLogic =
-            match range.RangeBy with
-            | None ->
-                let loopUp = makeLoop Internals.Add Internals.Leq None
-                let loopDown = makeLoop Internals.Sub Internals.Geq None
-                let condition = symbol Internals.Leq [ startVar; stopVar ]
-                ([], ifte condition loopUp loopDown)
-
-            | Some stepExpr ->
-                let stepCompiled = compileExpression cstate stepExpr
-                let stepVar, bindStep = bind "range_step" stepCompiled
-
-                let loopUp = makeLoop Internals.Add Internals.Leq (Some stepVar)
-                let loopDown = makeLoop Internals.Add Internals.Geq (Some stepVar)
-                let stepIsPositive = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
-
-                ([ bindStep ], ifte stepIsPositive loopUp loopDown)
-
-        TermSequence ([bindStart; bindStop] @ stepBindings @ [loopLogic])
+        compileRangeIteration cstate range loopPattern (fun _ -> bodyExpr)
 
     and private compileListComprehension (cstate: State) (lc: TListComprehension) =
         match lc.CompSource.Kind with
@@ -432,68 +469,34 @@ module public CoreCompiler =
             ]
 
     and private listComprehensionOverRange (cstate: State) (range: TRange) (lc: TListComprehension) =
-        let bind name value isVar =
-            let varName = FreshName.get name
-            let varTerm = Variable varName
-            let binding = CoreLet { Pattern = varTerm; Value = value; IsMutable = isVar }
-            (varName, varTerm, binding)
+        let resultName = FreshName.get "lc_res"
+        let resultVar = Variable resultName
+        let bindResult = CoreLet { Pattern = resultVar; Value = Builtin.symbolNil; IsMutable = true }
 
-        let startExpr = compileExpression cstate range.RangeFrom
-        let stopExpr = compileExpression cstate range.RangeTo
-        
-        let _, startVar, bindStart = bind "lc_start" startExpr false
-        let _, stopVar, bindStop   = bind "lc_stop"  stopExpr false
-        let resultName, resultVar, bindResult = bind "lc_result" Builtin.symbolNil true
-        
         let loopName = FreshName.get "lc_i"
-        let loopCounterVar = Variable loopName
+        let compiledPattern = compilePattern cstate lc.CompPattern
+        let compiledItem = compileExpression cstate lc.CompItem
 
-        let loopBody =
-            let compiledPattern = compilePattern cstate lc.CompPattern
-            let compiledItem = compileExpression cstate lc.CompItem
-            
-            let appendExpr = Builtin.symbolCons compiledItem resultVar
-            let updateLogic = 
-                match lc.CompFilter with
-                | Some pred -> 
-                    ifte (compileExpression cstate pred) 
-                        (UpdateVariable(resultName, appendExpr)) 
-                        Builtin.symbolUnit
-                | None -> UpdateVariable(resultName, appendExpr)
+        let appendExpr = Builtin.symbolCons compiledItem resultVar
+        let updateLogic =
+            match lc.CompFilter with
+            | Some pred ->
+                ifte (compileExpression cstate pred)
+                    (UpdateVariable(resultName, appendExpr))
+                    Builtin.symbolUnit
+            | None -> UpdateVariable(resultName, appendExpr)
 
-            TermSequence [
-                CoreLet { Pattern = compiledPattern; Value = loopCounterVar; IsMutable = false }
-                updateLogic 
-            ]
+        let rangeLoop =
+            compileRangeIteration cstate range (FromString loopName) (fun counterVar ->
+                TermSequence [
+                    CoreLet { Pattern = compiledPattern; Value = counterVar; IsMutable = false }
+                    updateLogic
+                ])
 
-        let makeLoop startTerm stopTerm op cmp stepOpt =
-            whileLoop (FromString loopName) startTerm stopTerm loopBody op cmp stepOpt
-
-        match range.RangeBy with
-        | None ->
-            let loopBackwardsFromStop = makeLoop stopVar startVar Internals.Sub Internals.Geq None
-            let loopForwardsFromStop = makeLoop stopVar startVar Internals.Add Internals.Leq None
-            let dirCondition = symbol Internals.Leq [ startVar; stopVar ]
-
-            TermSequence [
-                bindStart; bindStop; bindResult
-                ifte dirCondition loopBackwardsFromStop loopForwardsFromStop
-                resultVar 
-            ]
-
-        | Some stepExpr ->
-            let stepCompiled = compileExpression cstate stepExpr
-            let _, stepVar, bindStep = bind "lc_step" stepCompiled false
-
-            let loopUp = makeLoop startVar stopVar Internals.Add Internals.Leq (Some stepVar)
-            let loopDown = makeLoop startVar stopVar Internals.Sub Internals.Geq (Some stepVar)
-            let stepIsPositive = symbol Internals.Geq [ stepVar; CoreTerm.Literal(CoreLiteral.Integer 0I) ]
-
-            TermSequence [
-                bindStart; bindStop; bindStep; bindResult
-                ifte stepIsPositive loopUp loopDown
-                Builtin.symbolReverse resultVar
-            ]
+        TermSequence [
+            bindResult
+            rangeLoop
+            Builtin.symbolReverse resultVar ]
 
     and private compileLambda (cstate: State) (lambda: TLambda) =
         let compiledPatterns = lambda.LambdaParameters |> List.map (compilePattern cstate)
