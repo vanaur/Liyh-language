@@ -670,12 +670,7 @@ module public CoreCompiler =
             failwithf "Application on non-applicable pattern term: %A" lhsTerm
 
     and private compileMixFixPattern (cstate: State) (mix: TPatMixfix) =
-        let opName = removePos mix.PatMixfixSymbol.Written.Name
-        match cstate.Notations |> List.tryFind (fun n -> removePos n.NotationName = opName) with
-        | None -> failwithf "Unknown notation: %s" opName
-        | Some notation ->
-            let args = List.map (compilePattern cstate) mix.PatMixfixOperands
-            notationBinding args notation
+        compilePattern cstate mix.PatMixfixExpanded
 
     and private compileAlternativePattern (alts: TLiteral list) =
         let altTerms = alts |> List.map (fun lit -> compileLiteralNode lit.Kind)
@@ -719,20 +714,6 @@ module public CoreCompiler =
         | Tuple xs -> Builtin.symbolTuple (List.map (compileNotationExpression holes) xs)
         | List xs  -> Builtin.symbolList (List.map (compileNotationExpression holes) xs)
         | other    -> failwithf "Unsupported expression in notation rewrite: %A" other
-
-    and private notationBinding (args: CoreTerm list) (notation: Notation) =
-        let holesList =
-            removePos notation.NotationPattern
-            |> List.choose (function HolePart h -> Some h.Node | _ -> None)
-
-        let holesSet = Set.ofList holesList
-        let rewrite = compileNotationExpression holesSet notation.NotationIs
-
-        let subst =
-            List.zip (List.map Variable holesList) args
-            |> Map.ofList
-
-        CoreTermSubstitution.replaceCoreTerm subst rewrite
 
 
     //                                          //
