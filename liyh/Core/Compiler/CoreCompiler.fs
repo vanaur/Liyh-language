@@ -674,9 +674,17 @@ module public CoreCompiler =
 
     and private compileAlternativePattern (alts: TLiteral list) =
         let altTerms = alts |> List.map (fun lit -> compileLiteralNode lit.Kind)
-        let altList = Builtin.symbolList altTerms
         let uv = Variable (FreshName.get "altp")
-        WhenClause(uv, Builtin.symbolContains altList uv)
+
+        let cond =
+            match altTerms with
+            | [] -> Builtin.symbolFalse
+            | [ single ] -> symbol Internals.Eq [ uv; single ]
+            | first :: rest ->
+                let firstEq = symbol Internals.Eq [ uv; first ]
+                List.fold (fun acc lit -> symbol Internals.Or [ acc; symbol Internals.Eq [ uv; lit ] ]) firstEq rest
+
+        WhenClause(uv, cond)
 
 
     //                                 //
