@@ -1,0 +1,163 @@
+--| Tests for custom notations (postfix, circumfix, mixfix, commutative, precedence/associativity) and operator/function overloading. --|
+
+use TSL
+use Tests.Framework
+
+export notation_tests
+
+
+-- Postfix, Circumfix & Multi-Part Mixfix Notations --
+
+not_fact[0]: Int -> 1
+not_fact[n: Int]: Int -> n * not_fact[n - 1]
+
+notation _x! -> not_fact[x]
+    name: "factorial"
+    associativity: none
+    precedence: 95
+
+not_norm[x: Int] when x < 0 : Int -> -x
+not_norm[x: Int]: Int -> x
+not_norm[x: Float] when x < 0.0 : Float -> -x
+not_norm[x: Float]: Float -> x
+
+notation | _x | -> not_norm[x]
+    name: "norm bar"
+    associativity: none
+    precedence: 10
+
+not_meeting[person: String, place: String, hour: String]: String ->
+    "Meet { person } near { place } at { hour }"
+
+notation meet _person near _place at _hour -> not_meeting[person, place, hour]
+    name: "meeting"
+    associativity: none
+    precedence: 10
+
+test_notations_syntax_forms[]: Result[Unit, String] ->
+    check_all[{
+        check_eq[5!, 120],
+        check_eq[0!, 1],
+        check_eq[| -42 |, 42],
+        check_eq[| 7 |, 7],
+        check_eq[| -3.5 |, 3.5],
+        check_eq[meet "Alice" near "fountain" at "3am", "Meet Alice near fountain at 3am"]
+    }]
+
+
+-- Commutative, Associativity & Precedence Notations --
+
+not_sym_op[a: Int, b: Int]: Int -> (a * a) + (b * b)
+not_sym_op[a: Float, b: Float]: Float -> (a * b) + (a + b)
+
+notation _a <~> _b -> not_sym_op[a, b]
+    name: "symmetric-op"
+    associativity: none
+    commutative: true
+    precedence: 20
+
+not_sub_left[a: Int, b: Int]: Int -> a - b
+
+notation _a %% _b -> not_sub_left[a, b]
+    name: "left-assoc-op"
+    associativity: left
+    precedence: 30
+
+not_cons_right[a: Int, b: Int]: Int -> (a * 10) + b
+
+notation _a **> _b -> not_cons_right[a, b]
+    name: "right-assoc-op"
+    associativity: right
+    precedence: 40
+
+test_notations_assoc_prec_comm[]: Result[Unit, String] ->
+    -- Left assoc: (10 %% 3) %% 2 = 7 - 2 = 5
+    -- Right assoc: 1 **> (2 **> 3) = 1 **> 23 = 33
+    -- Precedence: 40 > 30 so 10 %% 1 **> 2 = 10 - 12 = -2
+    check_all[{
+        check_eq[3 <~> 4, 25],
+        check_eq[4 <~> 3, 25],
+        check_eq[2.0 <~> 3.0, 11.0],
+        check_eq[3.0 <~> 2.0, 11.0],
+        check_eq[10 %% 3 %% 2, 5],
+        check_eq[1 **> 2 **> 3, 33],
+        check_eq[10 %% 1 **> 2, -2]
+    }]
+
+
+-- Operator & Rule Overloading on Custom Types --
+
+type NotPeano =
+    | NotZero
+    | NotSucc[NotPeano]
+
+not_peano_plus[NotZero, b: NotPeano]: NotPeano -> b
+not_peano_plus[NotSucc[a], b: NotPeano]: NotPeano -> NotSucc[not_peano_plus[a, b]]
+
+notation _a <+> _b -> not_combine[a, b]
+    name: "overloaded combine"
+    associativity: left
+    precedence: 60
+
+not_combine[a: NotPeano, b: NotPeano]: NotPeano -> not_peano_plus[a, b]
+not_combine[a: Int, b: Int]: Int -> a + b
+not_combine[a: Float, b: Float]: Float -> a + b
+
+type NotSex =
+    | NotMan
+    | NotWoman
+
+type alias NotPerson =
+    { name: String
+    , age: Int
+    , sex: NotSex
+    , height: Int }
+
+notation _a <~ _b -> not_shorter[a, b]
+    name: "shorter than"
+    associativity: none
+    precedence: 50
+
+not_shorter[p1: NotPerson, p2: NotPerson]: Bool ->
+    let ({ height = h1 }, { height = h2 }) = (p1, p2) in h1 < h2
+not_shorter[x: Int, y: Int]: Bool -> x < y
+
+type alias NotPoint2D = (Int, Int)
+type alias NotPoint3D = (Int, Int, Int)
+
+not_manhattan[(x1: Int, y1: Int), (x2: Int, y2: Int)]: Int ->
+    abs[x1 - x2] + abs[y1 - y2]
+
+not_manhattan[(x1: Int, y1: Int, z1: Int), (x2: Int, y2: Int, z2: Int)]: Int ->
+    abs[x1 - x2] + abs[y1 - y2] + abs[z1 - z2]
+
+test_overloads_custom_types[]: Result[Unit, String] ->
+    let one = NotSucc[NotZero]
+    let two = NotSucc[one]
+    let three = one <+> two
+    let alice: NotPerson = { name = "Alice", age = 25, sex = NotWoman, height = 165 }
+    let bob: NotPerson = { name = "Bob", age = 32, sex = NotMan, height = 172 }
+    let p2a: NotPoint2D = (1, 4)
+    let p2b: NotPoint2D = (4, 0)
+    let p3a: NotPoint3D = (1, 2, 3)
+    let p3b: NotPoint3D = (4, 6, 3)
+    check_all[{
+        check_eq[three, NotSucc[NotSucc[NotSucc[NotZero]]]],
+        check_eq[10 <+> 32, 42],
+        check_eq[1.5 <+> 2.5, 4.0],
+        check_true[alice <~ bob],
+        check_false[bob <~ alice],
+        check_true[3 <~ 7],
+        check_eq[not_manhattan[p2a, p2b], 7],
+        check_eq[not_manhattan[p3a, p3b], 7]
+    }]
+
+
+-- Test Registry --
+
+notation_tests[]: List[TestCase] ->
+    {
+        ("Notations: postfix (_!), circumfix (|_x|), mixfix (meet _ near _ at _)", [] -> test_notations_syntax_forms[]),
+        ("Notations: commutative (<~>), associativity & precedence", [] -> test_notations_assoc_prec_comm[]),
+        ("Overloads: custom overloaded operators (<+>, <~) & tuple arity", [] -> test_overloads_custom_types[])
+    }

@@ -1,0 +1,178 @@
+--| Cross-feature integration tests combining multiple paradigms and language mechanisms. --|
+
+use TSL
+use Tests.Framework
+
+export integration_tests
+
+
+-- AST Evaluator: ADTs + Assoc List Lookup (Option) + Result Propagation + Closures --
+
+type IntAst =
+    | IntNum[Int]
+    | IntVar[String]
+    | IntAdd[IntAst, IntAst]
+    | IntDiv[IntAst, IntAst]
+    | IntLet[String, IntAst, IntAst]
+
+type alias IntEnv = List[(String, Int)]
+
+int_lookup[env: IntEnv, key: String]: Result[Int, String] ->
+    match try_find[env, [entry] -> fst[entry] == key] with
+    | Some[(_, v)] -> Ok[v]
+    | None -> Err["unbound:{ key }"]
+
+int_eval_div[_: Int, 0]: Result[Int, String] -> Err["div0"]
+int_eval_div[a: Int, b: Int]: Result[Int, String] -> Ok[a / b]
+
+int_eval[IntNum[n], _: IntEnv]: Result[Int, String] -> Ok[n]
+int_eval[IntVar[name], env: IntEnv]: Result[Int, String] -> int_lookup[env, name]
+int_eval[IntAdd[l, r], env: IntEnv]: Result[Int, String] ->
+    int_eval[l, env]
+    |> [rl] -> bind[rl, [lv] ->
+        int_eval[r, env]
+        |> [rr] -> map[rr, [rv] -> lv + rv]
+    ]
+int_eval[IntDiv[l, r], env: IntEnv]: Result[Int, String] ->
+    int_eval[l, env]
+    |> [rl] -> bind[rl, [lv] ->
+        int_eval[r, env]
+        |> [rr] -> bind[rr, [rv] -> int_eval_div[lv, rv]]
+    ]
+int_eval[IntLet[name, rhs, body], env: IntEnv]: Result[Int, String] ->
+    int_eval[rhs, env]
+    |> [rr] -> bind[rr, [val] -> int_eval[body, (name, val) :: env]]
+
+test_int_ast_interpreter[]: Result[Unit, String] ->
+    let ok_prog =
+        IntLet["x", IntNum[10],
+            IntLet["y", IntAdd[IntVar["x"], IntNum[5]],
+                IntDiv[IntAdd[IntVar["y"], IntVar["x"]], IntNum[5]]
+            ]
+        ]
+    let err_div0 = IntLet["x", IntNum[8], IntDiv[IntVar["x"], IntNum[0]]]
+    let err_unbound = IntAdd[IntNum[1], IntVar["missing"]]
+    check_all[{
+        check_eq[int_eval[ok_prog, {}], Ok[5]],
+        check_eq[int_eval[err_div0, {}], Err["div0"]],
+        check_eq[int_eval[err_unbound, {}], Err["unbound:missing"]]
+    }]
+
+
+-- Comprehensions + Ranges + Records ('using') + Option/Result Validation --
+
+int_make_acc[] -> { count = 0, total = 0, max_v = 0 }
+
+int_step_acc[acc, x: Int] when x > 0 ->
+    let { count = c: Int, total = t: Int, max_v = m: Int } = acc
+    let next_max = max[m, x]
+    { acc using count = c + 1, total = t + x, max_v = next_max }
+
+test_int_pipeline_records_comprehensions[]: Result[Unit, String] ->
+    let filtered = { k * k for k in { 1 .. 10 } if k % 2 == 1 && k <= 7 }
+    let acc = foldl[filtered, [a, x] -> int_step_acc[a, x], int_make_acc[]]
+    let { count = c: Int, total = t: Int, max_v = m: Int } = acc
+    let avg_ok =
+        if c > 0 then Ok[t / c] else Err["empty"]
+    check_all[{
+        check_eq[filtered, { 1, 9, 25, 49 }],
+        check_eq[c, 4],
+        check_eq[t, 84],
+        check_eq[m, 49],
+        check_eq[avg_ok, Ok[21]]
+    }]
+
+
+-- Lazy Infinite Stream + Outermost Simplification + TSL List Operations --
+
+type IntStream =
+    | IntSCons[Int, IntStream]
+    | IntSNil
+
+int_fib_stream[a: Int, b: Int]: IntStream lazy -> IntSCons[a, int_fib_stream[b, a + b]]
+
+int_take_stream[_, 0]: List[Int] -> {}
+int_take_stream[IntSNil, _: Int]: List[Int] -> {}
+int_take_stream[IntSCons[x, xs], n: Int]: List[Int] -> x :: int_take_stream[xs, n - 1]
+
+int_double[x: Int]: Int -> x * 2
+int_halve[x: Int]: Int -> x / 2
+int_halve[int_double[x: Int]] outermost -> x
+
+test_int_lazy_outermost_lists[]: Result[Unit, String] ->
+    let fibs = int_take_stream[int_fib_stream[1, 1], 7]
+    let simplified = map[fibs, [x] -> int_halve[int_double[x]]]
+    let even_fibs = filter[simplified, [x] -> x % 2 == 0]
+    check_all[{
+        check_eq[fibs, { 1, 1, 2, 3, 5, 8, 13 }],
+        check_eq[simplified, fibs],
+        check_eq[even_fibs, { 2, 8 }],
+        check_eq[sum[even_fibs], 10]
+    }]
+
+
+-- Imperative Loops + __buffer_* + Functional Monadic List Fold (Result) --
+
+int_sequence_results[lst: List[Result[Int, String]]]: Result[List[Int], String] ->
+    foldl[lst, [acc_res, item_res] ->
+        bind[acc_res, [xs] -> map[item_res, [x] -> x :: xs]],
+        Ok[{}]
+    ]
+    |> [r] -> map[r, [xs] -> reverse[xs]]
+
+test_int_imperative_buffer_to_result[]: Result[Unit, String] ->
+    let buf = __string_to_buffer["ABCDE"]
+    let len = __buffer_length[buf]
+    var collected = {}
+    for i = 0 to len - 1 do
+        let code = __buffer_get[buf, i]
+        let item: Result[Int, String] =
+            if code >= 65 then Ok[code - 65] else Err["invalid char"]
+        collected <- item :: collected
+
+    let ordered = reverse[collected]
+    let seq_res = int_sequence_results[ordered]
+    let bad_seq = int_sequence_results[{ Ok[1], Err["stop"], Ok[3] }]
+    check_all[{
+        check_eq[seq_res, Ok[{ 0, 1, 2, 3, 4 }]],
+        check_eq[bad_seq, Err["stop"]]
+    }]
+
+
+-- Mixfix Notation + Symbolic Substitution + Mutual Recursion --
+
+type IntSymTerm =
+    | IntHole
+    | IntVal[Int]
+    | IntPairSum[IntSymTerm, IntSymTerm]
+
+int_sym_eval[IntHole]: Int -> 0
+int_sym_eval[IntVal[n]]: Int -> n
+int_sym_eval[IntPairSum[a, b]]: Int -> int_sym_eval[a] + int_sym_eval[b]
+
+int_plug_hole[t: IntSymTerm, rep: IntSymTerm]: IntSymTerm -> [ IntHole -> rep ] in t
+
+notation eval_sym _t with_hole _rep -> int_plug_hole[t, rep]
+    name: "symbolic eval with substitution"
+    associativity: none
+    precedence: 10
+
+test_int_mixfix_symbolic_subst[]: Result[Unit, String] ->
+    let template = IntPairSum[IntVal[10], IntPairSum[IntHole, IntHole]]
+    let instantiated = eval_sym template with_hole IntVal[7]
+    check_all[{
+        check_eq[int_sym_eval[template], 10],
+        check_eq[int_sym_eval[instantiated], 24]
+    }]
+
+
+-- Test Registry --
+
+integration_tests[]: List[TestCase] ->
+    {
+        ("Integration: AST interpreter (ADT + Option lookup + Result + pipe)", [] -> test_int_ast_interpreter[]),
+        ("Integration: comprehensions + ranges + record 'using' + Result", [] -> test_int_pipeline_records_comprehensions[]),
+        ("Integration: lazy Fibonacci stream + outermost rule + TSL lists", [] -> test_int_lazy_outermost_lists[]),
+        ("Integration: __buffer_* + for loop + monadic Result sequence", [] -> test_int_imperative_buffer_to_result[]),
+        ("Integration: custom mixfix + symbolic substitution ([Pat -> Val] in Expr)", [] -> test_int_mixfix_symbolic_subst[])
+    }

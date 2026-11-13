@@ -1,0 +1,34 @@
+--| Unified unit test runner for Liyh & TSL. --|
+
+use TSL
+use Tests.Framework
+use Tests.Basics
+use Tests.FunctionsAndClosures
+use Tests.PatternMatching
+use Tests.TypesAndRecords
+use Tests.ListsAndRanges
+use Tests.OptionAndResult
+use Tests.NotationsAndOverloads
+use Tests.ImperativeAndLoops
+use Tests.RewritingAndLazy
+use Tests.Integration
+use Tests.Algorithms
+-- Linux-only (libc.so.6 & /proc/self/statm): uncomment the import below and `@ linux_ffi_tests[]` on Linux if needed.
+-- use Tests.LinuxFFI
+
+main[] ->
+    let all_tests =
+        basics_tests[]
+        @ fn_tests[]
+        @ pattern_tests[]
+        @ type_tests[]
+        @ list_tests[]
+        @ opt_res_tests[]
+        @ notation_tests[]
+        @ imperative_tests[]
+        @ rewriting_tests[]
+        @ integration_tests[]
+        @ alg_tests[]
+        -- @ linux_ffi_tests[]
+    let ok = run_suite[all_tests]
+    assert_true[ok]

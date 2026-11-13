@@ -1,0 +1,224 @@
+--| Tests for outermost rewriting rules, lazy infinite streams, symbolic substitution, and passing assert/invalid guards. --|
+
+use TSL
+use Tests.Framework
+
+export rewriting_tests
+
+
+-- Outermost Rewriting --
+
+type RwLogic =
+    | RwTrue
+    | RwFalse
+    | RwNot[RwLogic]
+
+rw_simplify_logic[RwNot[RwNot[x]]] outermost -> x
+rw_simplify_logic[RwNot[RwTrue]]: RwLogic -> RwFalse
+rw_simplify_logic[RwNot[RwFalse]]: RwLogic -> RwTrue
+rw_simplify_logic[x: RwLogic]: RwLogic -> x
+
+rw_inc[x: Int]: Int -> x + 1
+rw_dec[x: Int]: Int -> x - 1
+rw_inc[rw_dec[x: Int]] outermost -> x
+rw_dec[rw_inc[x: Int]] outermost -> x
+
+rw_id[x: Int]: Int -> x
+rw_apply_calc[rw_id[x: Int]] outermost -> x * 2
+rw_apply_calc[x: Int]: Int -> x + 100
+
+test_rw_outermost[]: Result[Unit, String] ->
+    let counter = __buffer_alloc[1]
+    let _ = __buffer_set[counter, 0, 0]
+    let bump = [x: Int] ->
+        let _ = __buffer_set[counter, 0, __buffer_get[counter, 0] + 1]
+        x
+    -- Because rw_inc[rw_dec[...]] is outermost, rw_dec/rw_inc cancel cleanly
+    let r_cancel1 = rw_inc[rw_dec[41]]
+    let r_cancel2 = rw_dec[rw_inc[bump[41]]]
+    let r_not = rw_simplify_logic[RwNot[RwNot[RwTrue]]]
+    let r_neg = rw_simplify_logic[RwNot[RwFalse]]
+    -- rw_apply_calc matches outermost rw_id[x] vs fallback x + 100
+    let r_outer = rw_apply_calc[rw_id[7]]
+    let r_fall = rw_apply_calc[7]
+    check_all[{
+        check_eq[r_cancel1, 41],
+        check_eq[r_cancel2, 41],
+        check_eq[__buffer_get[counter, 0], 1],
+        check_eq[r_not, RwTrue],
+        check_eq[r_neg, RwTrue],
+        check_eq[r_outer, 14],
+        check_eq[r_fall, 107]
+    }]
+
+
+-- Lazy Infinite Streams --
+
+type RwStream['t] =
+    | RwSCons['t, RwStream['t]]
+    | RwSNil
+
+rw_ints_from[n: Int]: RwStream[Int] lazy -> RwSCons[n, rw_ints_from[n + 1]]
+
+rw_stream_nth[RwSCons[x, _], 0]: Int -> x
+rw_stream_nth[RwSCons[_, xs], k: Int]: Int -> rw_stream_nth[xs, k - 1]
+rw_stream_nth[RwSNil, _: Int] invalid -> "Stream ended unexpectedly"
+
+rw_stream_take[_, 0]: List[Int] -> {}
+rw_stream_take[RwSNil, _: Int]: List[Int] -> {}
+rw_stream_take[RwSCons[x, xs], k: Int]: List[Int] -> x :: rw_stream_take[xs, k - 1]
+
+test_rw_lazy_streams[]: Result[Unit, String] ->
+    let nats = rw_ints_from[10]
+    let fifth = rw_stream_nth[nats, 5]
+    let first4 = rw_stream_take[nats, 4]
+    check_all[{
+        check_eq[fifth, 15],
+        check_eq[first4, { 10, 11, 12, 13 }]
+    }]
+
+
+-- Symbolic Substitution ([ Pattern -> Value ] in Expr) --
+
+type RwPeano =
+    | RwZero
+    | RwSucc[RwPeano]
+
+rw_int_to_peano[0]: RwPeano -> RwZero
+rw_int_to_peano[n: Int]: RwPeano -> RwSucc[rw_int_to_peano[n - 1]]
+
+rw_peano_to_int[RwZero]: Int -> 0
+rw_peano_to_int[RwSucc[n]]: Int -> 1 + rw_peano_to_int[n]
+
+test_rw_symbolic_substitution[]: Result[Unit, String] ->
+    let two = rw_int_to_peano[2]
+    let three = rw_int_to_peano[3]
+    -- Substituting RwZero -> three inside two turns Succ[Succ[Zero]] into 2 + 3 = 5
+    let five = [ RwZero -> three ] in two
+    check_all[{
+        check_eq[rw_peano_to_int[five], 5],
+        check_eq[rw_peano_to_int[two], 2]
+    }]
+
+
+-- Guarded Assert & Invalid Clauses (Passing Cases) --
+
+rw_safe_div[_: Int, 0]: Int assert -> "Division by zero"
+rw_safe_div[a: Int, b: Int]: Int -> a / b
+
+rw_clamp_and_double[x: Int] when x < 0 assert -> "Negative input forbidden: { x }"
+rw_clamp_and_double[x: Int] when x <= 10 : Int -> x * 2
+rw_clamp_and_double[_: Int] invalid -> "Input exceeds limit"
+
+rw_normalize[x: Int] when x < 0 assert -> "Int must be non-negative"
+rw_normalize[x: Int]: Int -> x * 10
+rw_normalize[x: Float] when x < 0.0 assert -> "Float must be non-negative"
+rw_normalize[x: Float]: Float -> x * 10.0
+
+test_rw_assert_and_invalid_passing[]: Result[Unit, String] ->
+    let d: Int = rw_safe_div[42, 2]
+    let cd = rw_clamp_and_double[5]
+    let ni: Int = rw_normalize[3]
+    let nf: Float = rw_normalize[2.5]
+    check_all[{
+        check_eq[d, 21],
+        check_eq[cd, 10],
+        check_eq[ni, 30],
+        check_eq[nf, 25.0]
+    }]
+
+
+-- Confluence, HOF/Lambda Symbolic Substitution & Non-Linear Outermost Rules --
+
+type RwExp =
+    | RwLit[Int]
+    | RwSym[String]
+    | RwSum[RwExp, RwExp]
+    | RwProd[RwExp, RwExp]
+    | RwDiff[RwExp, RwExp]
+
+rw_simp[RwSum[RwLit[0], e]]: RwExp -> rw_simp[e]
+rw_simp[RwSum[e, RwLit[0]]]: RwExp -> rw_simp[e]
+rw_simp[RwProd[RwLit[0], _]]: RwExp -> RwLit[0]
+rw_simp[RwProd[_, RwLit[0]]]: RwExp -> RwLit[0]
+rw_simp[RwProd[RwLit[1], e]]: RwExp -> rw_simp[e]
+rw_simp[RwProd[e, RwLit[1]]]: RwExp -> rw_simp[e]
+rw_simp[RwSum[RwLit[a], RwLit[b]]]: RwExp -> RwLit[a + b]
+rw_simp[RwProd[RwLit[a], RwLit[b]]]: RwExp -> RwLit[a * b]
+rw_simp[RwSum[l, r]]: RwExp ->
+    let sl = rw_simp[l]
+    let sr = rw_simp[r]
+    match (sl, sr) with
+    | (RwLit[0], _) -> sr
+    | (_, RwLit[0]) -> sl
+    | (RwLit[a], RwLit[b]) -> RwLit[a + b]
+    | _ -> RwSum[sl, sr]
+rw_simp[RwProd[l, r]]: RwExp ->
+    let sl = rw_simp[l]
+    let sr = rw_simp[r]
+    match (sl, sr) with
+    | (RwLit[0], _) -> RwLit[0]
+    | (_, RwLit[0]) -> RwLit[0]
+    | (RwLit[1], _) -> sr
+    | (_, RwLit[1]) -> sl
+    | (RwLit[a], RwLit[b]) -> RwLit[a * b]
+    | _ -> RwProd[sl, sr]
+rw_simp[RwDiff[l, r]]: RwExp -> RwDiff[rw_simp[l], rw_simp[r]]
+rw_simp[e]: RwExp -> e
+
+rw_cancel_diff[RwDiff[x, x]] outermost -> RwLit[0]
+rw_cancel_diff[RwSum[x, x]] outermost -> RwProd[RwLit[2], x]
+rw_cancel_diff[e] -> e
+
+test_rw_confluence_termination[]: Result[Unit, String] ->
+    -- ((0 + x) * 1) + (y * (2 - 2 -> 0)): two parenthesizations normalize to RwSym["x"]
+    let e1 = RwSum[RwProd[RwSum[RwLit[0], RwSym["x"]], RwLit[1]], RwProd[RwSym["y"], RwSum[RwLit[0], RwLit[0]]]]
+    let e2 = RwSum[RwProd[RwLit[1], RwSym["x"]], RwProd[RwLit[0], RwSym["z"]]]
+    let n1 = rw_simp[e1]
+    let n2 = rw_simp[e2]
+    let folded = rw_simp[RwProd[RwSum[RwLit[2], RwLit[3]], RwSum[RwLit[4], RwLit[0]]]]
+    check_all[{
+        check_eq[n1, RwSym["x"]],
+        check_eq[n2, RwSym["x"]],
+        check_eq[n1, n2],
+        check_eq[folded, RwLit[20]]
+    }]
+
+test_rw_subst_hof_lambda[]: Result[Unit, String] ->
+    let one = rw_int_to_peano[1]
+    let two = rw_int_to_peano[2]
+    let lift_twice = [f, t] -> f[f[t]]
+    let res1 = lift_twice[[p] -> RwSucc[p], [ RwZero -> two ] in one]
+    let xs = { RwZero, one, two }
+    let bumped = map[xs, [p] -> [ RwZero -> one ] in p]
+    let ints = map[bumped, [p] -> rw_peano_to_int[p]]
+    check_all[{
+        check_eq[rw_peano_to_int[res1], 5],
+        check_eq[ints, { 1, 2, 3 }]
+    }]
+
+test_rw_nonlinear_outermost[]: Result[Unit, String] ->
+    let a = RwSym["a"]
+    let b = RwSym["b"]
+    let same = rw_cancel_diff[RwDiff[a, a]]
+    let diff = rw_cancel_diff[RwDiff[a, b]]
+    let dup = rw_cancel_diff[RwSum[RwLit[3], RwLit[3]]]
+    check_all[{
+        check_eq[same, RwLit[0]],
+        check_eq[diff, RwDiff[a, b]],
+        check_eq[dup, RwProd[RwLit[2], RwLit[3]]]
+    }]
+
+
+-- Test Registry --
+
+rewriting_tests[]: List[TestCase] ->
+    {
+        ("Rewriting: outermost rules & cancellation", [] -> test_rw_outermost[]),
+        ("Rewriting: lazy infinite streams", [] -> test_rw_lazy_streams[]),
+        ("Rewriting: symbolic substitution ([Pat -> Val] in Expr)", [] -> test_rw_symbolic_substitution[]),
+        ("Rewriting: assert & invalid guarded rules (passing paths)", [] -> test_rw_assert_and_invalid_passing[]),
+        ("Rewriting: confluence & termination on multi-rule simplifications", [] -> test_rw_confluence_termination[]),
+        ("Rewriting: symbolic substitution in HOF args & lambdas", [] -> test_rw_subst_hof_lambda[]),
+        ("Rewriting: non-linear patterns within outermost rules", [] -> test_rw_nonlinear_outermost[])
+    }

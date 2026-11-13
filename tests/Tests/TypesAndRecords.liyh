@@ -1,0 +1,202 @@
+--| Tests for ADTs, mutual type aliases, tuples, records, record updates ('using'), and qualified constructors. --|
+
+use TSL
+use Tests.Framework
+
+export type_tests
+
+
+-- Recursive ADTs: Peano & Expression Evaluator --
+
+type TyPeano =
+    | TyZero
+    | TySucc[TyPeano]
+
+ty_peano_to_int[TyZero]: Int -> 0
+ty_peano_to_int[TySucc[n]]: Int -> 1 + ty_peano_to_int[n]
+
+ty_int_to_peano[0]: TyPeano -> TyZero
+ty_int_to_peano[n: Int] when n > 0 : TyPeano -> TySucc[ty_int_to_peano[n - 1]]
+
+ty_peano_add[TyZero, b: TyPeano]: TyPeano -> b
+ty_peano_add[TySucc[a], b: TyPeano]: TyPeano -> TySucc[ty_peano_add[a, b]]
+
+type TyExpr =
+    | TyLit[Int]
+    | TyAdd[TyExpr, TyExpr]
+    | TyMul[TyExpr, TyExpr]
+    | TyNeg[TyExpr]
+
+ty_eval[TyLit[n]]: Int -> n
+ty_eval[TyAdd[l, r]]: Int -> ty_eval[l] + ty_eval[r]
+ty_eval[TyMul[l, r]]: Int -> ty_eval[l] * ty_eval[r]
+ty_eval[TyNeg[e]]: Int -> -(ty_eval[e])
+
+test_types_recursive_adts[]: Result[Unit, String] ->
+    let two = TySucc[TySucc[TyZero]]
+    let three = ty_int_to_peano[3]
+    let five = ty_peano_add[two, three]
+    let expr = TyMul[TyAdd[TyLit[2], TyLit[3]], TyNeg[TyLit[4]]]
+    check_all[{
+        check_eq[ty_peano_to_int[five], 5],
+        check_eq[five, ty_int_to_peano[5]],
+        check_eq[ty_eval[expr], -20]
+    }]
+
+
+-- Mutual Type Alias + ADT & Qualified Constructors --
+
+type alias TyTreeList = List[TyTree]
+
+type TyTree =
+    | TyLeaf[Int]
+    | TyNode[TyTreeList]
+
+ty_sum_tree[TyLeaf[v]]: Int -> v
+ty_sum_tree[TyNode[{}]]: Int -> 0
+ty_sum_tree[TyNode[Cons[t, ts]]]: Int -> ty_sum_tree[t] + ty_sum_tree[TyNode[ts]]
+
+type TyAxis =
+    | TyAxisX
+    | TyAxisY
+    | TyAxisZ
+
+test_types_mutual_and_qualified[]: Result[Unit, String] ->
+    let tree = TyNode[{ TyLeaf[1], TyNode[{ TyLeaf[2], TyLeaf[3] }], TyLeaf[4] }]
+    let a1: TyAxis = TyAxis.TyAxisX
+    let a2: TyAxis = TyAxisX
+    check_all[{
+        check_eq[ty_sum_tree[tree], 10],
+        check_eq[a1, a2],
+        check_neq[TyAxis.TyAxisY, TyAxis.TyAxisZ]
+    }]
+
+
+-- Tuples --
+
+test_types_tuples[]: Result[Unit, String] ->
+    let pair = (10, "ok")
+    let nested = ((1, 2), (3, 4))
+    let (a, b, c) = (true, 42, "end")
+    check_all[{
+        check_eq[fst[pair], 10],
+        check_eq[snd[pair], "ok"],
+        check_eq[fst[fst[nested]], 1],
+        check_eq[snd[snd[nested]], 4],
+        check_true[a],
+        check_eq[b, 42],
+        check_eq[c, "end"]
+    }]
+
+
+-- Records, Destructuring & 'using' Updates --
+
+ty_greet_person[{ name = n, age = a }]: String -> "{ n } ({ a })"
+
+test_types_records_and_using[]: Result[Unit, String] ->
+    let p = { x = 1, y = 2 }
+    let p_updated = { p using x = 10 }
+    let p_extended = { p using z = 3 }
+    let p_poly = { p using x = "ten", z = "three" }
+    let { x = ux: Int, y = uy: Int } = p_updated
+    let { x = ex: Int, y = ey: Int, z = ez: Int } = p_extended
+    let { x = px: String, y = py: Int, z = pz: String } = p_poly
+    let user = { name = "Ada", age = 36 }
+    check_all[{
+        check_eq[ux, 10],
+        check_eq[uy, 2],
+        check_eq[ex, 1],
+        check_eq[ey, 2],
+        check_eq[ez, 3],
+        check_eq[px, "ten"],
+        check_eq[py, 2],
+        check_eq[pz, "three"],
+        check_eq[ty_greet_person[user], "Ada (36)"]
+    }]
+
+
+-- Generic & Unordered-Chain Type Aliases --
+
+type alias TyDictEntry['k, 'v] = { key: 'k, value: 'v }
+
+type alias TyOrder = { customer: TyCustomer, total: Float }
+type alias TyCustomer = { profile: TyUserProfile, id: Int }
+type alias TyUserProfile = { email: String }
+
+ty_order_email[o: TyOrder]: String ->
+    let { customer = c, total = _ } = o
+    let { profile = prof, id = _ } = c
+    let { email = em } = prof
+    em
+
+test_types_aliases[]: Result[Unit, String] ->
+    let e1: TyDictEntry[String, Int] = { key = "port", value = 8080 }
+    let e2: TyDictEntry[Int, Bool] = { key = 1, value = true }
+    let order: TyOrder = { customer = { profile = { email = "ada@example.org" }, id = 7 }, total = 99.5 }
+    let { key = k1: String, value = v1: Int } = e1
+    let { key = k2: Int, value = v2: Bool } = e2
+    check_all[{
+        check_eq[k1, "port"],
+        check_eq[v1, 8080],
+        check_eq[k2, 1],
+        check_true[v2],
+        check_eq[ty_order_email[order], "ada@example.org"]
+    }]
+
+
+-- Chained 'using' Field Preservation & Row-Polymorphic Functions --
+
+ty_sum_xy[{ x = x: Int, y = y: Int }]: Int -> x + y
+
+ty_bump_tag[r] ->
+    let { tag = t: Int } = r
+    { r using tag = t + 1 }
+
+test_types_chained_using_subtyping[]: Result[Unit, String] ->
+    let r0 = { a = 1, b = "init", c = true }
+    let r1 = { r0 using a = 10 }
+    let r2 = { r1 using d = 99 }
+    let r3 = { r2 using b = "updated", e = 3.5 }
+    let { a = fa: Int, b = fb: String, c = fc: Bool, d = fd: Int, e = fe: Float } = r3
+    let r0_check = let { a = orig_a: Int, b = orig_b: String } = r0 in (orig_a, orig_b)
+    check_all[{
+        check_eq[fa, 10],
+        check_eq[fb, "updated"],
+        check_true[fc],
+        check_eq[fd, 99],
+        check_eq[fe, 3.5],
+        check_eq[r0_check, (1, "init")]
+    }]
+
+test_types_row_polymorphism[]: Result[Unit, String] ->
+    let s1 = ty_sum_xy[{ x = 3, y = 4 }]
+    let s2 = ty_sum_xy[{ x = 10, y = 20, label = "extra" }]
+    let s3 = ty_sum_xy[{ x = 5, y = 6, z = 100, active = true }]
+    let r_a = ty_bump_tag[{ tag = 1, name = "alpha" }]
+    let r_b = ty_bump_tag[{ tag = 10, weight = 2.5, ok = false }]
+    let { tag = ta: Int, name = na: String } = r_a
+    let { tag = tb: Int, weight = wb: Float, ok = ob: Bool } = r_b
+    check_all[{
+        check_eq[s1, 7],
+        check_eq[s2, 30],
+        check_eq[s3, 11],
+        check_eq[ta, 2],
+        check_eq[na, "alpha"],
+        check_eq[tb, 11],
+        check_eq[wb, 2.5],
+        check_false[ob]
+    }]
+
+
+-- Test Registry --
+
+type_tests[]: List[TestCase] ->
+    {
+        ("Types: recursive ADTs (Peano & Expr)", [] -> test_types_recursive_adts[]),
+        ("Types: mutual type alias/ADT & qualified constructors", [] -> test_types_mutual_and_qualified[]),
+        ("Types: tuples & fst/snd", [] -> test_types_tuples[]),
+        ("Types: records, destructuring & 'using' updates", [] -> test_types_records_and_using[]),
+        ("Types: generic & unordered-chain type aliases", [] -> test_types_aliases[]),
+        ("Types: chained 'using' field preservation & structural updates", [] -> test_types_chained_using_subtyping[]),
+        ("Types: record row-polymorphism on arbitrary supersets", [] -> test_types_row_polymorphism[])
+    }

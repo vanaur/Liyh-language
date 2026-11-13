@@ -1,0 +1,319 @@
+--| Linux-specific FFI, RSS memory (/proc/self/statm), and clock performance tests. --|
+--| Isolated in a single module so non-Linux systems can unplug it in Testsuite.liyh. --|
+
+use TSL
+use Tests.Framework
+
+export linux_ffi_tests
+
+
+extern C "libc.so.6" as FfiLibC
+    strlen[C.String] -> C.Int64
+    atol[C.String] -> C.Int64
+    clock[] -> C.Int64
+    memcpy[C.Ptr[C.Void], C.Ptr[C.Void], C.Int64] -> C.Ptr[C.Void]
+    strcpy[C.Ptr[C.Void], C.String] -> C.Ptr[C.Void]
+    strnlen[C.Ptr[C.Void], C.Int64] -> C.Int64
+    fopen[C.String, C.String] -> C.Ptr[C.Void]
+    fread[C.Ptr[C.Void], C.Int64, C.Int64, C.Ptr[C.Void]] -> C.Int64
+    fclose[C.Ptr[C.Void]] -> C.Int32
+
+
+-- C FFI Bindings, Buffer Pointers & C String Roundtrips --
+
+test_ffi_libc[]: Result[Unit, String] ->
+    let len0 = FfiLibC.strlen[""]
+    let len5 = FfiLibC.strlen["Hello"]
+    let parsed = FfiLibC.atol["1234"]
+    let parsed_neg = FfiLibC.atol["-99"]
+    let ticks = FfiLibC.clock[]
+    check_all[{
+        check_eq[len0, 0],
+        check_eq[len5, 5],
+        check_eq[parsed, 1234],
+        check_eq[parsed_neg, -99],
+        check_true[ticks >= 0]
+    }]
+
+test_ffi_pointers_and_cstrings[]: Result[Unit, String] ->
+    -- Note: C.Struct FFI types are not yet implemented in GeneralFFI.fs; test C.Ptr byte/word layout & C strings.
+    let dst = __buffer_alloc[16]
+    let _ = FfiLibC.strcpy[dst, "Liyh-FFI"]
+    let clen = FfiLibC.strnlen[dst, 16]
+    -- Copy prefix slice via memcpy into exact 4-byte buffer (__buffer_to_string uses buffer length, not NUL)
+    let sub = __buffer_alloc[4]
+    let _ = FfiLibC.memcpy[sub, dst, 4]
+    let roundtrip = __buffer_to_string[sub]
+    -- Copy buffer back through __string_to_buffer -> memcpy -> __buffer_to_string
+    let src_str = __string_to_buffer["OK"]
+    let dst2 = __buffer_alloc[2]
+    let _ = FfiLibC.memcpy[dst2, src_str, 2]
+    -- Simulate 8-byte aligned slots inside C buffer
+    let aligned = __buffer_alloc[16]
+    let _ = __buffer_set[aligned, 0, 42]
+    let _ = __buffer_set[aligned, 8, 99]
+    check_all[{
+        check_eq[clen, 8],
+        check_eq[__buffer_get[dst, 0], 76],
+        check_eq[__buffer_get[dst, 7], 73],
+        check_eq[roundtrip, "Liyh"],
+        check_eq[__buffer_to_string[dst2], "OK"],
+        check_eq[__buffer_get[aligned, 0], 42],
+        check_eq[__buffer_get[aligned, 8], 99]
+    }]
+
+
+-- RSS Memory Reader via /proc/self/statm --
+
+pm_parse_rss_skip_ws[buf: C.Ptr[C.Void], idx: Int, len: Int]: Int ->
+    if idx >= len then idx
+    elif __buffer_get[buf, idx] == 32 then pm_parse_rss_skip_ws[buf, idx + 1, len]
+    else idx
+
+pm_parse_rss_skip_word[buf: C.Ptr[C.Void], idx: Int, len: Int]: Int ->
+    if idx >= len then idx
+    elif __buffer_get[buf, idx] == 32 then idx
+    else pm_parse_rss_skip_word[buf, idx + 1, len]
+
+pm_parse_rss_digits[buf: C.Ptr[C.Void], idx: Int, len: Int, acc: Int]: Int ->
+    if idx >= len then acc
+    else
+        let b = __buffer_get[buf, idx]
+        if b >= 48 && b <= 57 then pm_parse_rss_digits[buf, idx + 1, len, acc * 10 + (b - 48)]
+        else acc
+
+pm_read_rss_pages[]: Int ->
+    let fp = FfiLibC.fopen["/proc/self/statm", "r"]
+    let buf = __buffer_alloc[128]
+    let n = FfiLibC.fread[buf, 1, 127, fp]
+    let _ = FfiLibC.fclose[fp]
+    let i1 = pm_parse_rss_skip_word[buf, 0, n]
+    let i2 = pm_parse_rss_skip_ws[buf, i1, n]
+    pm_parse_rss_digits[buf, i2, n, 0]
+
+
+-- Memory: Lazy Stream Evaluation Over 1000000 Elements Without Heap Growth --
+
+type PmStream =
+    | PmSCons[Int, PmStream]
+    | PmSNil
+
+pm_ints_from[n: Int]: PmStream lazy -> PmSCons[n, pm_ints_from[n + 1]]
+
+pm_stream_sum_n[_, 0, acc: Int]: Int -> acc
+pm_stream_sum_n[PmSNil, _: Int, acc: Int]: Int -> acc
+pm_stream_sum_n[PmSCons[x, xs], rem: Int, acc: Int]: Int -> pm_stream_sum_n[xs, rem - 1, acc + x]
+
+pm_run_stream_1m[n: Int]: Int -> pm_stream_sum_n[pm_ints_from[0], n, 0]
+
+test_mem_lazy_stream_1m[]: Result[Unit, String] ->
+    let n = 1000000
+    let rss_before = pm_read_rss_pages[]
+    let total = pm_run_stream_1m[n]
+    let rss_after = pm_read_rss_pages[]
+    let delta_pages = rss_after - rss_before
+    let expected = (n * (n - 1)) / 2
+    check_all[{
+        check_eq[total, expected],
+        -- Expect bounded O(1) memory (< 4096 pages = 16 MiB across 1M lazy nodes)
+        if delta_pages < 4096 then Ok[()] else Err["RSS grew by { delta_pages } pages (before={ rss_before }, after={ rss_after })"]
+    }]
+
+
+-- Memory: Deep Tail-Recursion Constant Stack Footprint --
+
+pm_tco_loop[n: Int, acc: Int] when n <= 0 : Int -> acc
+pm_tco_loop[n: Int, acc: Int]: Int -> pm_tco_loop[n - 1, acc + (n % 7)]
+
+test_mem_deep_tco_footprint[]: Result[Unit, String] ->
+    let iters = 500000
+    let rss_before = pm_read_rss_pages[]
+    let res = pm_tco_loop[iters, 0]
+    let rss_after = pm_read_rss_pages[]
+    let delta_pages = rss_after - rss_before
+    check_all[{
+        check_true[res > 0],
+        check_true[delta_pages < 1024]
+    }]
+
+
+-- Memory: Buffer Realloc Stress-Test With Leak-Free Cycles --
+
+pm_realloc_cycle[k: Int]: Int ->
+    let b0 = __buffer_alloc[32]
+    let _ = __buffer_set[b0, 0, k % 127]
+    let b1 = __buffer_realloc[b0, 512]
+    let _ = __buffer_set[b1, 511, 77]
+    let b2 = __buffer_realloc[b1, 4096]
+    let _ = __buffer_set[b2, 4095, 33]
+    __buffer_get[b2, 0] + __buffer_get[b2, 511] + __buffer_get[b2, 4095]
+
+test_mem_buffer_realloc_stress[]: Result[Unit, String] ->
+    let rss_before = pm_read_rss_pages[]
+    var checksum = 0
+    for i = 1 to 2000 do
+        checksum <- checksum + pm_realloc_cycle[i]
+    let rss_after = pm_read_rss_pages[]
+    let delta_pages = rss_after - rss_before
+    check_all[{
+        check_true[checksum > 200000],
+        -- 2000 * 4KB = 8MB total churned; ARC frees each cycle so RSS growth stays minimal
+        check_true[delta_pages < 1024]
+    }]
+
+
+-- Memory: Transient Record Generation Throughput --
+
+pm_transient_records[0, acc: Int]: Int -> acc
+pm_transient_records[n: Int, acc: Int]: Int ->
+    let rec = { id = n, tag = "tmp", score = n % 13 }
+    let { id = _, tag = _, score = s: Int } = rec
+    pm_transient_records[n - 1, acc + s]
+
+test_mem_transient_records[]: Result[Unit, String] ->
+    let count = 100000
+    let rss_before = pm_read_rss_pages[]
+    let total = pm_transient_records[count, 0]
+    let rss_after = pm_read_rss_pages[]
+    let delta_pages = rss_after - rss_before
+    check_all[{
+        check_true[total > 0],
+        check_true[delta_pages < 2048]
+    }]
+
+
+-- Perf: List Comprehensions Baseline vs Imperative Loop Accumulator --
+
+test_perf_comprehension_vs_imperative[]: Result[Unit, String] ->
+    let t0 = FfiLibC.clock[]
+    -- Nested comprehension over 400 * 500 = 200,000 candidate pairs, keeping 1/4 (~50,000 items)
+    let pairs = flatten[{ { i + j for j in { 1 .. 500 } if (i + j) % 4 == 0 } for i in { 1 .. 400 } }]
+    let comp_sum = sum[pairs]
+    let t1 = FfiLibC.clock[]
+
+    var imp_sum = 0
+    for i = 1 to 400 do
+        for j = 1 to 500 do
+            let v = i + j
+            if v % 4 == 0 then
+                imp_sum <- imp_sum + v
+    let t2 = FfiLibC.clock[]
+
+    let dt_comp = t1 - t0
+    let dt_imp = t2 - t1
+    check_all[{
+        check_eq[comp_sum, imp_sum],
+        check_true[dt_comp >= 0],
+        check_true[dt_imp >= 0]
+    }]
+
+
+-- Perf: Pattern Matching Lookup Scaling (20-Constructor ADT) --
+
+type PmTag =
+    | PmT00 | PmT01 | PmT02 | PmT03 | PmT04
+    | PmT05 | PmT06 | PmT07 | PmT08 | PmT09
+    | PmT10 | PmT11 | PmT12 | PmT13 | PmT14
+    | PmT15 | PmT16 | PmT17 | PmT18 | PmT19
+
+pm_tag_from_mod[0]: PmTag -> PmT00
+pm_tag_from_mod[1]: PmTag -> PmT01
+pm_tag_from_mod[2]: PmTag -> PmT02
+pm_tag_from_mod[3]: PmTag -> PmT03
+pm_tag_from_mod[4]: PmTag -> PmT04
+pm_tag_from_mod[5]: PmTag -> PmT05
+pm_tag_from_mod[6]: PmTag -> PmT06
+pm_tag_from_mod[7]: PmTag -> PmT07
+pm_tag_from_mod[8]: PmTag -> PmT08
+pm_tag_from_mod[9]: PmTag -> PmT09
+pm_tag_from_mod[10]: PmTag -> PmT10
+pm_tag_from_mod[11]: PmTag -> PmT11
+pm_tag_from_mod[12]: PmTag -> PmT12
+pm_tag_from_mod[13]: PmTag -> PmT13
+pm_tag_from_mod[14]: PmTag -> PmT14
+pm_tag_from_mod[15]: PmTag -> PmT15
+pm_tag_from_mod[16]: PmTag -> PmT16
+pm_tag_from_mod[17]: PmTag -> PmT17
+pm_tag_from_mod[18]: PmTag -> PmT18
+pm_tag_from_mod[_]: PmTag -> PmT19
+
+pm_tag_score[PmT00]: Int -> 1
+pm_tag_score[PmT01]: Int -> 2
+pm_tag_score[PmT02]: Int -> 3
+pm_tag_score[PmT03]: Int -> 4
+pm_tag_score[PmT04]: Int -> 5
+pm_tag_score[PmT05]: Int -> 6
+pm_tag_score[PmT06]: Int -> 7
+pm_tag_score[PmT07]: Int -> 8
+pm_tag_score[PmT08]: Int -> 9
+pm_tag_score[PmT09]: Int -> 10
+pm_tag_score[PmT10]: Int -> 11
+pm_tag_score[PmT11]: Int -> 12
+pm_tag_score[PmT12]: Int -> 13
+pm_tag_score[PmT13]: Int -> 14
+pm_tag_score[PmT14]: Int -> 15
+pm_tag_score[PmT15]: Int -> 16
+pm_tag_score[PmT16]: Int -> 17
+pm_tag_score[PmT17]: Int -> 18
+pm_tag_score[PmT18]: Int -> 19
+pm_tag_score[PmT19]: Int -> 20
+
+test_perf_pattern_dispatch_scaling[]: Result[Unit, String] ->
+    let t0 = FfiLibC.clock[]
+    var acc = 0
+    for i = 0 to 49999 do
+        let tag = pm_tag_from_mod[i % 20]
+        acc <- acc + pm_tag_score[tag]
+    let t1 = FfiLibC.clock[]
+    -- 2500 cycles * (1+2+...+20 = 210) = 525000
+    check_all[{
+        check_eq[acc, 525000],
+        check_true[(t1 - t0) >= 0]
+    }]
+
+
+-- Perf: Symbolic Substitution Tree Traversal Speed on Large ASTs --
+
+type PmAst =
+    | PmLeaf
+    | PmVal[Int]
+    | PmBranch[PmAst, PmAst]
+
+pm_build_tree[depth: Int] when depth <= 0 : PmAst -> PmLeaf
+pm_build_tree[depth: Int]: PmAst ->
+    let sub = pm_build_tree[depth - 1]
+    PmBranch[sub, sub]
+
+pm_sum_tree[PmLeaf]: Int -> 1
+pm_sum_tree[PmVal[n]]: Int -> n
+pm_sum_tree[PmBranch[l, r]]: Int -> pm_sum_tree[l] + pm_sum_tree[r]
+
+test_perf_symbolic_subst_large_ast[]: Result[Unit, String] ->
+    -- Depth 12 => 8191 total nodes (4096 leaves)
+    let tree = pm_build_tree[12]
+    let t0 = FfiLibC.clock[]
+    let replaced = [ PmLeaf -> PmVal[3] ] in tree
+    let t1 = FfiLibC.clock[]
+    let sum_before = pm_sum_tree[tree]
+    let sum_after = pm_sum_tree[replaced]
+    check_all[{
+        check_eq[sum_before, 4096],
+        check_eq[sum_after, 12288],
+        check_true[(t1 - t0) >= 0]
+    }]
+
+
+-- Test Registry --
+
+linux_ffi_tests[]: List[TestCase] ->
+    {
+        ("FFI: extern C libc (strlen, atol, clock)", [] -> test_ffi_libc[]),
+        ("FFI: pointer layout, strcpy/memcpy & nested C string roundtrips", [] -> test_ffi_pointers_and_cstrings[]),
+        ("Memory: lazy stream evaluation over 1,000,000 elements without heap growth", [] -> test_mem_lazy_stream_1m[]),
+        ("Memory: deep tail-recursion constant stack footprint (500k calls)", [] -> test_mem_deep_tco_footprint[]),
+        ("Memory: buffer realloc stress-test with leak-free cycles", [] -> test_mem_buffer_realloc_stress[]),
+        ("Memory: transient record generation throughput (100k records)", [] -> test_mem_transient_records[]),
+        ("Perf: nested list comprehensions vs imperative loop accumulator (200k pairs)", [] -> test_perf_comprehension_vs_imperative[]),
+        ("Perf: pattern matching lookup scaling (20 constructors x 50k dispatches)", [] -> test_perf_pattern_dispatch_scaling[]),
+        ("Perf: symbolic substitution tree traversal on 8k-node AST", [] -> test_perf_symbolic_subst_large_ast[])
+    }

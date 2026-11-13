@@ -1,0 +1,180 @@
+--| Tests for TSL List operations, Int/Float ranges (with Option step), and list comprehensions. --|
+
+use TSL
+use Tests.Framework
+
+export list_tests
+
+
+test_lists_core_and_access[]: Result[Unit, String] ->
+    let xs = { 10, 20, 30, 40 }
+    check_all[{
+        check_true[is_empty[{}]],
+        check_false[is_empty[xs]],
+        check_eq[length[{}], 0],
+        check_eq[length[xs], 4],
+        check_eq[head[xs], 10],
+        check_eq[tail[xs], { 20, 30, 40 }],
+        check_eq[tail[{}], {}],
+        check_eq[try_head[{}], None],
+        check_eq[try_head[xs], Some[10]],
+        check_eq[try_get[xs, 0], Some[10]],
+        check_eq[try_get[xs, 2], Some[30]],
+        check_eq[try_get[xs, 5], None],
+        check_eq[try_get[xs, -1], None],
+        check_true[contains[xs, 30]],
+        check_false[contains[xs, 99]],
+        check_eq[try_find[xs, [x] -> x > 25], Some[30]],
+        check_eq[try_find[xs, [x] -> x > 100], None]
+    }]
+
+test_lists_transforms_and_folds[]: Result[Unit, String] ->
+    let xs = { 1, 2, 3, 4 }
+    let rev = reverse[xs]
+    let doubled = map[xs, [x] -> x * 2]
+    let evens = filter[xs, [x] -> x % 2 == 0]
+    let cat1 = concat[{ 1, 2 }, { 3, 4 }]
+    let cat2 = { 1, 2 } @ { 3, 4 } @ {}
+    let fl = foldl[{ 1, 2, 3 }, [acc, x] -> acc * 10 + x, 0]
+    let fr = foldr[{ 1, 2, 3 }, [x, acc] -> acc * 10 + x, 0]
+    check_all[{
+        check_eq[rev, { 4, 3, 2, 1 }],
+        check_eq[doubled, { 2, 4, 6, 8 }],
+        check_eq[evens, { 2, 4 }],
+        check_eq[cat1, { 1, 2, 3, 4 }],
+        check_eq[cat2, { 1, 2, 3, 4 }],
+        check_eq[fl, 123],
+        check_eq[fr, 321],
+        check_eq[sum[xs], 10],
+        check_eq[product[xs], 24],
+        check_eq[sum[{}], 0],
+        check_eq[product[{}], 1]
+    }]
+
+test_lists_predicates_zip_slice[]: Result[Unit, String] ->
+    let xs = { 2, 4, 6, 8, 10 }
+    let pairs = zip[{ 1, 2, 3 }, { "a", "b", "c" }]
+    let (nums, strs) = unzip[pairs]
+    let nested = { { 1, 2 }, {}, { 3 }, { 4, 5 } }
+    let fm = flat_map[{ 1, 2, 3 }, [x] -> { x, x * 10 }]
+    check_all[{
+        check_true[exists[xs, [x] -> x == 6]],
+        check_false[exists[xs, [x] -> x == 5]],
+        check_true[for_all[xs, [x] -> x % 2 == 0]],
+        check_false[for_all[xs, [x] -> x < 10]],
+        check_eq[pairs, { (1, "a"), (2, "b"), (3, "c") }],
+        check_eq[nums, { 1, 2, 3 }],
+        check_eq[strs, { "a", "b", "c" }],
+        check_eq[take[xs, 3], { 2, 4, 6 }],
+        check_eq[take[xs, 0], {}],
+        check_eq[take[xs, -2], {}],
+        check_eq[take[xs, 99], xs],
+        check_eq[drop[xs, 2], { 6, 8, 10 }],
+        check_eq[drop[xs, 0], xs],
+        check_eq[drop[xs, 99], {}],
+        check_eq[flatten[nested], { 1, 2, 3, 4, 5 }],
+        check_eq[fm, { 1, 10, 2, 20, 3, 30 }]
+    }]
+
+test_lists_ranges_int_and_float[]: Result[Unit, String] ->
+    let r_up: List[Int] = range[1, None, 5]
+    let r_down: List[Int] = range[5, None, 1]
+    let r_step_up: List[Int] = range[0, Some[3], 10]
+    let r_step_down: List[Int] = range[10, Some[-3], 0]
+    let r_empty_up: List[Int] = range[5, Some[1], 3]
+    let r_single: List[Int] = range[7, None, 7]
+    let f_up: List[Float] = range[0.0, None, 2.0]
+    let f_down: List[Float] = range[2.0, None, 0.0]
+    let f_step: List[Float] = range[0.0, Some[0.5], 2.0]
+    let f_step_down: List[Float] = range[2.0, Some[-0.5], 0.5]
+    check_all[{
+        check_eq[r_up, { 1, 2, 3, 4, 5 }],
+        check_eq[r_down, { 5, 4, 3, 2, 1 }],
+        check_eq[r_step_up, { 0, 3, 6, 9 }],
+        check_eq[r_step_down, { 10, 7, 4, 1 }],
+        check_eq[r_empty_up, {}],
+        check_eq[r_single, { 7 }],
+        check_eq[f_up, { 0.0, 1.0, 2.0 }],
+        check_eq[f_down, { 2.0, 1.0, 0.0 }],
+        check_eq[f_step, { 0.0, 0.5, 1.0, 1.5, 2.0 }],
+        check_eq[f_step_down, { 2.0, 1.5, 1.0, 0.5 }]
+    }]
+
+test_lists_native_ranges_int_and_float[]: Result[Unit, String] ->
+    let r_up: List[Int] = { 1 .. 5 }
+    let r_down: List[Int] = { 5 .. 1 }
+    let r_step_up: List[Int] = { 0 .. 3 .. 10 }
+    let r_step_down: List[Int] = { 10 .. -3 .. 0 }
+    let r_empty_up: List[Int] = { 5 .. 1 .. 3 }
+    let r_single: List[Int] = { 7 .. 7 }
+    let f_up: List[Float] = { 0.0 .. 2.0 }
+    let f_down: List[Float] = { 2.0 .. 0.0 }
+    let f_step: List[Float] = { 0.0 .. 0.5 .. 2.0 }
+    let f_step_down: List[Float] = { 2.0 .. -0.5 .. 0.5 }
+    check_all[{
+        check_eq[r_up, { 1, 2, 3, 4, 5 }],
+        check_eq[r_down, { 5, 4, 3, 2, 1 }],
+        check_eq[r_step_up, { 0, 3, 6, 9 }],
+        check_eq[r_step_down, { 10, 7, 4, 1 }],
+        check_eq[r_empty_up, {}],
+        check_eq[r_single, { 7 }],
+        check_eq[f_up, { 0.0, 1.0, 2.0 }],
+        check_eq[f_down, { 2.0, 1.0, 0.0 }],
+        check_eq[f_step, { 0.0, 0.5, 1.0, 1.5, 2.0 }],
+        check_eq[f_step_down, { 2.0, 1.5, 1.0, 0.5 }]
+    }]
+
+test_lists_comprehensions[]: Result[Unit, String] ->
+    let base = { 1, 2, 3, 4, 5, 6 }
+    let squares = { x * x for x in { 1, 2, 3, 4 } }
+    let evens = { x for x in base if x % 2 == 0 }
+    let from_range = { k for k in { 0 .. 4 } }
+    let stepped = { k * 10 for k in { 0 .. 2 .. 6 } }
+    let filtered_range = { k for k in { 1 .. 10 } if k > 6 && k % 2 == 1 }
+    let float_comp = { f + 0.5 for f in { 0.0 .. 1.0 .. 2.0 } }
+    check_all[{
+        check_eq[squares, { 1, 4, 9, 16 }],
+        check_eq[evens, { 2, 4, 6 }],
+        check_eq[from_range, { 0, 1, 2, 3, 4 }],
+        check_eq[stepped, { 0, 20, 40, 60 }],
+        check_eq[filtered_range, { 7, 9 }],
+        check_eq[float_comp, { 0.5, 1.5, 2.5 }]
+    }]
+
+
+list_nats_from[n: Int]: List[Int] lazy -> n :: list_nats_from[n + 1]
+
+test_lists_nested_comprehensions[]: Result[Unit, String] ->
+    let xs = { 1, 2, 3 }
+    let ys = { 2, 3, 4 }
+    let pairs = flatten[{ { (x, y) for y in ys if x != y && (x + y) % 2 == 1 } for x in xs }]
+    let grid = flat_map[{ 1, 2 }, [a] -> { (a, b) for b in { 10, 20, 30 } if a * 10 != b }]
+    check_all[{
+        check_eq[pairs, { (1, 2), (1, 4), (2, 3), (3, 2), (3, 4) }],
+        check_eq[grid, { (1, 20), (1, 30), (2, 10), (2, 30) }]
+    }]
+
+test_lists_lazy_infinite_take[]: Result[Unit, String] ->
+    let nats = list_nats_from[10]
+    let first5 = take[nats, 5]
+    let after3_take4 = take[drop[nats, 3], 4]
+    check_all[{
+        check_eq[first5, { 10, 11, 12, 13, 14 }],
+        check_eq[after3_take4, { 13, 14, 15, 16 }],
+        check_eq[sum[take[list_nats_from[1], 10]], 55]
+    }]
+
+
+-- Test Registry --
+
+list_tests[]: List[TestCase] ->
+    {
+        ("Lists: core ops, head/tail, try_get, contains & try_find", [] -> test_lists_core_and_access[]),
+        ("Lists: reverse, map, filter, concat (@), folds, sum & product", [] -> test_lists_transforms_and_folds[]),
+        ("Lists: exists, for_all, zip/unzip, take/drop, flatten & flat_map", [] -> test_lists_predicates_zip_slice[]),
+        ("Lists: Int & Float ranges with Option step", [] -> test_lists_ranges_int_and_float[]),
+        ("Lists: Int & Float native range", [] -> test_lists_native_ranges_int_and_float[]),
+        ("Lists: comprehensions over lists, Int/Float ranges & guards", [] -> test_lists_comprehensions[]),
+        ("Lists: nested comprehensions with cross-variable guards", [] -> test_lists_nested_comprehensions[]),
+        ("Lists: lazy infinite List stream consumed with take/drop", [] -> test_lists_lazy_infinite_take[])
+    }

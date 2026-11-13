@@ -1,0 +1,726 @@
+--| Platform-independent algorithm test battery exercising real-world Liyh feature interactions. --|
+
+use TSL
+use Tests.Framework
+
+export alg_tests
+
+
+-- ============================================================
+-- Sorting: Polymorphic Mergesort vs Quicksort (HOFs)
+-- ============================================================
+
+alg_split_aux[{}, left: List['t], right: List['t]]: (List['t], List['t]) -> (reverse[left], reverse[right])
+alg_split_aux[{ x }, left: List['t], right: List['t]]: (List['t], List['t]) -> (reverse[x :: left], reverse[right])
+alg_split_aux[x :: y :: rest, left: List['t], right: List['t]]: (List['t], List['t]) ->
+    alg_split_aux[rest, x :: left, y :: right]
+
+alg_merge[{}, ys: List['t], _]: List['t] -> ys
+alg_merge[xs: List['t], {}, _]: List['t] -> xs
+alg_merge[x :: xs, y :: ys, le_fn: ['t, 't] -> Bool]: List['t] ->
+    if le_fn[x, y] then x :: alg_merge[xs, y :: ys, le_fn]
+    else y :: alg_merge[x :: xs, ys, le_fn]
+
+alg_mergesort[{}, _]: List['t] -> {}
+alg_mergesort[{ x }, _]: List['t] -> { x }
+alg_mergesort[xs: List['t], le_fn: ['t, 't] -> Bool]: List['t] ->
+    let (l, r) = alg_split_aux[xs, {}, {}]
+    alg_merge[alg_mergesort[l, le_fn], alg_mergesort[r, le_fn], le_fn]
+
+alg_quicksort[{}, _]: List['t] -> {}
+alg_quicksort[pivot :: rest, le_fn: ['t, 't] -> Bool]: List['t] ->
+    let smaller = filter[rest, [x] -> le_fn[x, pivot]]
+    let greater = filter[rest, [x] -> not le_fn[x, pivot]]
+    alg_quicksort[smaller, le_fn] @ (pivot :: alg_quicksort[greater, le_fn])
+
+alg_is_sorted[{}, _]: Bool -> true
+alg_is_sorted[{ _ }, _]: Bool -> true
+alg_is_sorted[a :: b :: rest, le_fn: ['t, 't] -> Bool]: Bool ->
+    if le_fn[a, b] then alg_is_sorted[b :: rest, le_fn] else false
+
+test_alg_sorting[]: Result[Unit, String] ->
+    let data = { 42, -7, 15, 0, 99, 15, -100, 8, 23, 42, 3, -1 }
+    let asc = [a: Int, b: Int] -> a <= b
+    let desc = [a: Int, b: Int] -> a >= b
+    let m_asc = alg_mergesort[data, asc]
+    let q_asc = alg_quicksort[data, asc]
+    let m_desc = alg_mergesort[data, desc]
+    let q_desc = alg_quicksort[data, desc]
+
+    let pairs = { (3, 88), (1, 95), (2, 88), (4, 72) }
+    let by_score_then_id = [(id1: Int, s1: Int), (id2: Int, s2: Int)] ->
+        if s1 != s2 then s1 > s2 else id1 <= id2
+    let sorted_pairs = alg_mergesort[pairs, by_score_then_id]
+
+    check_all[{
+        check_eq[m_asc, { -100, -7, -1, 0, 3, 8, 15, 15, 23, 42, 42, 99 }],
+        check_eq[q_asc, m_asc],
+        check_eq[q_desc, m_desc],
+        check_eq[m_desc, reverse[m_asc]],
+        check_true[alg_is_sorted[m_asc, asc]],
+        check_true[alg_is_sorted[m_desc, desc]],
+        check_eq[sorted_pairs, { (1, 95), (2, 88), (3, 88), (4, 72) }],
+        check_eq[alg_mergesort[{}, asc], {}],
+        check_eq[alg_quicksort[{ 7 }, asc], { 7 }]
+    }]
+
+
+-- ============================================================
+-- Binary Search (Functional List vs Imperative Buffer)
+-- ============================================================
+
+alg_bsearch_list_rec[xs: List[Int], target: Int, lo: Int, hi: Int] when lo > hi : Option[Int] -> None
+alg_bsearch_list_rec[xs: List[Int], target: Int, lo: Int, hi: Int]: Option[Int] ->
+    let mid = lo + ((hi - lo) / 2)
+    match try_get[xs, mid] with
+    | None -> None
+    | Some[v] when v == target -> Some[mid]
+    | Some[v] when v < target -> alg_bsearch_list_rec[xs, target, mid + 1, hi]
+    | Some[_] -> alg_bsearch_list_rec[xs, target, lo, mid - 1]
+
+alg_bsearch_buf_imp[buf: C.Ptr[C.Void], n: Int, target: Int]: Option[Int] ->
+    var lo = 0
+    var hi = n - 1
+    var found = -1
+    while lo <= hi && found < 0 do
+        let mid = lo + ((hi - lo) / 2)
+        let v = __buffer_get[buf, mid]
+        if v == target then
+            found <- mid
+        elif v < target then
+            lo <- mid + 1
+        else
+            hi <- mid - 1
+    if found >= 0 then Some[found] else None
+
+test_alg_binary_search[]: Result[Unit, String] ->
+    let sorted = { 3, 7, 12, 19, 25, 31, 44, 58, 71, 90, 115 }
+    let n = length[sorted]
+    let buf = __buffer_alloc[n]
+    var idx = 0
+    for x in sorted do
+        let _ = __buffer_set[buf, idx, x]
+        idx <- idx + 1
+
+    let queries = { 0, 3, 19, 20, 44, 90, 115, 200 }
+    let rec_results = map[queries, [q: Int] -> alg_bsearch_list_rec[sorted, q, 0, n - 1]]
+    let imp_results = map[queries, [q: Int] -> alg_bsearch_buf_imp[buf, n, q]]
+    check_all[{
+        check_eq[rec_results, { None, Some[0], Some[3], None, Some[6], Some[9], Some[10], None }],
+        check_eq[imp_results, rec_results],
+        check_eq[alg_bsearch_list_rec[{}, 5, 0, -1], None],
+        check_eq[alg_bsearch_buf_imp[buf, 0, 5], None]
+    }]
+
+
+-- ============================================================
+-- Binary Search Tree Dictionary (Generic ADT + Option)
+-- ============================================================
+
+type AlgBst['k, 'v] =
+    | AlgBstEmpty
+    | AlgBstNode['k, 'v, AlgBst['k, 'v], AlgBst['k, 'v]]
+
+alg_bst_insert[AlgBstEmpty, k: Int, v: 'v]: AlgBst[Int, 'v] ->
+    AlgBstNode[k, v, AlgBstEmpty, AlgBstEmpty]
+alg_bst_insert[AlgBstNode[nk, nv, l, r], k: Int, v: 'v] when k < nk : AlgBst[Int, 'v] ->
+    AlgBstNode[nk, nv, alg_bst_insert[l, k, v], r]
+alg_bst_insert[AlgBstNode[nk, nv, l, r], k: Int, v: 'v] when k > nk : AlgBst[Int, 'v] ->
+    AlgBstNode[nk, nv, l, alg_bst_insert[r, k, v]]
+alg_bst_insert[AlgBstNode[nk, _, l, r], k: Int, v: 'v]: AlgBst[Int, 'v] ->
+    AlgBstNode[nk, v, l, r]
+
+alg_bst_lookup[AlgBstEmpty, _: Int]: Option['v] -> None
+alg_bst_lookup[AlgBstNode[nk, nv, l, _], k: Int] when k < nk : Option['v] -> alg_bst_lookup[l, k]
+alg_bst_lookup[AlgBstNode[nk, nv, _, r], k: Int] when k > nk : Option['v] -> alg_bst_lookup[r, k]
+alg_bst_lookup[AlgBstNode[_, nv, _, _], _: Int]: Option['v] -> Some[nv]
+
+alg_bst_inorder[AlgBstEmpty]: List[(Int, 'v)] -> {}
+alg_bst_inorder[AlgBstNode[k, v, l, r]]: List[(Int, 'v)] ->
+    alg_bst_inorder[l] @ ((k, v) :: alg_bst_inorder[r])
+
+alg_bst_height[AlgBstEmpty]: Int -> 0
+alg_bst_height[AlgBstNode[_, _, l, r]]: Int ->
+    1 + max[alg_bst_height[l], alg_bst_height[r]]
+
+test_alg_bst_dictionary[]: Result[Unit, String] ->
+    let entries = { (50, "fifty"), (30, "thirty"), (70, "seventy"), (20, "twenty"), (40, "forty"), (60, "sixty"), (30, "THIRTY") }
+    let tree = foldl[entries, [t, kv] -> alg_bst_insert[t, fst[kv], snd[kv]], AlgBstEmpty]
+    let ordered = alg_bst_inorder[tree]
+    let keys = map[ordered, [kv] -> fst[kv]]
+    check_all[{
+        check_eq[alg_bst_lookup[tree, 30], Some["THIRTY"]],
+        check_eq[alg_bst_lookup[tree, 60], Some["sixty"]],
+        check_eq[alg_bst_lookup[tree, 99], None],
+        check_eq[keys, { 20, 30, 40, 50, 60, 70 }],
+        check_eq[alg_bst_height[tree], 3]
+    }]
+
+
+-- ============================================================
+-- Graph Traversal: Dijkstra Shortest Path & BFS Hops
+-- ============================================================
+
+alg_adj_lookup[{}, _: Int]: List[(Int, Int)] -> {}
+alg_adj_lookup[(node, edges) :: _, target: Int] when node == target -> edges
+alg_adj_lookup[_ :: rest, target: Int] -> alg_adj_lookup[rest, target]
+
+alg_dist_get[{}, _: Int]: Option[Int] -> None
+alg_dist_get[(n, d) :: _, target: Int] when n == target -> Some[d]
+alg_dist_get[_ :: rest, target: Int] -> alg_dist_get[rest, target]
+
+alg_dist_set[{}, node: Int, d: Int]: List[(Int, Int)] -> { (node, d) }
+alg_dist_set[(n, _) :: rest, node: Int, d: Int] when n == node : List[(Int, Int)] -> (node, d) :: rest
+alg_dist_set[hd :: rest, node: Int, d: Int]: List[(Int, Int)] -> hd :: alg_dist_set[rest, node, d]
+
+alg_pick_min_unvisited[{}, _, best: Option[(Int, Int)]]: Option[(Int, Int)] -> best
+alg_pick_min_unvisited[(n, d) :: rest, visited: List[Int], best: Option[(Int, Int)]]: Option[(Int, Int)] ->
+    if contains[visited, n] then
+        alg_pick_min_unvisited[rest, visited, best]
+    else
+        let next_best = match best with
+            | None -> Some[(n, d)]
+            | Some[(_, bd)] when d < bd -> Some[(n, d)]
+            | Some[_] -> best
+        alg_pick_min_unvisited[rest, visited, next_best]
+
+alg_relax_edges[base_d: Int, {}, dists: List[(Int, Int)]]: List[(Int, Int)] -> dists
+alg_relax_edges[base_d: Int, (nbr, w) :: rest, dists: List[(Int, Int)]]: List[(Int, Int)] ->
+    let cand = base_d + w
+    let updated = match alg_dist_get[dists, nbr] with
+        | None -> alg_dist_set[dists, nbr, cand]
+        | Some[old] when cand < old -> alg_dist_set[dists, nbr, cand]
+        | Some[_] -> dists
+    alg_relax_edges[base_d, rest, updated]
+
+alg_dijkstra_loop[graph: List[(Int, List[(Int, Int)])], dists: List[(Int, Int)], visited: List[Int]]: List[(Int, Int)] ->
+    match alg_pick_min_unvisited[dists, visited, None] with
+    | None -> dists
+    | Some[(u, du)] ->
+        let edges = alg_adj_lookup[graph, u]
+        let next_dists = alg_relax_edges[du, edges, dists]
+        alg_dijkstra_loop[graph, next_dists, u :: visited]
+
+alg_shortest_path[graph: List[(Int, List[(Int, Int)])], src: Int, dst: Int]: Result[Int, String] ->
+    let dists = alg_dijkstra_loop[graph, { (src, 0) }, {}]
+    match alg_dist_get[dists, dst] with
+    | Some[d] -> Ok[d]
+    | None -> Err["Node { dst } unreachable from { src }"]
+
+test_alg_dijkstra[]: Result[Unit, String] ->
+    let graph = {
+        (0, { (1, 4), (2, 1) }),
+        (1, { (3, 1) }),
+        (2, { (1, 2), (3, 5), (4, 8) }),
+        (3, { (4, 2) }),
+        (4, {}),
+        (5, { (4, 1) })
+    }
+    check_all[{
+        check_eq[alg_shortest_path[graph, 0, 0], Ok[0]],
+        check_eq[alg_shortest_path[graph, 0, 1], Ok[3]],
+        check_eq[alg_shortest_path[graph, 0, 3], Ok[4]],
+        check_eq[alg_shortest_path[graph, 0, 4], Ok[6]],
+        check_true[is_err[alg_shortest_path[graph, 0, 5]]]
+    }]
+
+
+-- ============================================================
+-- Dynamic Programming: 0/1 Knapsack (Buffer DP vs Spec) & Edit Distance
+-- ============================================================
+
+alg_buf_set_u16[buf: C.Ptr[C.Void], idx: Int, val: Int]: Unit ->
+    let base = idx * 2
+    let lo = val % 256
+    let hi = (val / 256) % 256
+    let _ = __buffer_set[buf, base, lo]
+    let _ = __buffer_set[buf, base + 1, hi]
+    ()
+
+alg_buf_get_u16[buf: C.Ptr[C.Void], idx: Int]: Int ->
+    let base = idx * 2
+    __buffer_get[buf, base] + (__buffer_get[buf, base + 1] * 256)
+
+alg_knapsack_dp[weights: List[Int], values: List[Int], cap: Int]: Int ->
+    let dp = __buffer_alloc[(cap + 1) * 2]
+    let items = zip[weights, values]
+    for (w, v) in items do
+        for c = cap downto w do
+            let cur = alg_buf_get_u16[dp, c]
+            let take_v = alg_buf_get_u16[dp, c - w] + v
+            if take_v > cur then
+                let _ = alg_buf_set_u16[dp, c, take_v]
+                ()
+    alg_buf_get_u16[dp, cap]
+
+alg_knapsack_rec[{}, _, _]: Int -> 0
+alg_knapsack_rec[_, _, cap: Int] when cap <= 0 : Int -> 0
+alg_knapsack_rec[(w, v) :: rest, _, cap: Int]: Int ->
+    let without = alg_knapsack_rec[rest, {}, cap]
+    if w > cap then without
+    else max[without, v + alg_knapsack_rec[rest, {}, cap - w]]
+
+alg_levenshtein[xs: List[Int], ys: List[Int]]: Int ->
+    let n = length[xs]
+    let m = length[ys]
+    let cols = m + 1
+    let dp = __buffer_alloc[(n + 1) * cols]
+    for j = 0 to m do
+        let _ = __buffer_set[dp, j, j]
+        ()
+    for i = 1 to n do
+        let _ = __buffer_set[dp, i * cols, i]
+        let xi = default_value[try_get[xs, i - 1], 0]
+        for j = 1 to m do
+            let yj = default_value[try_get[ys, j - 1], 0]
+            let cost = if xi == yj then 0 else 1
+            let del = __buffer_get[dp, (i - 1) * cols + j] + 1
+            let ins = __buffer_get[dp, i * cols + (j - 1)] + 1
+            let sub = __buffer_get[dp, (i - 1) * cols + (j - 1)] + cost
+            let best = min[min[del, ins], sub]
+            let _ = __buffer_set[dp, i * cols + j, best]
+            ()
+    __buffer_get[dp, n * cols + m]
+
+test_alg_dp_knapsack_and_edit[]: Result[Unit, String] ->
+    let weights = { 2, 3, 4, 5, 6 }
+    let values = { 120, 140, 250, 290, 310 }
+    let cap = 9
+    let dp_ans = alg_knapsack_dp[weights, values, cap]
+    let rec_ans = alg_knapsack_rec[zip[weights, values], {}, cap]
+
+    -- "kitten" -> "sitting" = 3, "flaw" -> "lawn" = 2
+    let kitten = { 107, 105, 116, 116, 101, 110 }
+    let sitting = { 115, 105, 116, 116, 105, 110, 103 }
+    let flaw = { 102, 108, 97, 119 }
+    let lawn = { 108, 97, 119, 110 }
+
+    check_all[{
+        check_eq[dp_ans, 540],
+        check_eq[dp_ans, rec_ans],
+        check_eq[alg_levenshtein[kitten, sitting], 3],
+        check_eq[alg_levenshtein[sitting, kitten], 3],
+        check_eq[alg_levenshtein[flaw, lawn], 2],
+        check_eq[alg_levenshtein[kitten, kitten], 0],
+        check_eq[alg_levenshtein[{}, flaw], 4]
+    }]
+
+
+-- ============================================================
+-- Number Theory: Eratosthenes Sieve, ModPow & Extended GCD
+-- ============================================================
+
+alg_sieve_primes[limit: Int]: List[Int] ->
+    let flags = __buffer_alloc[limit + 1]
+    for i = 2 to limit do
+        let _ = __buffer_set[flags, i, 1]
+        ()
+    var p = 2
+    while p * p <= limit do
+        if __buffer_get[flags, p] == 1 then
+            var m = p * p
+            while m <= limit do
+                let _ = __buffer_set[flags, m, 0]
+                m <- m + p
+        p <- p + 1
+    var out: List[Int] = {}
+    for i = limit downto 2 do
+        if __buffer_get[flags, i] == 1 then
+            out <- i :: out
+    out
+
+alg_is_prime_div[n: Int, d: Int] when d * d > n : Bool -> true
+alg_is_prime_div[n: Int, d: Int] when n % d == 0 : Bool -> false
+alg_is_prime_div[n: Int, d: Int]: Bool -> alg_is_prime_div[n, d + 1]
+
+alg_is_prime[n: Int]: Bool -> if n < 2 then false else alg_is_prime_div[n, 2]
+
+alg_mod_pow_aux[base: Int, exp: Int, m: Int, acc: Int] when exp <= 0 : Int -> acc
+alg_mod_pow_aux[base: Int, exp: Int, m: Int, acc: Int]: Int ->
+    let next_acc = if exp % 2 == 1 then (acc * base) % m else acc
+    alg_mod_pow_aux[(base * base) % m, exp / 2, m, next_acc]
+
+alg_mod_pow[base: Int, exp: Int, m: Int]: Int -> alg_mod_pow_aux[base % m, exp, m, 1]
+
+alg_ext_gcd[a: Int, 0]: (Int, Int, Int) -> (a, 1, 0)
+alg_ext_gcd[a: Int, b: Int]: (Int, Int, Int) ->
+    let (g, x1, y1) = alg_ext_gcd[b, a % b]
+    (g, y1, x1 - (a / b) * y1)
+
+alg_mod_inv[a: Int, m: Int]: Result[Int, String] ->
+    let (g, x, _) = alg_ext_gcd[a, m]
+    if g != 1 then Err["No modular inverse: gcd({ a }, { m }) = { g }"]
+    else Ok[((x % m) + m) % m]
+
+test_alg_number_theory[]: Result[Unit, String] ->
+    let sieve_200 = alg_sieve_primes[200]
+    let trial_200 = filter[{ 2 .. 200 }, alg_is_prime]
+    let inv_ok = alg_mod_inv[17, 3120]
+    let inv_bad = alg_mod_inv[12, 18]
+    check_all[{
+        check_eq[sieve_200, trial_200],
+        check_eq[length[sieve_200], 46],
+        check_eq[sum[take[sieve_200, 10]], 129],
+        check_eq[alg_mod_pow[3, 200, 97], 62],
+        check_eq[alg_mod_pow[2, 10, 1000], 24],
+        check_eq[bind[inv_ok, [x: Int] -> Ok[(17 * x) % 3120]], Ok[1]],
+        check_true[is_err[inv_bad]]
+    }]
+
+
+-- ============================================================
+-- Backtracking with Comprehensions & Guards: N-Queens
+-- ============================================================
+
+alg_queens_safe[_, {}, _]: Bool -> true
+alg_queens_safe[col: Int, q :: rest, offset: Int]: Bool ->
+    if q == col || abs[q - col] == offset then false
+    else alg_queens_safe[col, rest, offset + 1]
+
+alg_nqueens_step[0, _: Int]: List[List[Int]] -> { {} }
+alg_nqueens_step[row: Int, n: Int]: List[List[Int]] ->
+    let prev = alg_nqueens_step[row - 1, n]
+    let cols = { 1 .. n }
+    flat_map[prev, [sol] ->
+        { col :: sol for col in cols if alg_queens_safe[col, sol, 1] }
+    ]
+
+alg_board_valid[{}]: Bool -> true
+alg_board_valid[q :: rest]: Bool -> alg_queens_safe[q, rest, 1] && alg_board_valid[rest]
+
+test_alg_nqueens[]: Result[Unit, String] ->
+    let q4 = alg_nqueens_step[4, 4]
+    let q5 = alg_nqueens_step[5, 5]
+    let q6 = alg_nqueens_step[6, 6]
+    let q8 = alg_nqueens_step[8, 8]
+    check_all[{
+        check_eq[length[q4], 2],
+        check_eq[length[q5], 10],
+        check_eq[length[q6], 4],
+        check_eq[length[q8], 92],
+        check_true[for_all[q4, alg_board_valid]],
+        check_true[for_all[q6, alg_board_valid]]
+    }]
+
+
+-- ============================================================
+-- Compiler Pipeline: Tokenizer + Recursive-Descent Parser + Rewriting + Eval
+-- ============================================================
+
+type AlgTok =
+    | AlgTNum[Int]
+    | AlgTVarTok[String]
+    | AlgTPlus | AlgTMinus | AlgTMul | AlgTDiv
+    | AlgTLParen | AlgTRParen
+
+type AlgExpr =
+    | AlgELit[Int]
+    | AlgVarX
+    | AlgVarY
+    | AlgEAdd[AlgExpr, AlgExpr]
+    | AlgESub[AlgExpr, AlgExpr]
+    | AlgEMul[AlgExpr, AlgExpr]
+    | AlgEDiv[AlgExpr, AlgExpr]
+    | AlgENeg[AlgExpr]
+
+-- Algebraic simplification via outermost rewriting + bottom-up traversal
+alg_simp_node[AlgEAdd[AlgELit[0], e]]: AlgExpr outermost -> e
+alg_simp_node[AlgEAdd[e, AlgELit[0]]]: AlgExpr outermost -> e
+alg_simp_node[AlgEMul[AlgELit[0], _]]: AlgExpr outermost -> AlgELit[0]
+alg_simp_node[AlgEMul[_, AlgELit[0]]]: AlgExpr outermost -> AlgELit[0]
+alg_simp_node[AlgEMul[AlgELit[1], e]]: AlgExpr outermost -> e
+alg_simp_node[AlgEMul[e, AlgELit[1]]]: AlgExpr outermost -> e
+alg_simp_node[AlgESub[e, e]]: AlgExpr outermost -> AlgELit[0]
+alg_simp_node[AlgEAdd[AlgELit[a], AlgELit[b]]]: AlgExpr -> AlgELit[a + b]
+alg_simp_node[AlgESub[AlgELit[a], AlgELit[b]]]: AlgExpr -> AlgELit[a - b]
+alg_simp_node[AlgEMul[AlgELit[a], AlgELit[b]]]: AlgExpr -> AlgELit[a * b]
+alg_simp_node[AlgENeg[AlgELit[a]]]: AlgExpr -> AlgELit[-a]
+alg_simp_node[e: AlgExpr]: AlgExpr -> e
+
+alg_simp[AlgEAdd[a, b]]: AlgExpr ->
+    let sa = alg_simp[a]
+    let sb = alg_simp[b]
+    alg_simp_node[AlgEAdd[sa, sb]]
+alg_simp[AlgESub[a, b]]: AlgExpr ->
+    let sa = alg_simp[a]
+    let sb = alg_simp[b]
+    alg_simp_node[AlgESub[sa, sb]]
+alg_simp[AlgEMul[a, b]]: AlgExpr ->
+    let sa = alg_simp[a]
+    let sb = alg_simp[b]
+    alg_simp_node[AlgEMul[sa, sb]]
+alg_simp[AlgEDiv[a, b]]: AlgExpr ->
+    let sa = alg_simp[a]
+    let sb = alg_simp[b]
+    alg_simp_node[AlgEDiv[sa, sb]]
+alg_simp[AlgENeg[a]]: AlgExpr ->
+    let sa = alg_simp[a]
+    alg_simp_node[AlgENeg[sa]]
+alg_simp[e: AlgExpr]: AlgExpr -> e
+
+alg_is_digit[b: Int]: Bool -> b >= 48 && b <= 57
+
+alg_lex_digits[buf: C.Ptr[C.Void], idx: Int, len: Int, acc: Int]: (Int, Int) ->
+    if idx >= len then (acc, idx)
+    else
+        let b = __buffer_get[buf, idx]
+        if alg_is_digit[b] then alg_lex_digits[buf, idx + 1, len, acc * 10 + (b - 48)]
+        else (acc, idx)
+
+alg_lex_aux[buf: C.Ptr[C.Void], idx: Int, len: Int, acc: List[AlgTok]]: Result[List[AlgTok], String] ->
+    if idx >= len then Ok[reverse[acc]]
+    else
+        let c = __buffer_get[buf, idx]
+        if c == 32 then alg_lex_aux[buf, idx + 1, len, acc]
+        elif alg_is_digit[c] then
+            let (num, next_idx) = alg_lex_digits[buf, idx, len, 0]
+            alg_lex_aux[buf, next_idx, len, AlgTNum[num] :: acc]
+        elif c == 120 then alg_lex_aux[buf, idx + 1, len, AlgTVarTok["x"] :: acc]
+        elif c == 121 then alg_lex_aux[buf, idx + 1, len, AlgTVarTok["y"] :: acc]
+        elif c == 43 then alg_lex_aux[buf, idx + 1, len, AlgTPlus :: acc]
+        elif c == 45 then alg_lex_aux[buf, idx + 1, len, AlgTMinus :: acc]
+        elif c == 42 then alg_lex_aux[buf, idx + 1, len, AlgTMul :: acc]
+        elif c == 47 then alg_lex_aux[buf, idx + 1, len, AlgTDiv :: acc]
+        elif c == 40 then alg_lex_aux[buf, idx + 1, len, AlgTLParen :: acc]
+        elif c == 41 then alg_lex_aux[buf, idx + 1, len, AlgTRParen :: acc]
+        else Err["Unexpected char code { c } at { idx }"]
+
+alg_parse_factor[AlgTMinus :: rest]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_factor[rest], [(e, r)] -> Ok[(AlgENeg[e], r)]]
+alg_parse_factor[AlgTNum[n] :: rest]: Result[(AlgExpr, List[AlgTok]), String] -> Ok[(AlgELit[n], rest)]
+alg_parse_factor[AlgTVarTok["x"] :: rest]: Result[(AlgExpr, List[AlgTok]), String] -> Ok[(AlgVarX, rest)]
+alg_parse_factor[AlgTVarTok["y"] :: rest]: Result[(AlgExpr, List[AlgTok]), String] -> Ok[(AlgVarY, rest)]
+alg_parse_factor[AlgTVarTok[v] :: _]: Result[(AlgExpr, List[AlgTok]), String] -> Err["Unknown var { v }"]
+alg_parse_factor[AlgTLParen :: rest]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_expr[rest], [(e, after)] ->
+        match after with
+        | AlgTRParen :: tail -> Ok[(e, tail)]
+        | _ -> Err["Missing ')'"]
+    ]
+alg_parse_factor[_]: Result[(AlgExpr, List[AlgTok]), String] -> Err["Expected factor"]
+
+alg_parse_term_tail[lhs: AlgExpr, AlgTMul :: rest]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_factor[rest], [(rhs, rem)] -> alg_parse_term_tail[AlgEMul[lhs, rhs], rem]]
+alg_parse_term_tail[lhs: AlgExpr, AlgTDiv :: rest]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_factor[rest], [(rhs, rem)] -> alg_parse_term_tail[AlgEDiv[lhs, rhs], rem]]
+alg_parse_term_tail[lhs: AlgExpr, toks: List[AlgTok]]: Result[(AlgExpr, List[AlgTok]), String] -> Ok[(lhs, toks)]
+
+alg_parse_term[toks: List[AlgTok]]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_factor[toks], [(lhs, rest)] -> alg_parse_term_tail[lhs, rest]]
+
+alg_parse_expr_tail[lhs: AlgExpr, AlgTPlus :: rest]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_term[rest], [(rhs, rem)] -> alg_parse_expr_tail[AlgEAdd[lhs, rhs], rem]]
+alg_parse_expr_tail[lhs: AlgExpr, AlgTMinus :: rest]: Result[(AlgExpr, List[AlgTok]), String] ->
+    bind[alg_parse_term[rest], [(rhs, rem)] -> alg_parse_expr_tail[AlgESub[lhs, rhs], rem]]
+alg_parse_expr_tail[lhs: AlgExpr, toks: List[AlgTok]]: Result[(AlgExpr, List[AlgTok]), String] -> Ok[(lhs, toks)]
+
+alg_parse_expr[toks: List[AlgTok]]: Result[(AlgExpr, List[AlgTok]), String] ->
+    let term_res: Result[(AlgExpr, List[AlgTok]), String] = alg_parse_term[toks]
+    bind[term_res, [(lhs, rest)] -> alg_parse_expr_tail[lhs, rest]]
+
+alg_parse[buf: C.Ptr[C.Void], len: Int]: Result[AlgExpr, String] ->
+    let toks_res = alg_lex_aux[buf, 0, len, {}]
+    bind[toks_res, [toks] ->
+        bind[alg_parse_expr[toks], [(ast, rem)] ->
+            match rem with
+            | {} -> Ok[ast]
+            | _ -> Err["Trailing tokens"]
+        ]
+    ]
+
+alg_eval[AlgELit[n]]: Result[Int, String] -> Ok[n]
+alg_eval[AlgVarX]: Result[Int, String] -> Err["Unbound var x"]
+alg_eval[AlgVarY]: Result[Int, String] -> Err["Unbound var y"]
+alg_eval[AlgENeg[e]]: Result[Int, String] -> map[alg_eval[e], [v: Int] -> -v]
+alg_eval[AlgEAdd[a, b]]: Result[Int, String] ->
+    bind[alg_eval[a], [va: Int] -> map[alg_eval[b], [vb: Int] -> va + vb]]
+alg_eval[AlgESub[a, b]]: Result[Int, String] ->
+    bind[alg_eval[a], [va: Int] -> map[alg_eval[b], [vb: Int] -> va - vb]]
+alg_eval[AlgEMul[a, b]]: Result[Int, String] ->
+    bind[alg_eval[a], [va: Int] -> map[alg_eval[b], [vb: Int] -> va * vb]]
+alg_eval[AlgEDiv[a, b]]: Result[Int, String] ->
+    bind[alg_eval[a], [va: Int] ->
+        bind[alg_eval[b], [vb: Int] ->
+            if vb == 0 then Err["Division by zero"] else Ok[va / vb]
+        ]
+    ]
+
+alg_subst_and_eval[ast: AlgExpr]: Result[Int, String] ->
+    let sub = [ AlgVarX -> AlgELit[7] ] in ast
+    let simplified = alg_simp[sub]
+    alg_eval[simplified]
+
+test_alg_parser_rewrite_eval[]: Result[Unit, String] ->
+    -- "(10 + 2 * 3) - (8 / 2) + -1" (27 bytes) => 16 - 4 - 1 = 11
+    let s1 = "(10 + 2 * 3) - (8 / 2) + -1"
+    let r1 = bind[alg_parse[__string_to_buffer[s1], 27], [ast] -> alg_eval[alg_simp[ast]]]
+
+    -- Symbolic variable expression: "(x + 0) * 1 + (y - y) + 2 * x" (29 bytes)
+    let s2 = "(x + 0) * 1 + (y - y) + 2 * x"
+    let r2 = bind[alg_parse[__string_to_buffer[s2], 29], alg_subst_and_eval]
+
+    -- Division by zero and syntax error paths
+    let r_div0 = bind[alg_parse[__string_to_buffer["5 / (3 - 3)"], 11], [ast] -> alg_eval[alg_simp[ast]]]
+    let r_bad = alg_parse[__string_to_buffer["(1 + 2"], 6]
+
+    check_all[{
+        check_eq[r1, Ok[11]],
+        check_eq[r2, Ok[21]],
+        check_true[is_err[r_div0]],
+        check_true[is_err[r_bad]]
+    }]
+
+
+-- ============================================================
+-- Disjoint Set (Union-Find) & Kruskal MST (Imperative + Mergesort)
+-- ============================================================
+
+alg_dsu_find[parent: C.Ptr[C.Void], x: Int]: Int ->
+    var cur = x
+    while __buffer_get[parent, cur] != cur do
+        let p = __buffer_get[parent, cur]
+        let gp = __buffer_get[parent, p]
+        let _ = __buffer_set[parent, cur, gp]
+        cur <- p
+    cur
+
+alg_dsu_union[parent: C.Ptr[C.Void], rank: C.Ptr[C.Void], a: Int, b: Int]: Bool ->
+    let ra = alg_dsu_find[parent, a]
+    let rb = alg_dsu_find[parent, b]
+    if ra == rb then false
+    else
+        let rka = __buffer_get[rank, ra]
+        let rkb = __buffer_get[rank, rb]
+        if rka < rkb then
+            let _ = __buffer_set[parent, ra, rb]
+            true
+        elif rka > rkb then
+            let _ = __buffer_set[parent, rb, ra]
+            true
+        else
+            let _ = __buffer_set[parent, rb, ra]
+            let _ = __buffer_set[rank, ra, rka + 1]
+            true
+
+alg_kruskal_mst[n: Int, edges: List[(Int, Int, Int)]]: (Int, Int) ->
+    let parent = __buffer_alloc[n]
+    let rank = __buffer_alloc[n]
+    for i = 0 to n - 1 do
+        let _ = __buffer_set[parent, i, i]
+        ()
+    let sorted_edges = alg_mergesort[edges, [(_, _, w1: Int), (_, _, w2: Int)] -> w1 <= w2]
+    var total_weight = 0
+    var chosen = 0
+    for edge in sorted_edges do
+        let (u, v, w) = edge
+        if alg_dsu_union[parent, rank, u, v] then
+            total_weight <- total_weight + w
+            chosen <- chosen + 1
+    (total_weight, chosen)
+
+test_alg_kruskal_union_find[]: Result[Unit, String] ->
+    let edges = {
+        (0, 1, 4), (0, 2, 3), (1, 2, 5), (1, 4, 3),
+        (2, 3, 2), (2, 4, 6), (3, 4, 7), (3, 5, 4), (4, 5, 8)
+    }
+    let (mst_w, mst_cnt) = alg_kruskal_mst[6, edges]
+    check_all[{
+        check_eq[mst_w, 16],
+        check_eq[mst_cnt, 5]
+    }]
+
+
+-- ============================================================
+-- RLE Codec, Matrix Algebra (Float) & Lazy Newton Convergence
+-- ============================================================
+
+alg_rle_encode_aux[{}, acc: List[(Int, Int)]]: List[(Int, Int)] -> reverse[acc]
+alg_rle_encode_aux[x :: xs, {}]: List[(Int, Int)] -> alg_rle_encode_aux[xs, { (x, 1) }]
+alg_rle_encode_aux[x :: xs, (cur, cnt) :: tail] when x == cur : List[(Int, Int)] ->
+    alg_rle_encode_aux[xs, (cur, cnt + 1) :: tail]
+alg_rle_encode_aux[x :: xs, acc: List[(Int, Int)]]: List[(Int, Int)] ->
+    alg_rle_encode_aux[xs, (x, 1) :: acc]
+
+alg_repeat_n[_, n: Int, acc: List[Int]] when n <= 0 : List[Int] -> acc
+alg_repeat_n[v: Int, n: Int, acc: List[Int]]: List[Int] -> alg_repeat_n[v, n - 1, v :: acc]
+
+alg_rle_decode_aux[{}, acc: List[Int]]: Result[List[Int], String] -> Ok[acc]
+alg_rle_decode_aux[(_, cnt) :: _, _] when cnt <= 0 : Result[List[Int], String] ->
+    Err["Invalid RLE run count { cnt }"]
+alg_rle_decode_aux[(v, cnt) :: rest, acc: List[Int]]: Result[List[Int], String] ->
+    bind[alg_rle_decode_aux[rest, acc], [tail_list] -> Ok[alg_repeat_n[v, cnt, tail_list]]]
+
+alg_dot[xs: List[Float], ys: List[Float]]: Float ->
+    foldl[zip[xs, ys], [acc: Float, p] -> acc + (fst[p] * snd[p]), 0.0]
+
+alg_mat_col[mat: List[List[Float]], j: Int]: List[Float] ->
+    map[mat, [row] -> default_value[try_get[row, j], 0.0]]
+
+alg_mat_transpose[mat: List[List[Float]]]: List[List[Float]] ->
+    match mat with
+    | {} -> {}
+    | first_row :: _ ->
+        let ncols = length[first_row]
+        { alg_mat_col[mat, j] for j in { 0 .. (ncols - 1) } }
+
+alg_mat_mul[a: List[List[Float]], b: List[List[Float]]]: List[List[Float]] ->
+    let bt = alg_mat_transpose[b]
+    map[a, [row] -> map[bt, [col] -> alg_dot[row, col]]]
+
+type AlgFStream =
+    | AlgFCons[Float, AlgFStream]
+    | AlgFNil
+
+alg_newton_stream[s: Float, x: Float]: AlgFStream lazy ->
+    let next_x = 0.5 * (x + (s / x))
+    AlgFCons[x, alg_newton_stream[s, next_x]]
+
+alg_converge[AlgFNil, _: Float, _: Int]: Result[Float, String] -> Err["Empty stream"]
+alg_converge[AlgFCons[_, _], _: Float, 0]: Result[Float, String] -> Err["Did not converge"]
+alg_converge[AlgFCons[a, AlgFCons[b, rest]], tol: Float, fuel: Int] when abs[a - b] < tol : Result[Float, String] ->
+    Ok[b]
+alg_converge[AlgFCons[_, tail], tol: Float, fuel: Int]: Result[Float, String] ->
+    alg_converge[tail, tol, fuel - 1]
+
+test_alg_rle_matrix_and_newton[]: Result[Unit, String] ->
+    let raw = { 1, 1, 1, 5, 5, 2, 9, 9, 9, 9, 3 }
+    let encoded = alg_rle_encode_aux[raw, {}]
+    let decoded = alg_rle_decode_aux[encoded, {}]
+    let bad_rle = alg_rle_decode_aux[{ (1, 2), (7, 0) }, {}]
+
+    let mat_a = { { 1.0, 2.0, 3.0 }, { 4.0, 5.0, 6.0 } }
+    let mat_b = { { 7.0, 8.0 }, { 9.0, 10.0 }, { 11.0, 12.0 } }
+    let prod = alg_mat_mul[mat_a, mat_b]
+    let mat_a_t = alg_mat_transpose[mat_a]
+
+    let sqrt2_res = alg_converge[alg_newton_stream[2.0, 1.0], 0.000000001, 50]
+    let sqrt50_res = alg_converge[alg_newton_stream[50.0, 7.0], 0.000000001, 50]
+
+    check_all[{
+        check_eq[encoded, { (1, 3), (5, 2), (2, 1), (9, 4), (3, 1) }],
+        check_eq[decoded, Ok[raw]],
+        check_true[is_err[bad_rle]],
+        check_eq[prod, { { 58.0, 64.0 }, { 139.0, 154.0 } }],
+        check_eq[mat_a_t, { { 1.0, 4.0 }, { 2.0, 5.0 }, { 3.0, 6.0 } }],
+        check_true[unwrap_or[map[sqrt2_res, [r: Float] -> abs[(r * r) - 2.0] < 0.0000001], false]],
+        check_true[unwrap_or[map[sqrt50_res, [r: Float] -> abs[(r * r) - 50.0] < 0.0000001], false]]
+    }]
+
+
+-- ============================================================
+-- Test Registry
+-- ============================================================
+
+alg_tests[]: List[TestCase] ->
+    {
+        ("Algorithms: sorting (mergesort vs quicksort with HOF comparators)", [] -> test_alg_sorting[]),
+        ("Algorithms: binary search (recursive list vs imperative buffer)", [] -> test_alg_binary_search[]),
+        ("Algorithms: BST dictionary (ADT insert, lookup & in-order)", [] -> test_alg_bst_dictionary[]),
+        ("Algorithms: Dijkstra shortest paths & unreachable handling", [] -> test_alg_dijkstra[]),
+        ("Algorithms: DP 0/1 knapsack (buffer vs recursive) & edit distance", [] -> test_alg_dp_knapsack_and_edit[]),
+        ("Algorithms: Sieve of Eratosthenes, modpow & extended GCD", [] -> test_alg_number_theory[]),
+        ("Algorithms: N-Queens backtracking with comprehensions & guards", [] -> test_alg_nqueens[]),
+        ("Algorithms: arithmetic lexer, recursive-descent parser, rewriting & eval", [] -> test_alg_parser_rewrite_eval[]),
+        ("Algorithms: Kruskal MST & Union-Find (DSU buffer + mergesort)", [] -> test_alg_kruskal_union_find[]),
+        ("Algorithms: RLE codec, Float matrix algebra & lazy Newton root", [] -> test_alg_rle_matrix_and_newton[])
+    }

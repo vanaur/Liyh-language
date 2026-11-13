@@ -1,0 +1,414 @@
+--| This is the Tiny Standard Library (TSL): a small library destined for the tests of the language.   --|
+--| It is very simple and is not intended to be used as an actual standard library.                    --|
+
+
+export `addition`, `subtraction`, `multiplication`, `division`, `modulo`, `negation`
+export `greater`, `greater or equal`, `lower`, `lower or equal`, `equal`, `not equal`, `not`, `or`, `and`
+
+export plus, minus, asterisk, slash, percent, negate, min, max, abs
+export ge, geq, le, leq, eq, neq, not, double_bar, double_ampersand
+
+export print, println
+
+export fst, snd
+
+export Option, List, Result, `list cons`, foldl, length, reverse, map, concat, `concatenation`, head, tail, try_get,
+       try_find, contains, is_empty, try_head, filter, foldr, exists, zip, for_all, unzip, default_value,
+       default_value_with, is_some, is_none, get, bind, or_else, to_list, range, take, drop, flatten, flat_map,
+       sum, product, is_ok, is_err, map_err, unwrap_or, unwrap
+
+export assert_eq, assert_true
+
+
+--                                                    --
+-- Native arithmetic and boolean operators & printing --
+--                                                    --
+
+
+notation _a + _b -> plus[a, b]
+    name: "addition"
+    associativity: left
+    precedence: 100
+
+(a: Int + b: Int): Int -> __internal_add[a, b]
+(a: Float + b: Float): Float -> __internal_add[a, b]
+
+notation _a - _b -> minus[a, b]
+    name: "subtraction"
+    associativity: left
+    precedence: 100
+
+(a: Int - b: Int): Int -> __internal_sub[a, b]
+(a: Float - b: Float): Float -> __internal_sub[a, b]
+
+notation _a * _b -> asterisk[a, b]
+    name: "multiplication"
+    associativity: left
+    precedence: 110
+
+(a: Int * b: Int): Int -> __internal_mul[a, b]
+(a: Float * b: Float): Float -> __internal_mul[a, b]
+
+notation _a / _b -> slash[a, b]
+    name: "division"
+    associativity: left
+    precedence: 110
+
+(a: Int / b: Int): Int -> __internal_div[a, b]
+(a: Float / b: Float): Float -> __internal_div[a, b]
+
+notation _a % _b -> percent[a, b]
+    name: "modulo"
+    associativity: left
+    precedence: 110
+
+((a: Int) % (b: Int)): Int -> __internal_mod[a, b]
+
+notation - _a -> negate[a]
+    name: "negation"
+    associativity: right
+    precedence: 120
+
+(- (a: Int)): Int -> __internal_sub[0, a]
+(- (a: Float)): Float -> __internal_sub[0.0, a]
+
+notation _a > _b -> ge[a, b]
+    name: "greater"
+    associativity: none
+    precedence: 50
+
+(a: Int > b: Int): Bool -> __internal_ge[a, b]
+(a: Float > b: Float): Bool -> __internal_ge[a, b]
+
+notation _a >= _b -> geq[a, b]
+    name: "greater or equal"
+    associativity: none
+    precedence: 50
+
+(a: Int >= b: Int): Bool -> __internal_geq[a, b]
+(a: Float >= b: Float): Bool -> __internal_geq[a, b]
+
+notation _a < _b -> le[a, b]
+    name: "lower"
+    associativity: none
+    precedence: 50
+
+(a: Int < b: Int): Bool -> __internal_le[a, b]
+(a: Float < b: Float): Bool -> __internal_le[a, b]
+
+notation _a <= _b -> leq[a, b]
+    name: "lower or equal"
+    associativity: none
+    precedence: 50
+
+(a: Int <= b: Int): Bool -> __internal_leq[a, b]
+(a: Float <= b: Float): Bool -> __internal_leq[a, b]
+
+notation _a == _b -> eq[a, b]
+    name: "equal"
+    associativity: none
+    precedence: 50
+
+(a == b): Bool -> __internal_eq[a, b]
+
+notation _a != _b -> neq[a, b]
+    name: "not equal"
+    associativity: none
+    precedence: 50
+
+(a != b): Bool -> __internal_neq[a, b]
+
+notation not _a -> not[a]
+    name: "not"
+    associativity: right
+    precedence: 45
+
+(not (a: Bool)): Bool -> __internal_nt[a]
+
+notation _a || _b -> double_bar[a, b]
+    name: "or"
+    associativity: left
+    precedence: 30
+
+(true || _): Bool -> true
+(_ || true): Bool -> true
+(_ || _): Bool -> false
+
+notation _a && _b -> double_ampersand[a, b]
+    name: "and"
+    associativity: left
+    precedence: 40
+
+(false && _): Bool -> false
+(_ && false): Bool -> false
+(_ && _): Bool -> true
+
+print[msg: String] -> __internal_print[msg]
+println[msg: String] -> __internal_print["{ msg }\n"]
+
+
+--                --
+-- Math Utilities --
+--                --
+
+
+min[a: Int, b: Int] when a < b -> a
+min[_: Int, b: Int] -> b
+min[a: Float, b: Float] when a < b -> a
+min[_: Float, b: Float] -> b
+
+max[a: Int, b: Int] when a > b -> a
+max[_: Int, b: Int] -> b
+max[a: Float, b: Float] when a > b -> a
+max[_: Float, b: Float] -> b
+
+abs[x: Int] when x < 0 -> -x
+abs[x: Int] -> x
+abs[x: Float] when x < 0.0 -> -x
+abs[x: Float] -> x
+
+
+--                --
+-- Tuples & Pairs --
+--                --
+
+
+fst[(a, _)] -> a
+snd[(_, b)] -> b
+
+
+--              --
+-- Basic Option --
+--              --
+
+
+type Option['t] =
+    | Some['t]
+    | None
+
+map[Some[x], f] -> Some[f[x]]
+map[None, _] -> None
+
+default_value[Some[x], _] -> x
+default_value[None, x] -> x
+
+default_value_with[Some[x], _] -> x
+default_value_with[None, f] -> f[]
+
+is_some[Some[_]] -> true
+is_some[None] -> false
+
+is_none[Some[_]] -> false
+is_none[None] -> true
+
+contains[Some[x], x] -> true
+contains[Some[_], _] -> false
+contains[None, _] -> false
+
+exists[Some[x], f] -> f[x]
+exists[None, _] -> false
+
+filter[Some[x], f] when f[x] -> Some[x]
+filter[Some[_], _] -> None
+filter[None, _] -> None
+
+foldl[Some[x], f, acc] -> f[acc, x]
+foldl[None, _, acc] -> acc
+
+foldr[Some[x], f, acc] -> f[x, acc]
+foldr[None, _, acc] -> acc
+
+get[Some[x]] -> x
+get[None] invalid -> "(get) Matched 'None'"
+
+bind[Some[x], f] -> f[x]
+bind[None, _] -> None
+
+or_else[Some[x], _] -> Some[x]
+or_else[None, other] -> other
+
+to_list[Some[x]] -> { x }
+to_list[None] -> {}
+
+
+--                              --
+-- Basic Lists & Cons Notations --
+--                              --
+
+
+type List['t] =
+    | Cons['t, List['t]]
+    | Nil
+
+notation _x :: _xs -> Cons[x, xs]
+    name: "list cons"
+    associativity: right
+    precedence: 70
+
+foldl[{}, _, acc] -> acc
+foldl[x :: xs, f, acc] -> foldl[xs, f, f[acc, x]]
+
+foldr[lst: List['t], f, acc] ->
+    foldl[reverse[lst], [a, x] -> f[x, a], acc]
+
+length[lst: List['t]] ->
+    foldl[lst, [acc, _] -> acc + 1, 0]
+
+reverse[lst: List['t]] ->
+    foldl[lst, [acc, a] -> a :: acc, {}]
+
+map_aux[{}, _, acc] -> reverse[acc]
+map_aux[x :: xs, f, acc] -> map_aux[xs, f, f[x] :: acc]
+map[lst: List['t], f] -> map_aux[lst, f, {}]
+
+concat[lst1: List['t], lst2: List['t]] ->
+    foldl[reverse[lst1], [acc, a] -> a :: acc, lst2]
+
+notation _xs @ _ys -> concat[xs, ys]
+    name: "concatenation"
+    associativity: right
+    precedence: 80
+
+head[{}] assert -> "(head) Empty list."
+head[x :: xs] -> x
+
+tail[{}] -> {}
+tail[x :: xs] -> xs
+
+try_head[{}] -> None
+try_head[x :: _] -> Some[x]
+
+try_get_aux[x :: _, k, k] -> Some[x]
+try_get_aux[_ :: xs, k, i] -> try_get_aux[xs, k, i + 1]
+try_get_aux[_, k, _] -> None
+try_get[lst: List['t], k: Int] -> try_get_aux[lst, k, 0]
+
+try_find[{}, _] -> None
+try_find[x :: _, f] when f[x] -> Some[x]
+try_find[_ :: xs, f] -> try_find[xs, f]
+
+contains[{}, _] -> false
+contains[x :: _, x] -> true
+contains[_ :: xs, x] -> contains[xs, x]
+
+is_empty[{}] -> true
+is_empty[_ :: _] -> false
+
+filter_aux[{}, _, acc] -> reverse[acc]
+filter_aux[x :: xs, p, acc] when p[x] -> filter_aux[xs, p, x :: acc]
+filter_aux[_ :: xs, p, acc] -> filter_aux[xs, p, acc]
+filter[lst: List['t], p] -> filter_aux[lst, p, {}]
+
+exists[{}, _] -> false
+exists[x :: _, f] when f[x] -> true
+exists[_ :: xs, f] -> exists[xs, f]
+
+zip_aux[{}, {}, acc] -> reverse[acc]
+zip_aux[x :: xs, y :: ys, acc] -> zip_aux[xs, ys, (x, y) :: acc]
+zip_aux[_, _, _] invalid -> "(zip) Lists have not the same size."
+
+zip[lst1: List['t], lst2: List['u]] -> zip_aux[lst1, lst2, {}]
+
+unzip_aux[{}, xs, ys] -> (reverse[xs], reverse[ys])
+unzip_aux[(x, y) :: rest, xs, ys] -> unzip_aux[rest, x :: xs, y :: ys]
+
+unzip[lst: List[('t, 'u)]] -> unzip_aux[lst, {}, {}]
+
+for_all[{}, _] -> true
+for_all[x :: _, f] when not f[x] -> false
+for_all[_ :: xs, f] -> for_all[xs, f]
+
+range_up_int[curr: Int, step: Int, end: Int, acc: List[Int]] when curr > end -> reverse[acc]
+range_up_int[curr: Int, step: Int, end: Int, acc: List[Int]] -> range_up_int[curr + step, step, end, curr :: acc]
+
+range_down_int[curr: Int, step: Int, end: Int, acc: List[Int]] when curr < end -> reverse[acc]
+range_down_int[curr: Int, step: Int, end: Int, acc: List[Int]] -> range_down_int[curr + step, step, end, curr :: acc]
+
+range_step_int[start: Int, step: Int, end: Int] when step > 0 -> range_up_int[start, step, end, {}]
+range_step_int[start: Int, step: Int, end: Int] when step < 0 -> range_down_int[start, step, end, {}]
+range_step_int[_: Int, _: Int, _: Int] invalid -> "(range) Step cannot be zero."
+
+range[start: Int, None, end: Int] when start <= end : List[Int] -> range_up_int[start, 1, end, {}]
+range[start: Int, None, end: Int]: List[Int] -> range_down_int[start, -1, end, {}]
+range[start: Int, Some[step: Int], end: Int]: List[Int] -> range_step_int[start, step, end]
+
+range_up_float[curr: Float, step: Float, end: Float, acc: List[Float]] when curr > end -> reverse[acc]
+range_up_float[curr: Float, step: Float, end: Float, acc: List[Float]] -> range_up_float[curr + step, step, end, curr :: acc]
+
+range_down_float[curr: Float, step: Float, end: Float, acc: List[Float]] when curr < end -> reverse[acc]
+range_down_float[curr: Float, step: Float, end: Float, acc: List[Float]] -> range_down_float[curr + step, step, end, curr :: acc]
+
+range_step_float[start: Float, step: Float, end: Float] when step > 0.0 -> range_up_float[start, step, end, {}]
+range_step_float[start: Float, step: Float, end: Float] when step < 0.0 -> range_down_float[start, step, end, {}]
+range_step_float[_: Float, _: Float, _: Float] invalid -> "(range) Step cannot be zero."
+
+range[start: Float, None, end: Float] when start <= end : List[Float] -> range_up_float[start, 1.0, end, {}]
+range[start: Float, None, end: Float]: List[Float] -> range_down_float[start, -1.0, end, {}]
+range[start: Float, Some[step: Float], end: Float]: List[Float] -> range_step_float[start, step, end]
+
+take_aux[{}, _, acc] -> reverse[acc]
+take_aux[_, n, acc] when n <= 0 -> reverse[acc]
+take_aux[x :: xs, n, acc] -> take_aux[xs, n - 1, x :: acc]
+take[lst: List['t], n: Int] -> take_aux[lst, n, {}]
+
+drop[{}, _: Int] -> {}
+drop[lst: List['t], n: Int] when n <= 0 -> lst
+drop[_ :: xs, n: Int] -> drop[xs, n - 1]
+
+flatten_aux[{}, acc: List['t]] -> reverse[acc]
+flatten_aux[(xs: List['t]) :: xss, acc: List['t]] -> flatten_aux[xss, foldl[xs, [a, x] -> x :: a, acc]]
+flatten[lst: List[List['t]]] -> flatten_aux[lst, {}]
+
+flat_map_aux[{}, _: ['t] -> List['u], acc: List['u]] -> reverse[acc]
+flat_map_aux[x :: xs, f: ['t] -> List['u], acc: List['u]] -> flat_map_aux[xs, f, foldl[f[x], [a, y] -> y :: a, acc]]
+flat_map[lst: List['t], f: ['t] -> List['u]] -> flat_map_aux[lst, f, {}]
+
+sum[lst: List[Int]] ->
+    foldl[lst, [acc, x] -> acc + x, 0]
+
+product[lst: List[Int]] ->
+    foldl[lst, [acc, x] -> acc * x, 1]
+
+
+--             --
+-- Result Type --
+--             --
+
+
+type Result['t, 'e] =
+    | Ok['t]
+    | Err['e]
+
+is_ok[Ok[_]] -> true
+is_ok[Err[_]] -> false
+
+is_err[Ok[_]] -> false
+is_err[Err[_]] -> true
+
+map[Ok[x], f] -> Ok[f[x]]
+map[Err[e], _] -> Err[e]
+
+map_err[Ok[x], _] -> Ok[x]
+map_err[Err[e], f] -> Err[f[e]]
+
+bind[Ok[x], f] -> f[x]
+bind[Err[e], _] -> Err[e]
+
+unwrap_or[Ok[x], _] -> x
+unwrap_or[Err[_], default] -> default
+
+unwrap[Ok[x]] -> x
+unwrap[Err[e]] invalid -> "(unwrap) Matched 'Err': { e }"
+
+
+--                --
+-- Test Utilities --
+--                --
+
+
+assert_eq[actual, expected] when actual == expected -> ()
+assert_eq[actual, expected] assert -> "(assert_eq) Expected { expected }, got { actual }."
+
+assert_true[true] -> ()
+assert_true[false] assert -> "(assert_true) Expected 'true', got 'false'."
+

@@ -1,0 +1,44 @@
+--| Shared test framework for the Liyh language test suite. --|
+
+use TSL
+
+export TestFn, TestCase, check_eq, check_neq, check_true, check_false, check_all, run_suite
+
+
+type alias TestFn = [] -> Result[Unit, String]
+type alias TestCase = (String, TestFn)
+
+check_eq[actual, expected] when actual == expected : Result[Unit, String] -> Ok[()]
+check_eq[actual, expected]: Result[Unit, String] -> Err["Expected { expected }, got { actual }"]
+
+check_neq[actual, unexpected] when actual != unexpected : Result[Unit, String] -> Ok[()]
+check_neq[actual, unexpected]: Result[Unit, String] -> Err["Expected value different from { unexpected }"]
+
+check_true[true]: Result[Unit, String] -> Ok[()]
+check_true[false]: Result[Unit, String] -> Err["Expected 'true', got 'false'"]
+
+check_false[false]: Result[Unit, String] -> Ok[()]
+check_false[true]: Result[Unit, String] -> Err["Expected 'false', got 'true'"]
+
+check_all[{}]: Result[Unit, String] -> Ok[()]
+check_all[Cons[Ok[_], rest]]: Result[Unit, String] -> check_all[rest]
+check_all[Cons[Err[msg], _]]: Result[Unit, String] -> Err[msg]
+
+run_suite_aux[{}, passed: Int, failed: Int]: (Int, Int) -> (passed, failed)
+run_suite_aux[Cons[(name, fn), rest], passed: Int, failed: Int]: (Int, Int) ->
+    match fn[] with
+    | Ok[_] ->
+        println["[PASS] { name }"]
+        run_suite_aux[rest, passed + 1, failed]
+    | Err[msg] ->
+        println["[FAIL] { name } -> { msg }"]
+        run_suite_aux[rest, passed, failed + 1]
+
+run_suite[cases: List[TestCase]]: Bool ->
+    let total = length[cases]
+    println["Running { total } test(s)..."]
+    println["----------------------------------------"]
+    let (passed, failed) = run_suite_aux[cases, 0, 0]
+    println["----------------------------------------"]
+    println["Summary: { passed }/{ total } passed, { failed } failed."]
+    failed == 0

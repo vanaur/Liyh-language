@@ -1,0 +1,181 @@
+--| Tests for pattern matching: literals, or-patterns, as-patterns, non-linear patterns, guards, match, if/elif/else, and qualified constructors. --|
+
+use TSL
+use Tests.Framework
+
+export pattern_tests
+
+
+type PatColor =
+    | PatRed
+    | PatGreen
+    | PatBlue
+
+type PatPoint =
+    | PatPt[Int, Int]
+
+
+-- Literal Patterns & When-Guards --
+
+pat_classify_num[0]: String -> "binary"
+pat_classify_num[1]: String -> "binary"
+pat_classify_num[2]: String -> "small-prime"
+pat_classify_num[3]: String -> "small-prime"
+pat_classify_num[5]: String -> "small-prime"
+pat_classify_num[7]: String -> "small-prime"
+pat_classify_num[n: Int] when n < 0 : String -> "negative"
+pat_classify_num[_]: String -> "other"
+
+pat_grade_char['a']: String -> "excellent"
+pat_grade_char['A']: String -> "excellent"
+pat_grade_char['b']: String -> "good"
+pat_grade_char['B']: String -> "good"
+pat_grade_char[_]: String -> "other"
+
+test_pat_literals_and_or[]: Result[Unit, String] ->
+    check_all[{
+        check_eq[pat_classify_num[0], "binary"],
+        check_eq[pat_classify_num[1], "binary"],
+        check_eq[pat_classify_num[5], "small-prime"],
+        check_eq[pat_classify_num[-4], "negative"],
+        check_eq[pat_classify_num[9], "other"],
+        check_eq[pat_grade_char['A'], "excellent"],
+        check_eq[pat_grade_char['b'], "good"],
+        check_eq[pat_grade_char['z'], "other"]
+    }]
+
+
+-- As-Patterns --
+
+pat_dup_head[Cons[x, _] as full]: List[Int] -> x :: full
+pat_dup_head[{}]: List[Int] -> {}
+
+pat_wrap_pair[(a: Int, b: Int) as p]: (Int, (Int, Int)) -> (a + b, p)
+
+test_pat_as_patterns[]: Result[Unit, String] ->
+    check_all[{
+        check_eq[pat_dup_head[{ 10, 20 }], { 10, 10, 20 }],
+        check_eq[pat_dup_head[{}], {}],
+        check_eq[pat_wrap_pair[(3, 4)], (7, (3, 4))]
+    }]
+
+
+-- Non-Linear Patterns --
+
+pat_is_same[x, x]: Bool -> true
+pat_is_same[_, _]: Bool -> false
+
+pat_same_first[Cons[x, _], Cons[x, _]]: Bool -> true
+pat_same_first[_, _]: Bool -> false
+
+pat_diagonal[PatPt[x, x]]: Bool -> true
+pat_diagonal[PatPt[_, _]]: Bool -> false
+
+test_pat_non_linear[]: Result[Unit, String] ->
+    check_all[{
+        check_true[pat_is_same[7, 7]],
+        check_false[pat_is_same[7, 8]],
+        check_true[pat_is_same["abc", "abc"]],
+        check_false[pat_is_same["abc", "xyz"]],
+        check_true[pat_same_first[{ 1, 2, 3 }, { 1, 9 }]],
+        check_false[pat_same_first[{ 1, 2 }, { 2, 2 }]],
+        check_false[pat_same_first[{}, { 1 }]],
+        check_true[pat_diagonal[PatPt[5, 5]]],
+        check_false[pat_diagonal[PatPt[5, 6]]]
+    }]
+
+
+-- Match, Guards, Nested Match & if/elif/else --
+
+pat_nested_match[opt: Option[Result[Int, String]]]: String ->
+    match opt with
+    | None -> "none"
+    | Some[r] ->
+        match r with
+        | Ok[v] when v > 10 -> "big-ok"
+        | Ok[v] when v == 0 -> "zero-ok"
+        | Ok[_] -> "small-ok"
+        | Err[e] -> "err:{ e }"
+
+pat_sign_label[n: Int]: String ->
+    if n > 0 then "positive"
+    elif n < 0 then "negative"
+    else "zero"
+
+test_pat_match_and_if[]: Result[Unit, String] ->
+    check_all[{
+        check_eq[pat_nested_match[None], "none"],
+        check_eq[pat_nested_match[Some[Ok[42]]], "big-ok"],
+        check_eq[pat_nested_match[Some[Ok[0]]], "zero-ok"],
+        check_eq[pat_nested_match[Some[Ok[3]]], "small-ok"],
+        check_eq[pat_nested_match[Some[Err["bad"]]], "err:bad"],
+        check_eq[pat_sign_label[5], "positive"],
+        check_eq[pat_sign_label[-2], "negative"],
+        check_eq[pat_sign_label[0], "zero"]
+    }]
+
+
+-- Qualified Constructors --
+
+pat_color_code[PatColor.PatRed]: Int -> 1
+pat_color_code[PatColor.PatGreen]: Int -> 2
+pat_color_code[PatBlue]: Int -> 3
+
+test_pat_qualified_constructors[]: Result[Unit, String] ->
+    check_all[{
+        check_true[PatRed == PatColor.PatRed],
+        check_eq[pat_color_code[PatRed], 1],
+        check_eq[pat_color_code[PatColor.PatGreen], 2],
+        check_eq[pat_color_code[PatColor.PatBlue], 3]
+    }]
+
+
+-- Nested As-Patterns (Tuples + Records) & Specificity Ordering --
+
+pat_extract_nested[((a: Int, { x = xv: Int, y = yv: Int } as rec) as inner, tag: String) as outer] ->
+    let { x = rx: Int, y = ry: Int } = rec
+    let (ia, _) = inner
+    let (_, otag) = outer
+    (a + xv + yv + rx + ry + ia, "{ tag }:{ otag }")
+
+pat_spec_type[x: Int]: String -> "int"
+pat_spec_type[x: List['a]]: String -> "list"
+pat_spec_type[x: 'a]: String -> "generic"
+
+pat_quad[(0, 0)]: String -> "origin"
+pat_quad[(0, _)]: String -> "y-axis"
+pat_quad[(_, 0)]: String -> "x-axis"
+pat_quad[(_, _)]: String -> "quadrant"
+
+test_pat_nested_as_mixed[]: Result[Unit, String] ->
+    let sample = ((5, { x = 10, y = 20 }), "ok")
+    let (total, label) = pat_extract_nested[sample]
+    check_all[{
+        check_eq[total, 70],
+        check_eq[label, "ok:ok"]
+    }]
+
+test_pat_specificity_ordering[]: Result[Unit, String] ->
+    check_all[{
+        check_eq[pat_spec_type[42], "int"],
+        check_eq[pat_spec_type[{ 1, 2, 3 }], "list"],
+        check_eq[pat_spec_type["hello"], "generic"],
+        check_eq[pat_quad[(0, 0)], "origin"],
+        check_eq[pat_quad[(0, 7)], "y-axis"],
+        check_eq[pat_quad[(9, 0)], "x-axis"],
+        check_eq[pat_quad[(3, 4)], "quadrant"]
+    }]
+
+
+-- Test Registry --
+
+pattern_tests[]: List[TestCase] ->
+    {
+        ("Patterns: literals & multi-clause guards", [] -> test_pat_literals_and_or[]),
+        ("Patterns: as-patterns", [] -> test_pat_as_patterns[]),
+        ("Patterns: non-linear patterns", [] -> test_pat_non_linear[]),
+        ("Patterns: nested match, when guards & if/elif/else", [] -> test_pat_match_and_if[]),
+        ("Patterns: qualified & unqualified constructors", [] -> test_pat_qualified_constructors[]),
+        ("Patterns: nested as-patterns with mixed tuple/record destructuring", [] -> test_pat_nested_as_mixed[]),
+        ("Patterns: multi-clause specificity ordering", [] -> test_pat_specificity_ordering[])
+    }

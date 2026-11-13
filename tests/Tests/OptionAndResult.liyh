@@ -1,0 +1,103 @@
+--| Tests for TSL Option and Result types and operations. --|
+
+use TSL
+use Tests.Framework
+
+export opt_res_tests
+
+
+or_safe_div[_: Int, 0]: Option[Int] -> None
+or_safe_div[a: Int, b: Int]: Option[Int] -> Some[a / b]
+
+or_parse_positive[n: Int] when n > 0 : Result[Int, String] -> Ok[n]
+or_parse_positive[n: Int]: Result[Int, String] -> Err["non-positive: { n }"]
+
+or_res_div[_: Int, 0]: Result[Int, String] -> Err["div0"]
+or_res_div[a: Int, b: Int]: Result[Int, String] -> Ok[a / b]
+
+test_option_all_ops[]: Result[Unit, String] ->
+    let s: Option[Int] = Some[10]
+    let n: Option[Int] = None
+    let calls = __buffer_alloc[1]
+    let _ = __buffer_set[calls, 0, 0]
+    let unused = default_value_with[s, [] ->
+        let _ = __buffer_set[calls, 0, __buffer_get[calls, 0] + 1]
+        999
+    ]
+    let used = default_value_with[n, [] ->
+        let _ = __buffer_set[calls, 0, __buffer_get[calls, 0] + 1]
+        999
+    ]
+    check_all[{
+        check_true[is_some[s]],
+        check_false[is_some[n]],
+        check_false[is_none[s]],
+        check_true[is_none[n]],
+        check_eq[get[s], 10],
+        check_eq[default_value[s, 0], 10],
+        check_eq[default_value[n, 42], 42],
+        check_eq[unused, 10],
+        check_eq[used, 999],
+        check_eq[__buffer_get[calls, 0], 1],
+        check_eq[map[s, [x] -> x + 5], Some[15]],
+        check_eq[map[n, [x: Int] -> x + 5], None],
+        check_true[contains[s, 10]],
+        check_false[contains[s, 11]],
+        check_false[contains[n, 10]],
+        check_true[exists[s, [x] -> x > 5]],
+        check_false[exists[s, [x] -> x > 50]],
+        check_false[exists[n, [x: Int] -> x > 0]],
+        check_eq[filter[s, [x] -> x == 10], Some[10]],
+        check_eq[filter[s, [x] -> x == 0], None],
+        check_eq[filter[n, [x: Int] -> x == 0], None],
+        check_eq[foldl[s, [acc, x] -> acc + x, 5], 15],
+        check_eq[foldl[n, [acc: Int, x: Int] -> acc + x, 5], 5],
+        check_eq[foldr[s, [x, acc] -> x - acc, 3], 7],
+        check_eq[foldr[n, [x: Int, acc: Int] -> x - acc, 3], 3],
+        check_eq[bind[s, [x] -> or_safe_div[100, x]], Some[10]],
+        check_eq[bind[Some[0], [x] -> or_safe_div[100, x]], None],
+        check_eq[bind[n, [x: Int] -> or_safe_div[100, x]], None],
+        check_eq[or_else[s, Some[77]], Some[10]],
+        check_eq[or_else[n, Some[77]], Some[77]],
+        check_eq[to_list[s], { 10 }],
+        check_eq[to_list[n], {}]
+    }]
+
+test_result_all_ops[]: Result[Unit, String] ->
+    let ok_val: Result[Int, String] = Ok[20]
+    let err_val: Result[Int, String] = Err["boom"]
+    let piped_ok =
+        or_parse_positive[20]
+        |> [r] -> bind[r, [x] -> or_res_div[100, x]]
+        |> [r] -> map[r, [x] -> x * 3]
+    let piped_err =
+        or_parse_positive[-4]
+        |> [r] -> bind[r, [x] -> or_res_div[100, x]]
+        |> [r] -> map_err[r, [e] -> "ERR({ e })"]
+    check_all[{
+        check_true[is_ok[ok_val]],
+        check_false[is_ok[err_val]],
+        check_false[is_err[ok_val]],
+        check_true[is_err[err_val]],
+        check_eq[unwrap[ok_val], 20],
+        check_eq[unwrap_or[ok_val, -1], 20],
+        check_eq[unwrap_or[err_val, -1], -1],
+        check_eq[map[ok_val, [x] -> x + 1], Ok[21]],
+        check_eq[map[err_val, [x: Int] -> x + 1], Err["boom"]],
+        check_eq[map_err[ok_val, [e: String] -> "wrap:{ e }"], Ok[20]],
+        check_eq[map_err[err_val, [e] -> "wrap:{ e }"], Err["wrap:boom"]],
+        check_eq[bind[ok_val, [x] -> or_res_div[40, x]], Ok[2]],
+        check_eq[bind[Ok[0], [x] -> or_res_div[40, x]], Err["div0"]],
+        check_eq[bind[err_val, [x: Int] -> or_res_div[40, x]], Err["boom"]],
+        check_eq[piped_ok, Ok[15]],
+        check_eq[piped_err, Err["ERR(non-positive: -4)"]]
+    }]
+
+
+-- Test Registry --
+
+opt_res_tests[]: List[TestCase] ->
+    {
+        ("Option: predicates, default_value(_with), map, filter, folds, bind, or_else & to_list", [] -> test_option_all_ops[]),
+        ("Result: is_ok/is_err, map, map_err, bind, unwrap(_or) & pipelines", [] -> test_result_all_ops[])
+    }

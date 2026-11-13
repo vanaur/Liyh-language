@@ -1,0 +1,100 @@
+--| Basic primitives, arithmetic, comparisons, boolean logic, strings & casts. --|
+
+use TSL
+use Tests.Framework
+
+export basics_tests
+
+
+test_basics_arithmetic[]: Result[Unit, String] ->
+    let x = 10
+    let y = 3
+    check_all[{
+        check_eq[x + y, 13],
+        check_eq[x - y, 7],
+        check_eq[x * y, 30],
+        check_eq[x / y, 3],
+        check_eq[x % y, 1],
+        check_eq[-x, -10],
+        check_eq[-(-x), 10],
+        check_eq[1 + 2 * 3, 7],
+        check_eq[(1 + 2) * 3, 9],
+        check_eq[-x + 2, -8],
+        check_eq[-x * 2, -20]
+    }]
+
+test_basics_floats[]: Result[Unit, String] ->
+    let a = 5.5
+    let b = 2.0
+    check_all[{
+        check_eq[a + b, 7.5],
+        check_eq[a - b, 3.5],
+        check_eq[a * b, 11.0],
+        check_eq[a / b, 2.75],
+        check_eq[-a, -5.5],
+        check_eq[min[3.5, 2.5], 2.5],
+        check_eq[max[3.5, 2.5], 3.5],
+        check_eq[abs[-3.25], 3.25],
+        check_eq[abs[3.25], 3.25]
+    }]
+
+test_basics_comparisons[]: Result[Unit, String] ->
+    check_all[{
+        check_true[5 > 3],
+        check_false[3 > 5],
+        check_true[5 >= 5],
+        check_true[3 < 5],
+        check_true[5 <= 5],
+        check_true[42 == 42],
+        check_true[42 != 43],
+        check_true["abc" == "abc"],
+        check_true["abc" != "def"],
+        check_true['a' == 'a'],
+        check_true[(1, "x") == (1, "x")],
+        check_true[{ 1, 2 } == { 1, 2 }],
+        check_eq[min[10, -3], -3],
+        check_eq[max[10, -3], 10],
+        check_eq[abs[-42], 42]
+    }]
+
+test_basics_boolean_logic[]: Result[Unit, String] ->
+    check_all[{
+        check_false[false && true],
+        check_false[true && false],
+        check_false[false && false],
+        check_true[true && true],
+        check_true[true || false],
+        check_true[false || true],
+        check_true[true || true],
+        check_false[false || false],
+        check_true[not false],
+        check_false[not true],
+        check_true[(true && false) || true],
+        check_false[(false || false) && true]
+    }]
+
+test_basics_strings_and_casts[]: Result[Unit, String] ->
+    let name = "Liyh"
+    let n = 42
+    let s1 = "Hello, { name } #{ n }!"
+    let s2 = __internal_strcat["foo", "bar"]
+    check_all[{
+        check_eq[s1, "Hello, Liyh #42!"],
+        check_eq[s2, "foobar"],
+        check_true[__internal_is_int[42]],
+        check_false[__internal_is_int[42.0]],
+        check_true[__internal_is_float[3.14]],
+        check_true[__internal_is_string["hi"]],
+        check_true[__internal_is_bool[true]],
+        check_true[__internal_is_numeric[42]],
+        check_true[__internal_is_numeric[3.14]]
+    }]
+
+basics_tests[]: List[TestCase] ->
+    {
+        ("Basics: integer arithmetic & precedence", [] -> test_basics_arithmetic[]),
+        ("Basics: float arithmetic & math", [] -> test_basics_floats[]),
+        ("Basics: comparisons & structural equality", [] -> test_basics_comparisons[]),
+        ("Basics: boolean logic", [] -> test_basics_boolean_logic[]),
+        ("Basics: strings, interpolation & predicates", [] -> test_basics_strings_and_casts[])
+    }

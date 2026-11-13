@@ -1,0 +1,184 @@
+--| Tests for functions, lambdas, closures, currying, HOFs, shadowing, and recursion. --|
+
+use TSL
+use Tests.Framework
+
+export fn_tests
+
+
+-- Constants & Multi-clause Recursion --
+
+fn_const_offset: Int -> 100
+
+fn_fact[0]: Int -> 1
+fn_fact[n: Int]: Int -> n * fn_fact[n - 1]
+
+fn_fib[0]: Int -> 0
+fn_fib[1]: Int -> 1
+fn_fib[n: Int]: Int -> fn_fib[n - 1] + fn_fib[n - 2]
+
+fn_sum_tail_aux[0, acc: Int]: Int -> acc
+fn_sum_tail_aux[n: Int, acc: Int]: Int -> fn_sum_tail_aux[n - 1, acc + n]
+fn_sum_tail[n: Int]: Int -> fn_sum_tail_aux[n, 0]
+
+test_fn_recursion_and_constants[]: Result[Unit, String] ->
+    check_all[{
+        check_eq[fn_const_offset[], 100],
+        check_eq[fn_fact[0], 1],
+        check_eq[fn_fact[5], 120],
+        check_eq[fn_fib[0], 0],
+        check_eq[fn_fib[1], 1],
+        check_eq[fn_fib[7], 13],
+        check_eq[fn_sum_tail[100], 5050]
+    }]
+
+
+-- Mutual Recursion --
+
+fn_even[0]: Bool -> true
+fn_even[n: Int]: Bool -> fn_odd[n - 1]
+
+fn_odd[0]: Bool -> false
+fn_odd[n: Int]: Bool -> fn_even[n - 1]
+
+test_fn_mutual_recursion[]: Result[Unit, String] ->
+    check_all[{
+        check_true[fn_even[0]],
+        check_false[fn_odd[0]],
+        check_true[fn_even[12]],
+        check_false[fn_even[11]],
+        check_true[fn_odd[11]],
+        check_false[fn_odd[12]]
+    }]
+
+
+-- Lambdas, Closures & Currying --
+
+fn_make_adder[k: Int] -> [x: Int] -> x + k
+
+fn_retfun[4] -> [s: String] -> "got: { s }"
+fn_retfun[n: Int] -> [s: String] -> "{ n }:{ s }"
+
+fn_curried[a: Int]: [Int] -> [Int] -> Int -> [b: Int] -> [c: Int] -> a * 100 + b * 10 + c
+
+fn_compose[f, g] -> [x] -> f[g[x]]
+
+test_fn_closures_and_currying[]: Result[Unit, String] ->
+    let add5 = fn_make_adder[5]
+    let add10 = fn_make_adder[10]
+    let f4 = fn_retfun[4]
+    let double = [x: Int] -> x * 2
+    let inc = [x: Int] -> x + 1
+    let double_then_inc = fn_compose[inc, double]
+    let step2 = fn_curried[1][2]
+    check_all[{
+        check_eq[add5[3], 8],
+        check_eq[add10[3], 13],
+        check_eq[f4["hello"], "got: hello"],
+        check_eq[fn_retfun[4]["world"], "got: world"],
+        check_eq[fn_retfun[7]["ok"], "7:ok"],
+        check_eq[step2[3], 123],
+        check_eq[fn_curried[4][5][6], 456],
+        check_eq[double_then_inc[6], 13]
+    }]
+
+
+-- Higher-Order Functions, Overloaded Args & Promotion --
+
+fn_ov_add[x: Int, y: Int]: Int -> x + y
+fn_ov_add[x: Float, y: Float]: Float -> x + y
+
+fn_apply2[f, x, y] -> f[x, y]
+fn_apply_num[f: [Float] -> Float, x: Float]: Float -> f[x]
+
+test_fn_hof_and_overloads[]: Result[Unit, String] ->
+    let int_res = fn_apply2[fn_ov_add, 3, 4]
+    let flt_res = fn_apply2[fn_ov_add, 1.5, 2.5]
+    let prom_res = fn_apply_num[[x] -> x + 1.5, 10]
+    check_all[{
+        check_eq[int_res, 7],
+        check_eq[flt_res, 4.0],
+        check_eq[prom_res, 11.5]
+    }]
+
+
+-- Pipe Operator & Lexical Shadowing --
+
+fn_shadow_mul[x: Int, y: Int]: Int -> x * y
+
+fn_test_shadow[x: Int]: Int ->
+    let fn_shadow_mul = [a: Int, b: Int] -> a + b
+    fn_shadow_mul[x, 5]
+
+test_fn_pipes_and_shadowing[]: Result[Unit, String] ->
+    let piped =
+        5 |> [x: Int] -> x * 3
+          |> [x: Int] -> x + 2
+    check_all[{
+        check_eq[piped, 17],
+        check_eq[fn_shadow_mul[3, 5], 15],
+        check_eq[fn_test_shadow[3], 8]
+    }]
+
+
+-- Deeply Nested Closures, Deep TCO & Partial Reuse --
+
+fn_deep_scope[a: Int] ->
+    let x = a + 1
+    in ([b: Int] ->
+        let y = x * 2 + b
+        in ([c: Int] ->
+            let x = y + 10
+            in ([d: Int] -> x + y + c + d)))
+
+fn_tco_sum[0, acc: Int]: Int -> acc
+fn_tco_sum[n: Int, acc: Int]: Int -> fn_tco_sum[n - 1, acc + n]
+
+fn_curried_poly[a: Int] -> [b: Int] -> [c: Int] -> (a * 100) + (b * 10) + c
+
+test_fn_deep_nested_closures[]: Result[Unit, String] ->
+    -- a=3 -> outer x=4; b=5 -> y=13; inner x=23; c=2, d=4 => 23+13+2+4 = 42
+    let l1 = fn_deep_scope[3]
+    let l2 = l1[5]
+    let l3 = l2[2]
+    let l3_alt = l2[10]
+    check_all[{
+        check_eq[l3[4], 42],
+        check_eq[l3_alt[4], 50],
+        check_eq[fn_deep_scope[1][1][1][1], 22]
+    }]
+
+test_fn_deep_tco[]: Result[Unit, String] ->
+    -- Note: integer literals > Int32.MaxValue throw OverflowException in BytecodeCompiler.compileLiteral; compute expected at runtime (62-bit VM int).
+    let expected = 100000 * 100001 / 2
+    let total = fn_tco_sum[100000, 0]
+    check_eq[total, expected]
+
+test_fn_partial_reuse[]: Result[Unit, String] ->
+    let base2 = fn_curried_poly[2]
+    let p23 = base2[3]
+    let p27 = base2[7]
+    let a = p23[4]
+    let b = p23[9]
+    let c = p27[1]
+    check_all[{
+        check_eq[a, 234],
+        check_eq[b, 239],
+        check_eq[c, 271],
+        check_eq[p23[0], fn_curried_poly[2][3][0]]
+    }]
+
+
+-- Test Registry --
+
+fn_tests[]: List[TestCase] ->
+    {
+        ("Functions: recursion, tail-recursion & constants", [] -> test_fn_recursion_and_constants[]),
+        ("Functions: mutual recursion (even/odd)", [] -> test_fn_mutual_recursion[]),
+        ("Functions: closures, currying & composition", [] -> test_fn_closures_and_currying[]),
+        ("Functions: HOFs with overloaded functions & numeric promotion", [] -> test_fn_hof_and_overloads[]),
+        ("Functions: pipe operator & lexical shadowing", [] -> test_fn_pipes_and_shadowing[]),
+        ("Functions: deeply nested closures & multi-level lexical scoping", [] -> test_fn_deep_nested_closures[]),
+        ("Functions: tail-call optimization verification with deep stack", [] -> test_fn_deep_tco[]),
+        ("Functions: currying partial applications equality & reuse", [] -> test_fn_partial_reuse[])
+    }
