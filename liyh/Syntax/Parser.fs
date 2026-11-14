@@ -1597,55 +1597,57 @@ module Parser =
             let mixfixPatternParser = engine.CreateParser operators atomicPattern
 
             let currentParser = parse {
-                return! pipe5
-                    (spacesOrComment >>. between (skipChar '(') (skipChar ')') mixfixPatternParser)
+                let! lhsStartPos = spacesOrComment >>. getPosition
+                let! lhsPattern = between (skipChar '(') (skipChar ')') mixfixPatternParser
+                let! lhsEndPos = getPosition
+
+                return! pipe4
                     (spacesOrComment >>. opt (keyword "when" <?> "when-clause" >>? spacesOrComment >>. parseExpressionRef))
                     (spacesOrComment >>. opt (skipChar ':' <?> "rule's type" >>? spacesOrComment >>. TypeParser.parseType))
                     (spacesOrComment >>. opt (parseWithPos parseStrategy))
                     (spacesOrComment >>. skipString "->" <?> "rewriting expression" >>. parseExpressionRef)
-                    (fun lhsPattern whenClause type' strategy rewriting ->
+                    (fun whenClause type' strategy rewriting ->
                         // Extract the head symbol and collect patterns
                         let rec findHeadAndPatterns p =
                             match p.Node with
-                            | Pattern.IdentPattern id -> (Some id, [])
+                            | Pattern.IdentPattern id -> (Some id.Name.Node, [])
                             | Pattern.MixfixOperatorPattern(a, b) ->
                                 let op = operators |> List.find (fun x -> x.Name = a)
 
-                                // Try to extract an IdentifierWithPos from op.RewritesTo.
-                                // If none found, fallback to the operator name with lhsPattern positions.
                                 let extractIdFromExpr (e: ExpressionWithPos) =
                                     let rec aux (ex: ExpressionWithPos) =
                                         match ex.Node with
-                                        | Identifier id -> Some id
+                                        | Identifier id -> Some id.Name.Node
                                         | Apply app -> aux app.LHS
                                         | _ -> None
                                     aux e
 
-                                let headId =
+                                let headName =
                                     match extractIdFromExpr op.RewritesTo with
-                                    | Some id -> id
+                                    | Some nameStr -> nameStr
                                     | None -> failwith "??"
 
-                                (Some headId, b)
+                                (Some headName, b)
+
                             | Pattern.ApplyPattern (base', args) ->
                                 let (headOpt, basePatterns) = findHeadAndPatterns base'
-                                // collect patterns coming from each argument (ignore their head ids)
                                 let argPatterns = args |> List.collect (fun arg -> snd (findHeadAndPatterns arg))
                                 (headOpt, basePatterns @ argPatterns)
+
                             | _ -> (None, [ p ])
                         
-                        let (headSymbolOpt, patterns) = findHeadAndPatterns lhsPattern
+                        let (headNameOpt, patterns) = findHeadAndPatterns lhsPattern
 
                         let name = 
-                            match headSymbolOpt with
-                            | Some id -> 
-                                { Node = id.Name.Node
-                                  StartPos = id.Name.StartPos
-                                  EndPos = id.Name.EndPos }
+                            match headNameOpt with
+                            | Some nameStr -> 
+                                { Node = nameStr
+                                  StartPos = lhsStartPos
+                                  EndPos = lhsEndPos }
                             | None -> 
                                 { Node = "_mixfix_rule"
-                                  StartPos = lhsPattern.StartPos
-                                  EndPos = lhsPattern.EndPos }
+                                  StartPos = lhsStartPos
+                                  EndPos = lhsEndPos }
 
                         TopLevel.Rule
                             { Name = name
