@@ -247,18 +247,24 @@ type private Env =
           InSymbolicScope = false }
 
     member public this.TryFindSignature(name: string) : Scheme list option =
-        match Map.tryFind name this.LocalScope.Signatures with
-        | Some s -> Some s
-        | None -> Map.tryFind name this.ImportedScope.Signatures
+        let local = Map.tryFind name this.LocalScope.Signatures |> Option.defaultValue []
+        let imported = Map.tryFind name this.ImportedScope.Signatures |> Option.defaultValue []
+
+        match local @ imported with
+        | [] -> None
+        | combined -> Some combined
 
     member public this.ContainsSignature(name: string) : bool =
         Map.containsKey name this.LocalScope.Signatures
         || Map.containsKey name this.ImportedScope.Signatures
 
     member this.TryFindConstructor(name: string) : ConstructorDef list option =
-        match Map.tryFind name this.LocalScope.Constructors with
-        | Some c -> Some c
-        | None -> Map.tryFind name this.ImportedScope.Constructors
+        let local = Map.tryFind name this.LocalScope.Constructors |> Option.defaultValue []
+        let imported = Map.tryFind name this.ImportedScope.Constructors |> Option.defaultValue []
+
+        match local @ imported with
+        | [] -> None
+        | combined -> Some combined
 
     member this.ContainsConstructor(name: string) : bool =
         Map.containsKey name this.LocalScope.Constructors

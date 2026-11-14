@@ -265,17 +265,29 @@ module private Rules =
                         | _ -> false)
 
                 if hasOutermost then
-                    let hasFallback =
+                    let hasLocalFallback =
                         arityRules
                         |> List.exists (fun (r, _) ->
                             match Option.map removePos r.Strategy with
                             | Some Outermost -> false
                             | _ -> true)
 
-                    if not hasFallback then
-                        let rep, _ = List.head arityRules
-                        let ruleName = removePos rep.Name
+                    let rep, _ = List.head arityRules
+                    let ruleName = removePos rep.Name
 
+                    let hasImportedFallback =
+                        match env.ImportedScope.Signatures.TryFind ruleName with
+                        | Some schemes ->
+                            schemes
+                            |> List.exists (fun (Scheme(_, _, body, _)) ->
+                                match body.Prune() with
+                                | TArrow(args, _, _) -> List.length args = arity // the warning would have been raised in the other module
+                                | _ -> arity = 0)
+                        | None -> false
+
+                    let hasFallback = hasLocalFallback || hasImportedFallback
+
+                    if not hasFallback then
                         let desc = sprintf "Rule '%s' (arity %d) defines 'outermost' clause(s), but lacks a non-'outermost' fallback clause." ruleName arity
                         let hint = "To prevent unreduced terms from existing in a non-symbolic environment, add a non-'outermost' base clause."
                         tsCtx.ReportWarning WarningCode.MissingFallbackClauseWarning desc [] hint rep.Name
