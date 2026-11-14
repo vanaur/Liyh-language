@@ -1863,6 +1863,35 @@ module public BytecodeCompiler =
                 let paddedComment = comment.PadRight(maxLength)
                 builder.Comment($"{paddedComment}  ;"))
 
+            // Groups together all labels that share the same de-mangled name and the same arity.
+            // Order of precedence: contexts > non-mangled rules > mangled overloads.
+            let overloadChains =
+                globalLabels
+                |> Map.toList
+                |> List.map (fun (info, label) ->
+                    let baseName =
+                        match info.ContextName with
+                        | Some ctx -> ContextResolution.uncreateContextualName info.Name ctx
+                        | None -> info.Name
+                        |> demangledOverload
+
+                    (baseName, info.Arity), (info, label)
+                )
+                |> List.groupBy fst
+                |> List.map (fun (key, entries) ->
+                    let sorted =
+                        entries
+                        |> List.map snd
+                        |> List.sortBy (fun (info, _) ->
+                            if info.ContextName.IsSome then 0
+                            elif not (info.Name.Contains "@") then 1
+                            else 2
+                        )
+                        |> List.map snd
+                    (key, sorted)
+                )
+                |> Map.ofList
+
             for KeyValue(ruleInfo, rules) in groupedRules do
                 let { Name = symbolName; Arity = arity; Strategy = strategy } = ruleInfo
                 let label = globalLabels.[ruleInfo]
@@ -1897,6 +1926,75 @@ module public BytecodeCompiler =
                     | Some contextName -> ContextResolution.uncreateContextualName symbolName contextName
                     | None -> symbolName
                     |> demangledOverload
+
+                let fallback mismatchTarget =
+
+                    // The `tryFallbackToGlobal` mechanism prevents a local context from completely shadowing
+                    // global functions that share the same name but do not satisfy the current context's rules.
+                    // This ensures the implementation of the "overlay" resolution semantics: local definitions
+                    // take precedence, followed by global ones, and finally symbolic data constructions.
+
+                    // Finds the next label in the list of overload fallbacks.
+                    let nextFallbackLabelOpt =
+                        match Map.tryFind (originalName, arity) overloadChains with
+                        | Some labels ->
+                            match List.tryFindIndex (( = ) label) labels with
+                            | Some idx when idx + 1 < labels.Length -> Some labels.[idx + 1]
+                            | _ -> None
+                        | None -> None
+
+                    let tryFallbackToNextOverload () =
+                        match nextFallbackLabelOpt with
+                        | None -> false // AllocData
+                        | Some nextLabel ->
+                            builder.Tailcall(nextLabel, List.ofArray argRegs)
+                            true
+
+                    match strategy with
+                    | Outermost ->
+
+                        // In case of fallback, we force the arguments because nothing else matched.
+                        // We force the arguments to see if a sub-reduction unblocks the rule.
+
+                        let newArgs = Array.map builder.Force argRegs
+
+                        let labelRetry = freshLabel()
+                        let labelStable = freshLabel()
+
+                        // Check if an argument changed after this FORCE.
+                        // If `oldReg != newReg` it means that a reduction has taken place.
+                        // If there is a difference, immediately jump to the RETRY label.
+
+                        for (oldReg, newReg) in Array.zip argRegs newArgs do
+                            let isDifferent = builder.NotEqual(oldReg, newReg)
+                            builder.JumpTrue(isDifferent, labelRetry)
+
+                        builder.Jump(labelStable)
+
+                        // RETRY label: at least one argument has changed, so we restart the
+                        // function (the root) with the new reduced arguments.
+
+                        builder.SetLabel(labelRetry)
+                        builder.Tailcall(label, List.ofArray newArgs)
+
+                        // STABLE label: a normal form has been reached (or blocked at the root),
+                        // so we reconstruct the symbolic term.
+
+                        builder.SetLabel(labelStable)
+                        match nextFallbackLabelOpt with
+                        | Some nextLabel ->
+                            builder.Tailcall(nextLabel, List.ofArray newArgs)
+                            builder.Alloc() // dummy
+                        | None ->
+                            builder.AllocData(originalName, List.ofArray newArgs, ?target = mismatchTarget)
+
+                    | _ ->
+                        if tryFallbackToNextOverload() then
+                            builder.Alloc() // dummy
+                        else
+                            builder.AllocData(originalName, List.ofArray argRegs, ?target = mismatchTarget)
+
+                (*
 
                 let fallback mismatchTarget =
 
@@ -1957,6 +2055,8 @@ module public BytecodeCompiler =
                             builder.Alloc() // dummy
                         else
                             builder.AllocData(originalName, List.ofArray argRegs, ?target = mismatchTarget)
+
+                *)
 
                 let onMatch isTail ruleIndex leafContext matchTarget =
                     let rule = rulesArray.[ruleIndex]
