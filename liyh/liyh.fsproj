@@ -48,7 +48,6 @@
 
     <Compile Include="Core/Core.fs" />
     <Compile Include="Core/Helper.fs" />
-    <Compile Include="Core/Substitution.fs" />
     <Compile Include="Core/Builtin.fs" />
     <Compile Include="Core/PrettyPrinter.fs" />
     <Compile Include="Core/DecisionTree/DecisionTree.fs" />
