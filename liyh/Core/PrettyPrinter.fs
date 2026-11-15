@@ -81,27 +81,11 @@ module PrettyPrinter =
 
                 sprintf "\n%s" (String.concat "\n" lines)
 
-        | Closure { Env = env
-                    Parameters = parameters
-                    Value = body } ->
-            let envStr =
-                if Map.isEmpty env then
-                    ""
-                else
-                    let envItems =
-                        env
-                        |> Map.toList
-                        |> List.map (fun (k, v) -> sprintf "'%s = %s" k (prettyPrintExprInternal v depth))
-
-                    sprintf "{ %s }" (String.concat "; " envItems)
-
+        | Closure { Parameters = parameters; Value = body } ->
             let paramsStr = String.concat ", " parameters
             let bodyStr = prettyPrintExprInternal body depth
 
-            if String.IsNullOrEmpty envStr then
-                sprintf "closure[%s] -> %s" paramsStr bodyStr
-            else
-                sprintf "closure%s[%s] -> %s" envStr paramsStr bodyStr
+            sprintf "closure[%s] -> %s" paramsStr bodyStr
 
         | FunctionalApplication { Base = func; Arguments = args } ->
             let funcStr = prettyPrintExprInternal func depth

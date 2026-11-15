@@ -573,18 +573,8 @@ module public CoreCompiler =
                 | TermSequence seq -> TermSequence (bindingStmts @ seq)
                 | _ -> TermSequence (bindingStmts @ [ originalBody ])
 
-        let boundParameters = Set.ofList parameters
-        let freeVars, asDefined = freeVariables boundParameters newBody
-        let freeVars = freeVars - asDefined
-
-        let capturedEnv =
-            freeVars
-            |> Set.fold (fun env var -> Map.add var (Variable var) env) Map.empty
-
         Closure
-            { Env = capturedEnv
-              IsEvaluated = false
-              Parameters = parameters
+            { Parameters = parameters
               Value = newBody }
 
     and private compileMatch (cstate: State) (match': TMatch) =

@@ -66,9 +66,7 @@ and public CoreTermMatch =
       Cases: (CoreTerm * CoreTerm) list }
 
 and public Closure =
-    { Env: Map<string, CoreTerm>
-      IsEvaluated: bool
-      Parameters: string list
+    { Parameters: string list
       Value: CoreTerm }
 
 and public FunctionalApplication =

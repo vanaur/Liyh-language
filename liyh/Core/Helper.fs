@@ -39,13 +39,10 @@ module public Helper =
                 { BaseRecord = Option.map flattenTermSequence baseRecord
                   Extension = fields |> List.map (fun (name, value) -> (name, flattenTermSequence value)) }
 
-        | Closure { Env = env
-                    Parameters = params
+        | Closure { Parameters = params
                     Value = body } ->
             Closure
-                { Env = env
-                  IsEvaluated = false
-                  Parameters = params
+                { Parameters = params
                   Value = flattenTermSequence body }
 
         | FunctionalApplication { Base = func; Arguments = args } ->

@@ -80,13 +80,10 @@ module AlphaConversion =
 
         | Closure c ->
             let fresh, extended = Set.ofList c.Parameters |> extendRenaming getUniqueVariable renaming
-            let newEnv = c.Env |> Map.map (fun _ v -> ac renaming v)
             let newParams = List.map (fun p -> Map.find p fresh) c.Parameters
 
             Closure
-                { Env = newEnv
-                  IsEvaluated = c.IsEvaluated
-                  Parameters = newParams
+                { Parameters = newParams
                   Value = ac extended c.Value }
 
         | FunctionalApplication fa ->
