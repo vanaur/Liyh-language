@@ -4,7 +4,6 @@ module Repl =
     open Liyh.Utils.ColorTerm
     open Liyh.Utils.ErrorReporter
     open Liyh.Module.LiyhPackage
-    open Liyh.TypeCheck
     open System
     open System.Text
     open System.Linq
